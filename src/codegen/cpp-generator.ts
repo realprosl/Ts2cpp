@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, TypeParameter } from "../ast/nodes.ts";
 import { cppType } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
-import { functionResult, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult } from "../types/type-system.ts";
+import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult } from "../types/type-system.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
 // `Concept1<P> && Concept2<P>`). Las restricciones concept siempre se aplican al
@@ -18,6 +18,9 @@ export class CppGenerator {
   private readonly aliasNames: Set<string> = new Set();
   private readonly enumNames: Set<string> = new Set();
   private readonly enumUnderlying = new Map<string, "number" | "string">();
+  // Mapa de funciones top-level indexadas por nombre, usado para rellenar
+  // argumentos opcionales omitidos en call sites con `optionalNone<T>()`.
+  private readonly topLevelFunctions = new Map<string, FunctionDeclaration[]>();
   private readonly expressionType: (node: Expression) => TypeName | undefined;
   private readonly expressionIsVariadic: (node: Expression) => boolean;
   private readonly callTypeArguments: (node: Expression) => TypeName[];
@@ -48,9 +51,15 @@ export class CppGenerator {
     this.aliasNames.clear();
     this.enumNames.clear();
     this.enumUnderlying.clear();
+    this.topLevelFunctions.clear();
     for (const stmt of program.statements) {
       if (stmt.kind === "TypeAliasDeclaration") this.aliasNames.add(stmt.name);
       if (stmt.kind === "EnumDeclaration") { this.enumNames.add(stmt.name); this.enumUnderlying.set(stmt.name, stmt.underlying); }
+      if (stmt.kind === "FunctionDeclaration") {
+        const list = this.topLevelFunctions.get(stmt.name) ?? [];
+        list.push(stmt);
+        this.topLevelFunctions.set(stmt.name, list);
+      }
     }
     this.indent = 0;
   }
@@ -174,7 +183,13 @@ export class CppGenerator {
     const requires = requiresClauses.length ? `${requiresClauses.join("\n")}\n` : "";
     // C++ no permite defaults en la definición si ya están en la declaración;
     // pasamos `false` al emitir el cuerpo.
-    const params = fn.params.map((p, i) => cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : cppType(p.type), fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined)).join(", ");
+    // `p?: T` se traduce a `Optional<T>` en C++. Si el user ya escribió
+    // `Optional<T>` no duplicamos el envoltorio.
+    const params = fn.params.map((p, i) => {
+      const baseType = cppType(p.type);
+      const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
+      return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined);
+    }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
   }
   private classDeclaration(node: ClassDeclaration): string {
@@ -601,6 +616,23 @@ export class CppGenerator {
           }
           return text;
         });
+        // Si la función tiene exactamente una sobrecarga y el call site omitió
+        // argumentos opcionales, los rellenamos con `optionalNone<T>()` para
+        // mantener la firma C++ consistente.
+        if (node.callee) {
+          const overloads = this.topLevelFunctions.get(node.callee);
+          if (overloads && overloads.length === 1) {
+            const params = overloads[0].params;
+            for (let index = args.length; index < params.length; index++) {
+              const parameter = params[index];
+              if (!parameter.optional) break;
+              const innerType = parameter.type;
+              // Si el user ya escribió `Optional<T>`, no envolver.
+              if (isGenericType(innerType) && genericBase(innerType) === "Optional") args.push(`ets::Optional<${cppType(genericArguments(innerType)[0] ?? "void")}>::none()`);
+              else args.push(`ets::Optional<${cppType(innerType)}>::none()`);
+            }
+          }
+        }
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);
         return node.callee === "print" ? `print(${args.join(", ")})` : `${node.callee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }

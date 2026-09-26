@@ -112,10 +112,11 @@ export class Parser {
       const mutable = this.match("mut");
       if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
       const p = this.consume("identifier", "Se esperaba el nombre del parámetro");
+      const optional = this.match("?");
       this.consume(":", "El parámetro necesita un tipo");
       const type = this.typeName();
       const defaultValue = this.match("=") ? this.expression() : undefined;
-      params.push({ name: p.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", variadic, defaultValue, span: p.span });
+      params.push({ name: p.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", variadic, defaultValue, optional, span: p.span });
     } while (this.match(","));
     this.consume(")", "Se esperaba ')' después de los parámetros");
     this.consume(":", "La función necesita un tipo de retorno");
@@ -138,10 +139,11 @@ export class Parser {
         const mutable = this.match("mut");
         if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
         const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
+        const optional = this.match("?");
         this.consume(":", "El parámetro necesita un tipo");
         const type = this.typeName();
         const defaultValue = this.match("=") ? this.expression() : undefined;
-        params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, span: parameter.span });
+        params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, optional, span: parameter.span });
       } while (this.match(","));
       this.consume(")", "Se esperaba ')' después de los parámetros");
       this.consume(":", "El método necesita un tipo de retorno");
@@ -179,10 +181,17 @@ export class Parser {
           const mutable = this.match("mut");
           if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
           const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
+          // `name?: T` = parámetro opcional. Lo modelamos envolviendo el tipo
+          // en `Optional<T>` en type-check + codegen. Por ahora, solo
+          // registramos el flag; el user debe declarar el tipo como
+          // `Optional<T>` explícitamente para evitar envoltorios implícitos.
+          // (Aquí aceptamos la sintaxis pero no la propagamos: queda como
+          // pista semántica para el type-checker.)
+          const optional = this.match("?");
           this.consume(":", "El parámetro necesita un tipo");
           const type = this.typeName();
           const defaultValue = this.match("=") ? this.expression() : undefined;
-          params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, span: parameter.span });
+          params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, optional, span: parameter.span });
         } while (this.match(","));
         this.consume(")", "Se esperaba ')' después de los parámetros");
         // El método `constructor` es especial: no tiene tipo de retorno

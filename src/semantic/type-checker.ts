@@ -67,7 +67,7 @@ const JSON_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }>
 // `Object`/`any`/`unknown`, así que se accede a campos vía funciones libres.
 // Todas devuelven tipos primitivos (string/number/boolean) excepto las que
 // devuelven JsonValue (array/object get).
-const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
   jsonIsString: { params: ["JsonValue"], returnType: "boolean" },
   jsonIsNumber: { params: ["JsonValue"], returnType: "boolean" },
   jsonIsBool: { params: ["JsonValue"], returnType: "boolean" },
@@ -80,13 +80,13 @@ const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }>
   jsonArrayLength: { params: ["JsonValue"], returnType: "number" },
   jsonArrayGet: { params: ["JsonValue", "number"], returnType: "JsonValue" },
   jsonObjectGet: { params: ["JsonValue", "string"], returnType: "JsonValue" },
-};
+});
 
 // Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
 // tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
 // funciones libres. Cada helper preserva el tipo genérico a través de
 // la firma del type-checker (que infiere del contexto).
-const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = {
+const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
   optionalSome: { minParams: 1, returnsGeneric: true },        // (T) → Optional<T>
   optionalNone: { minParams: 0, returnsGeneric: true },        // <T>() → Optional<T>
   optionalIsPresent: { minParams: 1, returnsGeneric: false },  // (Optional<T>) → boolean
@@ -94,7 +94,7 @@ const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: bool
   optionalMap: { minParams: 2, returnsGeneric: true },         // (Optional<T>, T→U) → Optional<U>
   optionalAndThen: { minParams: 2, returnsGeneric: true },     // (Optional<T>, T→Optional<U>) → Optional<U>
   optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
-};
+});
 
 // Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
 // (mapeado a `double` en C++). Las funciones que en JavaScript aceptan
@@ -336,7 +336,7 @@ export class TypeChecker {
         variadicTypeParameters: [],
         typeConstraints: TypeChecker.constraintsOf(method.typeParameters ?? []),
         defaults: TypeChecker.defaultsOf(method.typeParameters ?? []),
-        params: method.params.map(parameter => ({ type: parameter.type, out: parameter.out, mutableReference: parameter.passing === "mut", variadic: parameter.variadic, defaultValue: parameter.defaultValue })),
+        params: method.params.map(parameter => ({ type: parameter.type, out: parameter.out, mutableReference: parameter.passing === "mut", variadic: parameter.variadic, defaultValue: parameter.defaultValue, optional: parameter.optional })),
         returnType: method.returnType
       };
       const match = this.matchOverload(signature, argumentTypes, node.typeArguments, expected);
@@ -382,7 +382,7 @@ export class TypeChecker {
       variadicTypeParameters: node.variadicTypeParameters,
       typeConstraints: TypeChecker.constraintsOf(node.typeParameters),
       defaults: TypeChecker.defaultsOf(node.typeParameters),
-      params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue })),
+      params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue, optional: p.optional })),
       returnType: node.returnType
     };
     const existing = scope.resolveLocal(node.name);
@@ -733,7 +733,14 @@ export class TypeChecker {
       case "FunctionDeclaration": {
         this.withTypeParameters(node.typeParameters, () => {
           const local = new Scope(scope);
-          for (const p of node.params) if (!local.define(p.name, { kind: "variable", type: p.type, mutable: p.out || p.passing === "mut", variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+          for (const p of node.params) {
+            // `p?: T` se modela como `Optional<T>` en el scope. Si el user
+            // ya escribió `Optional<T>` no duplicamos el envoltorio.
+            const effectiveType = p.optional
+              ? (isGenericType(p.type) && genericBase(p.type) === "Optional" ? p.type : genericType("Optional", [p.type]))
+              : p.type;
+            if (!local.define(p.name, { kind: "variable", type: effectiveType, mutable: p.out || p.passing === "mut", variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+          }
           const previousReturn = this.currentReturn; const previousAsync = this.currentAsync;
           this.currentReturn = node.async && isPromiseType(node.returnType) ? promiseResult(node.returnType) : node.returnType;
           this.currentAsync = node.async;
@@ -997,6 +1004,7 @@ export class TypeChecker {
       case "CallExpression": {
         if (JSON_HELPERS[node.callee]) {
           const signature = JSON_HELPERS[node.callee];
+          if (!signature || !signature.params) { result = "void"; node.args.forEach(a => this.expression(a, scope)); break; }
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
           node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
           result = signature.returnType; break;
@@ -1182,7 +1190,7 @@ export class TypeChecker {
         const matches = methods.map(method => {
           const signature: FunctionSignature = {
             typeParameters: TypeChecker.namesOf(method.typeParameters ?? []), variadicTypeParameters: [], typeConstraints: TypeChecker.constraintsOf(method.typeParameters ?? []), defaults: TypeChecker.defaultsOf(method.typeParameters ?? []),
-            params: method.params.map(parameter => ({ type: this.substituteType(parameter.type, classSubstitutions), out: parameter.out, mutableReference: parameter.passing === "mut", defaultValue: parameter.defaultValue })),
+            params: method.params.map(parameter => ({ type: this.substituteType(parameter.type, classSubstitutions), out: parameter.out, mutableReference: parameter.passing === "mut", defaultValue: parameter.defaultValue, optional: parameter.optional })),
             returnType: this.substituteType(method.returnType, classSubstitutions)
           };
           const match = this.matchOverload(signature, argumentTypes, node.typeArguments, expected);
@@ -1428,7 +1436,7 @@ export class TypeChecker {
     const fixedCount = signature.params.length - (rest ? 1 : 0);
     // Cuenta de parámetros obligatorios (sin `defaultValue`); los parámetros con
     // valor por defecto pueden omitirse en la llamada.
-    const requiredCount = signature.params.filter(parameter => !parameter.defaultValue && !parameter.variadic).length;
+    const requiredCount = signature.params.filter(parameter => !parameter.defaultValue && !parameter.variadic && !parameter.optional).length;
     if ((!rest && (actuals.length < requiredCount || actuals.length > signature.params.length)) || (rest && actuals.length < fixedCount)) return undefined;
     const normalTypeParameters = signature.typeParameters.filter(parameter => !signature.variadicTypeParameters.includes(parameter));
     if (explicit.length) {
