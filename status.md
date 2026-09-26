@@ -49,6 +49,18 @@
 - **Limitación**: como el dialecto no tiene destructores user-defined todavía, `using` es funcionalmente equivalente a `let` con scope-limit. La invocación explícita de `dispose()` se añadirá cuando se implemente destructores de usuario (Fase 3).
 - **Próxima fase**: Fase 1.10 — Match expressions (TC39 stage 2).
 
+## Última fase cerrada: Fase 1.10 (Match expressions) · commit 1f11737
+
+- **Tests**: 129/129 PASS (78 unit + 51 integration)
+- **Cambios**:
+  - Lexer: `match`, `when` como keywords.
+  - AST: `MatchArm`, `MatchExpression` con `subject` y `arms[]`.
+  - Parser: `expression()` despacha `match` antes que `assignment`. `matchExpression()` parsea `match (subject) { when (pattern) => result; ... }`.
+  - Type-checker: propaga el tipo del subject a los patterns (excepto wildcard `_`). Verifica que todos los arms devuelvan el mismo tipo.
+  - Codegen: `emitMatch()` construye cadena de ternarios. Wildcard `_` se ignora en la comparación.
+  - Ejemplo: `match-demo.ets` (8 escenarios, incluyendo match anidado).
+- **Próxima fase**: Fase 1.11 — `satisfies` operator.
+
 ## Plan en cola
 
 ### Fase 1 — Sintaxis TS que el dialecto puede asumir
@@ -64,8 +76,8 @@
 | 1.7 | Template literals con `${expr}` interpolado | ✅ ya estaba, verificado |
 | 1.8 | `for await...of` | ✅ commit 3801f73 |
 | 1.9 | `using` / RAII declarativo | ✅ commit c546812 |
-| 1.10 | Match expressions (TC39 stage 2) | ⏳ **siguiente** |
-| 1.11 | `satisfies` operator | ⏳ |
+| 1.10 | Match expressions (TC39 stage 2) | ✅ commit 1f11737 |
+| 1.11 | `satisfies` operator | ⏳ **siguiente** |
 | 1.12 | Variadic tuples `[T, ...U]` | ⏳ |
 | 1.13 | `Promise.all` / `Promise.race` / cancellation | ⏳ |
 | 1.14 | `const` generics | ⏳ |
