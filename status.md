@@ -1,15 +1,15 @@
 # Ts2cpp — Status
 
-## Última fase cerrada: Fase 1.2 (Optional<T>) · pendiente commit
+## Última fase cerrada: Fase 1.4 (`?.` optional chaining) · commit 764317e
 
-- **Tests**: 122/122 PASS (78 unit + 44 integration, suite corriendo)
+- **Tests**: 124/124 PASS (78 unit + 46 integration)
 - **Cambios**:
-  - Runtime: `runtime/ets_optional.hpp` con `ets::Optional<T>` (wrapper de `std::optional<T>`) y 7 funciones globales `optionalSome/None/IsPresent/ValueOr/Map/AndThen/OrElse`.
-  - Dialecto: `Optional<T>` reconocido como tipo genérico válido; tabla `OPTIONAL_HELPERS` despachada en `CallExpression`.
-  - Inferencia de T propagada vía `expected` contextual (sin necesidad de declarar tipos genéricos explícitos).
-  - Codegen: `cppType("Optional<T>") → ets::Optional<T>`.
-  - Ejemplo: `examples/optional-demo.ets` con 8 escenarios.
-- **Próxima fase**: Fase 1.3 — `??` sobre `Optional<T>` (desbloqueada ahora).
+  - Lexer: `?.` como token doble.
+  - Parser: `MemberExpression.optional?: boolean`, `MemberCallExpression.optional?: boolean`.
+  - Type-checker: `obj?.field` requiere `obj: Optional<T>` y `T` con el campo; resultado es `Optional<typeof field>`.
+  - Codegen: `optionalAndThen(obj, e => optionalSome(e.field))`.
+  - Ejemplo: `optional-chaining-demo.ets` (3 escenarios).
+- **Próxima fase**: Fase 1.5 — Decoradores (TC39 stage 3).
 
 ## Plan en cola
 
@@ -18,10 +18,10 @@
 | # | Feature | Estado |
 |---|---|---|
 | 1.1 | `>>>` (logical right shift) | ⛔ rechazado |
-| 1.2 | `Optional<T>` runtime + dialecto | ✅ hecho |
-| 1.3 | `??` (nullish coalescing) sobre `Optional<T>` | ⏳ **siguiente** |
-| 1.4 | `?.` (optional chaining) sobre `Optional<T>` | ⏳ |
-| 1.5 | Decoradores (TC39 stage 3) | ⏳ |
+| 1.2 | `Optional<T>` runtime + dialecto | ✅ commit b0be64a |
+| 1.3 | `??` (nullish coalescing) sobre `Optional<T>` | ✅ commit 4dcf28b |
+| 1.4 | `?.` (optional chaining) sobre `Optional<T>` | ✅ commit 764317e |
+| 1.5 | Decoradores (TC39 stage 3) | ⏳ **siguiente** |
 | 1.6 | Optional `?` en parámetros | ⏳ |
 | 1.7 | Template literals con `${expr}` interpolado | ⏳ |
 | 1.8 | `for await...of` | ⏳ |
