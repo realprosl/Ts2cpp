@@ -976,15 +976,16 @@ export class TypeChecker {
         const right = this.expression(node.right, scope);
         if (node.operator === "+" && left === "string" && right === "string") result = "string";
         else if (node.operator === "??") {
-          // `??` (nullish coalescing) no se admite en este dialecto: el único
-          // ausente sería `void`, pero `void` puro no es un valor reutilizable
-          // en C++ (no tiene `.value_or`) y las uniones `T | void` que produce
-          // el lenguaje se modelan con `std::variant<T, ets::void_t>`, que
-          // tampoco tiene `.value_or`. El dialecto prefiere la API explícita:
-          //   - `Map.has(k) ? m.get(k) : default`
-          //   - `result.isOk() ? result.value() : default`
-          this.report(node, "El operador '??' no se admite; usá la API explícita del tipo (Map.has/get, Result.isOk/value)");
-          result = left ?? right;
+          // `??` (nullish coalescing) sobre `Optional<T>`. El operando izquierdo
+          // debe ser `Optional<T>` y el derecho debe ser de tipo `T` (el
+          // default). Resultado: `T`.
+          if (!isGenericType(left) || genericBase(left) !== "Optional") {
+            this.report(node.left, `El operador '??' requiere un Optional<T> a la izquierda, se obtuvo '${left}'`);
+          } else {
+            const element = genericArguments(left)[0] ?? "void";
+            this.require(right, element, node.right);
+            result = element;
+          }
         }
         else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
         else if (["|", "&", "^", "<<", ">>"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
@@ -1012,30 +1013,6 @@ export class TypeChecker {
             // Helper que devuelve Optional<T>: tipamos cada argumento con T.
             if (node.callee === "optionalNone") result = genericType("Optional", [expectedElement]);
             else if (node.callee === "optionalSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Optional", [expectedElement]); }
-            else if (node.callee === "optionalMap" && node.args[1]) {
-              // El segundo argumento es una función T→U; propagamos expected
-              // al primer argumento (que debe ser Optional<T>) y dejamos que
-              // el tipo de la función se infiera.
-              const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : "void";
-              const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
-              result = genericType("Optional", [functionResult(arg1Type)]);
-            }
-            else if (node.callee === "optionalAndThen") {
-              // optionalAndThen(opt: Optional<T>, f: T → Optional<U>):
-              // el resultado es el tipo de retorno de f. Como el type-checker
-              // evalúa args en orden, evaluamos primero la lambda (args[1]),
-              // sacamos su tipo de retorno y lo usamos como expected del primer
-              // argumento para que `found` se type-checkee contra Optional<T>.
-              const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
-              if (isFunctionType(arg1Type)) {
-                const lambdaReturn = functionResult(arg1Type);
-                const arg0Type = node.args[0] ? this.expression(node.args[0], scope, lambdaReturn) : "void";
-                result = lambdaReturn;
-              } else {
-                if (node.args[0]) this.expression(node.args[0], scope);
-                result = "void";
-              }
-            }
             else if (node.callee === "optionalOrElse") {
               node.args.forEach(arg => this.expression(arg, scope));
               result = genericType("Optional", [expectedElement]);
@@ -1048,7 +1025,37 @@ export class TypeChecker {
             });
             if (node.callee === "optionalIsPresent") result = "boolean";
             else if (node.callee === "optionalValueOr") result = expectedElement ?? "void";
-          } else { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
+          }
+          // `optionalMap` y `optionalAndThen` se manejan SIEMPRE (con o sin
+          // expected contextual) porque pueden inferir el tipo por sí solos.
+          if (node.callee === "optionalMap") {
+            const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : "void";
+            const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+            if (!isGenericType(arg0Type) || genericBase(arg0Type) !== "Optional") {
+              this.report(node.args[0], `optionalMap: primer argumento debe ser Optional<T>, se obtuvo '${arg0Type}'`);
+              result = "void";
+            } else if (!isFunctionType(arg1Type)) {
+              this.report(node.args[1], `optionalMap: segundo argumento debe ser una función T → U`);
+              result = "void";
+            } else {
+              result = genericType("Optional", [functionResult(arg1Type)]);
+            }
+            break;
+          }
+          if (node.callee === "optionalAndThen") {
+            const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+            if (isFunctionType(arg1Type)) {
+              const lambdaReturn = functionResult(arg1Type);
+              if (node.args[0]) this.expression(node.args[0], scope, lambdaReturn);
+              result = lambdaReturn;
+            } else {
+              if (node.args[0]) this.expression(node.args[0], scope);
+              this.report(node.args[1], `optionalAndThen: segundo argumento debe ser una función T → Optional<U>`);
+              result = "void";
+            }
+            break;
+          }
+          if (result === undefined) { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
           break;
         }
         const symbol = scope.resolve(node.callee);

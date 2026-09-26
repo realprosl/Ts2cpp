@@ -549,11 +549,9 @@ export class CppGenerator {
         // dejamos una rama aquí por si en el futuro se re-introduce con una
         // representación de "ausente" mejor (p.ej. `std::optional`).
         if (node.operator === "??") {
-          const leftType = this.expressionType(node.left);
-          const left = this.emitExpression(node.left);
-          const right = this.emitExpression(node.right);
-          if (leftType === "void") return `(${left}.has_value() ? ${left}.value() : ${right})`;
-          return `(${left}.has_value() ? ${left} : ${right})`;
+          // `??` se desazucara a `optionalValueOr(lhs, default)`. El type-checker
+          // garantiza que lhs es `Optional<T>` y default es `T`.
+          return `optionalValueOr(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})`;
         }
         return node.operator === "%" ? `std::fmod(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})` : `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
       }
