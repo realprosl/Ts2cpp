@@ -82,6 +82,20 @@ const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }>
   jsonObjectGet: { params: ["JsonValue", "string"], returnType: "JsonValue" },
 };
 
+// Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
+// tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
+// funciones libres. Cada helper preserva el tipo genérico a través de
+// la firma del type-checker (que infiere del contexto).
+const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = {
+  optionalSome: { minParams: 1, returnsGeneric: true },        // (T) → Optional<T>
+  optionalNone: { minParams: 0, returnsGeneric: true },        // <T>() → Optional<T>
+  optionalIsPresent: { minParams: 1, returnsGeneric: false },  // (Optional<T>) → boolean
+  optionalValueOr: { minParams: 2, returnsGeneric: false },    // (Optional<T>, T) → T
+  optionalMap: { minParams: 2, returnsGeneric: true },         // (Optional<T>, T→U) → Optional<U>
+  optionalAndThen: { minParams: 2, returnsGeneric: true },     // (Optional<T>, T→Optional<U>) → Optional<U>
+  optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
+};
+
 // Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
 // (mapeado a `double` en C++). Las funciones que en JavaScript aceptan
 // número variable de argumentos (`Math.max(...args)`) se limitan a dos
@@ -652,6 +666,11 @@ export class TypeChecker {
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
+      if (base === "Optional") {
+        if (arguments_.length !== 1) this.report(node, `'Optional' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        this.validateType(arguments_[0], node, false, primitiveOnly, scope);
+        return type;
+      }
       if (base === "Set") {
         if (arguments_.length !== 1) this.report(node, `'Set' espera 1 argumento de tipo, recibió ${arguments_.length}`);
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
@@ -669,7 +688,11 @@ export class TypeChecker {
     const primitive = isPrimitive(type);
     const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
-    if (!primitive && (primitiveOnly || (!concrete && !contract))) this.report(node, `Tipo no definido o no permitido '${type}'`);
+    // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
+    // `Optional<T>` se aceptan siempre (son tipos del runtime).
+    const genericBaseName = type.includes("<") ? type.slice(0, type.indexOf("<")) : "";
+    const genericConcrete = ["Promise", "Result", "Map", "Set", "Optional"].includes(genericBaseName);
+    if (!primitive && (primitiveOnly || (!concrete && !contract && !genericConcrete))) this.report(node, `Tipo no definido o no permitido '${type}'`);
   }
 
   private statement(node: Statement, scope: Scope): void {
@@ -976,6 +999,57 @@ export class TypeChecker {
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
           node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
           result = signature.returnType; break;
+        }
+        if (OPTIONAL_HELPERS[node.callee]) {
+          const helper = OPTIONAL_HELPERS[node.callee];
+          if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos`);
+          // Inferimos T a partir del `expected` contextual. Por ejemplo,
+          // `const x: Optional<number> = optionalSome(5)` propaga `number` como
+          // tipo esperado del argumento, lo que hace que `5` se type-checkee
+          // contra `number`.
+          const expectedElement = expected && isGenericType(expected) && genericBase(expected) === "Optional" ? genericArguments(expected)[0] : undefined;
+          if (helper.returnsGeneric && expectedElement) {
+            // Helper que devuelve Optional<T>: tipamos cada argumento con T.
+            if (node.callee === "optionalNone") result = genericType("Optional", [expectedElement]);
+            else if (node.callee === "optionalSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Optional", [expectedElement]); }
+            else if (node.callee === "optionalMap" && node.args[1]) {
+              // El segundo argumento es una función T→U; propagamos expected
+              // al primer argumento (que debe ser Optional<T>) y dejamos que
+              // el tipo de la función se infiera.
+              const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : "void";
+              const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+              result = genericType("Optional", [functionResult(arg1Type)]);
+            }
+            else if (node.callee === "optionalAndThen") {
+              // optionalAndThen(opt: Optional<T>, f: T → Optional<U>):
+              // el resultado es el tipo de retorno de f. Como el type-checker
+              // evalúa args en orden, evaluamos primero la lambda (args[1]),
+              // sacamos su tipo de retorno y lo usamos como expected del primer
+              // argumento para que `found` se type-checkee contra Optional<T>.
+              const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+              if (isFunctionType(arg1Type)) {
+                const lambdaReturn = functionResult(arg1Type);
+                const arg0Type = node.args[0] ? this.expression(node.args[0], scope, lambdaReturn) : "void";
+                result = lambdaReturn;
+              } else {
+                if (node.args[0]) this.expression(node.args[0], scope);
+                result = "void";
+              }
+            }
+            else if (node.callee === "optionalOrElse") {
+              node.args.forEach(arg => this.expression(arg, scope));
+              result = genericType("Optional", [expectedElement]);
+            }
+          } else if (!helper.returnsGeneric) {
+            // Helpers que devuelven primitivos.
+            node.args.forEach((arg, index) => {
+              if (index === 0 && expectedElement) this.require(this.expression(arg, scope, genericType("Optional", [expectedElement])), genericType("Optional", [expectedElement]), arg);
+              else this.expression(arg, scope);
+            });
+            if (node.callee === "optionalIsPresent") result = "boolean";
+            else if (node.callee === "optionalValueOr") result = expectedElement ?? "void";
+          } else { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
+          break;
         }
         const symbol = scope.resolve(node.callee);
         if (!symbol) { this.report(node, `Función no definida '${node.callee}'`); node.args.forEach(a => this.expression(a, scope)); break; }

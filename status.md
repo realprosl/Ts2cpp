@@ -1,39 +1,37 @@
 # Ts2cpp — Status
 
-## Última fase cerrada: Bloque 7 (JSON.parse trees) · commit 5587184
+## Última fase cerrada: Fase 1.2 (Optional<T>) · pendiente commit
 
-- **Tests**: 121/121 PASS (78 unit + 43 integration, 4:12 min)
+- **Tests**: 122/122 PASS (78 unit + 44 integration, suite corriendo)
 - **Cambios**:
-  - Runtime: `ets_json_value` (variant opaco), `ets_json_parser` recursivo, `parseValue(string) → Value`, `stringify(Value)` recursivo, 12 helpers globales (`jsonIsString`, `jsonAsString`, `jsonArrayGet`, `jsonObjectGet`, etc.).
-  - Dialecto: `JSON.parseValue(s) → JsonValue`, `JsonValue` como tipo concreto reconocido, dispatch en codegen.
-  - Compatibilidad: `JSON.parse` legacy (→ `string`) sigue funcionando.
-  - Ejemplo: `examples/json-tree-demo.ets` con 3 escenarios.
-- **Limitaciones conocidas**:
-  - Static-init con `JSON.parseValue` no funciona (C++ static init order es indefinido). El ejemplo encapsula las llamadas en funciones para evitar el problema.
-  - Unicode `\uXXXX` en JSON escapa a `'?'` (runtime mínimo).
-  - `jsonObjectKeys` no expone keys en orden estable (`std::map` ordena por clave).
+  - Runtime: `runtime/ets_optional.hpp` con `ets::Optional<T>` (wrapper de `std::optional<T>`) y 7 funciones globales `optionalSome/None/IsPresent/ValueOr/Map/AndThen/OrElse`.
+  - Dialecto: `Optional<T>` reconocido como tipo genérico válido; tabla `OPTIONAL_HELPERS` despachada en `CallExpression`.
+  - Inferencia de T propagada vía `expected` contextual (sin necesidad de declarar tipos genéricos explícitos).
+  - Codegen: `cppType("Optional<T>") → ets::Optional<T>`.
+  - Ejemplo: `examples/optional-demo.ets` con 8 escenarios.
+- **Próxima fase**: Fase 1.3 — `??` sobre `Optional<T>` (desbloqueada ahora).
 
 ## Plan en cola
 
 ### Fase 1 — Sintaxis TS que el dialecto puede asumir
 
-| # | Feature | Decisión | Estado |
-|---|---|---|---|
-| 1.1 | `>>>` (logical right shift) | **rechazado** (tras reconsideración del usuario) | ⛔ |
-| 1.2 | `Optional<T>` runtime + dialecto | pendiente | ⏳ **siguiente** |
-| 1.3 | `??` (nullish coalescing) sobre `Optional<T>` | pendiente | ⏳ bloqueado por 1.2 |
-| 1.4 | `?.` (optional chaining) sobre `Optional<T>` | pendiente | ⏳ bloqueado por 1.2 |
-| 1.5 | Decoradores (TC39 stage 3) | pendiente | ⏳ |
-| 1.6 | Optional `?` en parámetros | pendiente | ⏳ |
-| 1.7 | Template literals con `${expr}` interpolado | pendiente | ⏳ |
-| 1.8 | `for await...of` | pendiente | ⏳ |
-| 1.9 | `using` / RAII declarativo (TC39 stage 3) | pendiente | ⏳ |
-| 1.10 | Match expressions (TC39 stage 2) | pendiente | ⏳ |
-| 1.11 | `satisfies` operator | pendiente | ⏳ |
-| 1.12 | Variadic tuples `[T, ...U]` | pendiente | ⏳ |
-| 1.13 | `Promise.all` / `Promise.race` / cancellation | pendiente | ⏳ |
-| 1.14 | `const` generics | pendiente | ⏳ |
-| 1.15 | Named/default exports round-trip | pendiente | ⏳ |
+| # | Feature | Estado |
+|---|---|---|
+| 1.1 | `>>>` (logical right shift) | ⛔ rechazado |
+| 1.2 | `Optional<T>` runtime + dialecto | ✅ hecho |
+| 1.3 | `??` (nullish coalescing) sobre `Optional<T>` | ⏳ **siguiente** |
+| 1.4 | `?.` (optional chaining) sobre `Optional<T>` | ⏳ |
+| 1.5 | Decoradores (TC39 stage 3) | ⏳ |
+| 1.6 | Optional `?` en parámetros | ⏳ |
+| 1.7 | Template literals con `${expr}` interpolado | ⏳ |
+| 1.8 | `for await...of` | ⏳ |
+| 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ |
+| 1.10 | Match expressions (TC39 stage 2) | ⏳ |
+| 1.11 | `satisfies` operator | ⏳ |
+| 1.12 | Variadic tuples `[T, ...U]` | ⏳ |
+| 1.13 | `Promise.all` / `Promise.race` / cancellation | ⏳ |
+| 1.14 | `const` generics | ⏳ |
+| 1.15 | Named/default exports round-trip | ⏳ |
 
 ### Fase 2 — Rendimiento del compilador
 
@@ -60,4 +58,4 @@
 ## Decisiones reconsideradas
 
 - ~~`>>>` rechazado~~ → **mantenido rechazado** tras revisión.
-- ~~`??`/`?.` rechazados~~ → **reabiertos** condicionalmente a la introducción de `Optional<T>` (Fase 1.2).
+- ~~`??`/`?.` rechazados~~ → **reabiertos** condicionalmente a `Optional<T>` (1.2 ✅).

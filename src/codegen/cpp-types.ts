@@ -20,6 +20,7 @@ export function cppType(type: TypeName): string {
       : sourceBase === "Result" ? "ets::Result"
       : sourceBase === "Map" ? "ets::Map"
       : sourceBase === "Set" ? "ets::Set"
+      : sourceBase === "Optional" ? "ets::Optional"
       : sourceBase;
     return `${base}<${genericArguments(type).map(cppType).join(", ")}>`;
   }
