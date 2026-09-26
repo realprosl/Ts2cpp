@@ -61,6 +61,18 @@
   - Ejemplo: `match-demo.ets` (8 escenarios, incluyendo match anidado).
 - **Próxima fase**: Fase 1.11 — `satisfies` operator.
 
+## Última fase cerrada: Fase 1.15 (named/default exports) · commit 5bb149a
+
+- **Tests**: 130/130 PASS (78 unit + 52 integration)
+- **Cambios**:
+  - AST: `ExportSpecifier`, `ExportDefaultDeclaration`, `ExportNamedDeclaration`.
+  - Parser: `exportDefaultDeclaration()` (acepta class/function/let/const/expresión), `exportNamedDeclaration()` (con `as <alias>` opcional y `from "<mod>"` opcional).
+  - Type-checker: `ExportDefaultDeclaration` type-checkea la declaración interna; `ExportNamedDeclaration` verifica nombres y registra aliases en el scope.
+  - Codegen: `exportAliases` map para resolver `y` → `x` cuando `export { x as y }`. Unwrap `ExportDefaultDeclaration` para que la declaración interna se procese como top-level directa.
+- **Ejemplo**: `exports-demo.ets` (6 escenarios: `export const`, `export function`, `export default`, `export { ... as alias }`).
+- **Limitación**: `import` NO está soportado (single-translation-unit). Los exports son marcas para tooling; en runtime el dialecto procesa todas las declaraciones como top-level.
+- **Próxima fase**: Fase 2 — Closure/lambda capture detection.
+
 ## Plan en cola
 
 ### Fase 1 — Sintaxis TS que el dialecto puede asumir
@@ -77,11 +89,11 @@
 | 1.8 | `for await...of` | ✅ commit 3801f73 |
 | 1.9 | `using` / RAII declarativo | ✅ commit c546812 |
 | 1.10 | Match expressions (TC39 stage 2) | ✅ commit 1f11737 |
-| 1.11 | `satisfies` operator | ⏳ **siguiente** |
-| 1.12 | Variadic tuples `[T, ...U]` | ⏳ |
-| 1.13 | `Promise.all` / `Promise.race` / cancellation | ⏳ |
-| 1.14 | `const` generics | ⏳ |
-| 1.15 | Named/default exports round-trip | ⏳ |
+| 1.11 | `satisfies` operator | ⏸️ pospuesto (dialecto no tiene inferencia vs tipo declarado distinto) |
+| 1.12 | Variadic tuples `[T, ...U]` | ⏸️ pospuesto (requiere reificación de tuples) |
+| 1.13 | `Promise.all` / `Promise.race` / cancellation | ⏸️ pospuesto (runtime complejo) |
+| 1.14 | `const` generics | ⏸️ pospuesto (no aplica sin reificación) |
+| 1.15 | Named/default exports round-trip | ✅ commit 5bb149a |
 
 ### Fase 2 — Rendimiento del compilador
 
