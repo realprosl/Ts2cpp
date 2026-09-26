@@ -143,7 +143,7 @@ export class Lexer {
       this.advance(); this.advance(); this.add(two as TokenKind, two, start); return;
     }
     const one = this.advance();
-    const singles = "(){}[] ,;:.-+*/%=<>!?|&^~".replace(" ", "");
+    const singles = "(){}[] ,;:.-+*/%=<>!?|&^~@".replace(" ", "");
     if (singles.includes(one)) this.add(one as TokenKind, one, start);
     else this.diagnostics.push({ phase: "lexer", message: `Carácter inesperado '${one}'`, span: span(start, this.position()) });
   }

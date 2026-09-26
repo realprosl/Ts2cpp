@@ -16,9 +16,11 @@ export interface Parameter { name: string; type: TypeName; out: boolean; passing
 export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
 export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; span: Span }
 export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; span: Span }
-export interface ClassField { name: string; type: TypeName; readonly?: boolean; span: Span }
-export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
-export interface ClassDeclaration { kind: "ClassDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; fields: ClassField[]; methods: ClassMethod[]; span: Span }
+export type Decorator = { name: string; args: Expression[] };
+
+export interface ClassField { name: string; type: TypeName; readonly?: boolean; decorators?: Decorator[]; span: Span }
+export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; decorators?: Decorator[]; span: Span }
+export interface ClassDeclaration { kind: "ClassDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; fields: ClassField[]; methods: ClassMethod[]; decorators?: Decorator[]; span: Span }
 export interface BlockStatement { kind: "BlockStatement"; statements: Statement[]; span: Span }
 export interface ExpressionStatement { kind: "ExpressionStatement"; expression: Expression; span: Span }
 export interface IfStatement { kind: "IfStatement"; condition: Expression; thenBranch: Statement; elseBranch?: Statement; span: Span }

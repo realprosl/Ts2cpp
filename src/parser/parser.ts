@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -31,7 +31,8 @@ export class Parser {
     }
     if (this.match("function")) return this.functionDeclaration(this.previous(), false, exported);
     if (this.match("interface")) return this.interfaceDeclaration(this.previous(), exported);
-    if (this.match("class")) return this.classDeclaration(this.previous(), exported);
+    if (this.match("class")) return this.classDeclaration(false, exported);
+    if (this.check("@")) return this.classDeclaration(true, exported);
     if (this.match("type")) return this.typeAliasDeclaration(this.previous(), exported);
     if (this.match("enum")) return this.enumDeclaration(this.previous(), exported);
     if (exported) this.error(this.peek(), "'export' debe preceder a let, const, function, async function, interface o class");
@@ -152,19 +153,23 @@ export class Parser {
     return { kind: "InterfaceDeclaration", exported, name: name.lexeme, methods, span: span(keyword.span.start, close.span.end) };
   }
 
-  private classDeclaration(keyword: Token, exported = false): Statement {
+  private classDeclaration(keywordAlreadyConsumed: boolean, exported = false): Statement {
+    const decorators = this.parseDecorators();
+    if (keywordAlreadyConsumed) this.consume("class", "Se esperaba 'class' antes del nombre");
     const name = this.consume("identifier", "Se esperaba el nombre de la clase");
     const generics = this.typeParameterNames();
     this.consume("{", "Las clases no admiten herencia; se esperaba '{'");
     const fields: ClassField[] = [];
     const methods: ClassMethod[] = [];
+    const startSpan = decorators[0]?.args[0]?.span.start ?? name.span.start;
     while (!this.check("}") && !this.check("eof")) {
+      const memberDecorators = this.parseDecorators();
       const readonly = this.match("readonly");
       const member = this.consume("identifier", "Se esperaba un campo o método");
       if (this.match(":")) {
         const type = this.typeName();
         const end = this.consume(";", "Se esperaba ';' después del campo");
-        fields.push({ name: member.lexeme, type, readonly, span: span(member.span.start, end.span.end) });
+        fields.push({ name: member.lexeme, type, readonly, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
       } else {
         const generics = this.typeParameterNames();
         this.consume("(", "Se esperaba '(' en el método");
@@ -187,11 +192,31 @@ export class Parser {
         const returnType: TypeName = isConstructor ? "void" : (this.match(":") ? this.typeName() : (this.error(this.peek(), "El método necesita un tipo de retorno"), "void"));
         const open = this.consume("{", "Se esperaba el cuerpo del método");
         const body = this.block(open);
-        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, span: span(member.span.start, body.span.end) });
+        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, span: span(member.span.start, body.span.end) });
       }
     }
     const close = this.consume("}", "Se esperaba '}' después de la clase");
-    return { kind: "ClassDeclaration", exported, name: name.lexeme, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, fields, methods, span: span(keyword.span.start, close.span.end) };
+    return { kind: "ClassDeclaration", exported, name: name.lexeme, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, fields, methods, decorators, span: span(startSpan, close.span.end) };
+  }
+
+  /**
+   * Lee cero o más decoradores `@name(args)` y los devuelve como una lista.
+   * Si el token `@` no aparece, devuelve `[]`. Los decoradores se aplican
+   * al siguiente elemento (clase, método o campo) que se parsee.
+   */
+  private parseDecorators(): Decorator[] {
+    const decorators: Decorator[] = [];
+    while (this.check("@")) {
+      this.advance();
+      const name = this.consume("identifier", "Se esperaba el nombre del decorador tras '@'");
+      const args: Expression[] = [];
+      if (this.match("(")) {
+        if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
+        this.consume(")", "Se esperaba ')' después de los argumentos del decorador");
+      }
+      decorators.push({ name: name.lexeme, args });
+    }
+    return decorators;
   }
 
   // `type X = T` o `type X<A extends B> = T`. El cuerpo es una única expresión

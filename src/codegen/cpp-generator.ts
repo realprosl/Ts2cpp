@@ -209,8 +209,37 @@ export class CppGenerator {
   private classMethod(method: ClassMethod): string {
     const declaration: FunctionDeclaration = { kind: "FunctionDeclaration", name: method.name, async: false, typeParameters: method.typeParameters ?? [], variadicTypeParameters: [], params: method.params, returnType: method.returnType, body: method.body, span: method.span };
     const previous = this.inClassMethod; this.inClassMethod = true;
-    const result = `${this.signature(declaration)}${this.methodMutates(method) ? "" : " const"} ${this.emitBlock(method.body)}`;
+    const body = this.emitBlock(method.body);
+    const deprecated = this.decoratorWarning(method.decorators, method.name);
+    // `deprecated` se inyecta inmediatamente después de `{` del cuerpo, no entre
+    // la firma y el `{`. Para eso, troceamos el bloque en dos.
+    let bodyWithWarning = body;
+    if (deprecated) {
+      const openBrace = body.indexOf("{");
+      const afterBrace = body.indexOf("\n", openBrace) + 1;
+      bodyWithWarning = body.slice(0, afterBrace) + deprecated + body.slice(afterBrace);
+    }
+    const result = `${this.signature(declaration)}${this.methodMutates(method) ? "" : " const"} ${bodyWithWarning}`;
     this.inClassMethod = previous; return result;
+  }
+
+  /**
+   * Si la lista de decoradores contiene `@deprecated("msg")` o `@deprecated()`,
+   * devuelve un statement C++ que imprime el warning a stderr. En caso
+   * contrario devuelve una cadena vacía. Solo se aplica a decoradores de
+   * métodos (la advertencia se emite al principio del cuerpo).
+   */
+  private decoratorWarning(decorators: { name: string; args: Expression[] }[] | undefined, memberName: string): string {
+    if (!decorators) return "";
+    const deprecated = decorators.find(decorator => decorator.name === "deprecated");
+    if (!deprecated) return "";
+    let message = "deprecated";
+    if (deprecated.args.length) {
+      const first = deprecated.args[0];
+      if (first.kind === "LiteralExpression" && typeof first.value === "string") message = first.value;
+    }
+    // Emitimos `std::cerr << "WARN: ...\n";` al principio del cuerpo.
+    return `std::cerr << "WARN: '${memberName}' is deprecated: ${message}\\n"; `;
   }
   private methodMutates(method: ClassMethod): boolean { return method.body.statements.some(statement => this.statementMutatesThis(statement)); }
   private statementMutatesThis(node: Statement): boolean {
