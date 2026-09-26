@@ -1,0 +1,4 @@
+Elementos: 3
+Segundo: 25
+Etiqueta: active
+Primer inventario: 10

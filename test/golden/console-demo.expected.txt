@@ -1,0 +1,4 @@
+Hola desde console.log
+Info:421
+Debug en stderr? No, stdout:2
+Mezclando tipos:texto990

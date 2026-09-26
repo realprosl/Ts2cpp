@@ -1,0 +1,5 @@
+Identidad: hola
+Explícito: 7
+Primero: 10
+Caja number: 42
+Caja string: generic

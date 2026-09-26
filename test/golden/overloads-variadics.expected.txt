@@ -1,0 +1,5 @@
+number=42
+string=hello
+generic
+mixed: 10, 1
+7 explicit
