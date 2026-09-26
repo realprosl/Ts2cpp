@@ -793,18 +793,30 @@ export class TypeChecker {
       case "ArrayLiteralExpression": {
         if (expected && isArrayType(expected)) {
           const element = arrayElement(expected);
-          node.elements.forEach(item => this.require(this.expression(item, scope, element), element, item));
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") {
+              // Para un spread, el tipo del operando debe ser compatible con el
+              // `element` (otro vector del mismo tipo, una tupla del mismo tipo, o el propio `element`).
+              const actual = this.expression(item.expression, scope);
+              if (actual === element || actual === `${element}[]` || isTupleType(actual)) {
+                // ok
+              } else this.report(item, `Spread: se esperaba vector de ${element}, se obtuvo ${actual}`);
+            } else this.require(this.expression(item, scope, element), element, item);
+          }
           result = expected;
         } else if (expected && isTupleType(expected)) {
           const items = tupleElements(expected);
           if (items.length !== node.elements.length) this.report(node, `La tupla espera ${items.length} elementos, recibió ${node.elements.length}`);
           node.elements.forEach((item, index) => {
-            const itemType = items[index]; const actual = this.expression(item, scope, itemType);
-            if (itemType) this.require(actual, itemType, item);
+            if (item.kind === "SpreadElement") this.report(item, "Spread no se admite en tuplas (tamaño fijo)");
+            else { const itemType = items[index]; const actual = this.expression(item, scope, itemType); if (itemType) this.require(actual, itemType, item); }
           });
           result = expected;
         } else {
-          const items = node.elements.map(item => this.expression(item, scope));
+          const items = node.elements.map(item => {
+            if (item.kind === "SpreadElement") return this.expression(item.expression, scope);
+            return this.expression(item, scope);
+          });
           if (!items.length) { this.report(node, "Un array vacío necesita una anotación de tipo"); result = "void[]"; }
           else result = items.every(item => item === items[0]) ? arrayType(items[0]) : tupleType(items);
         }
@@ -1214,7 +1226,7 @@ export class TypeChecker {
       if (expression.kind === "MemberCallExpression") return expressionMutates(expression.object) || expression.args.some(expressionMutates);
       if (expression.kind === "MemberExpression") return expressionMutates(expression.object);
       if (expression.kind === "IndexExpression") return expressionMutates(expression.object) || expressionMutates(expression.index);
-      if (expression.kind === "ArrayLiteralExpression") return expression.elements.some(expressionMutates);
+      if (expression.kind === "ArrayLiteralExpression") return expression.elements.some(item => item.kind === "SpreadElement" ? expressionMutates(item.expression) : expressionMutates(item));
       return false;
     };
     const statementMutates = (statement: Statement): boolean => {

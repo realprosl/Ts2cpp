@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -527,8 +527,15 @@ export class Parser {
       return { kind: "NewExpression", className, args, span: span(token.span.start, close.span.end) };
     }
     if (token.kind === "[") {
-      const elements: Expression[] = [];
-      if (!this.check("]")) do { elements.push(this.expression()); } while (this.match(","));
+      const elements: ArrayElement[] = [];
+      if (!this.check("]")) do {
+        if (this.match("...")) {
+          const expr = this.expression();
+          elements.push({ kind: "SpreadElement", expression: expr, span: expr.span });
+        } else {
+          elements.push(this.expression());
+        }
+      } while (this.match(","));
       const close = this.consume("]", "Se esperaba ']' después del literal");
       return { kind: "ArrayLiteralExpression", elements, span: span(token.span.start, close.span.end) };
     }

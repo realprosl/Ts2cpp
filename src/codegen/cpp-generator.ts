@@ -235,7 +235,7 @@ export class CppGenerator {
     if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand);
     if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand);
     if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg));
-    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => this.expressionMutatesThis(item));
+    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression) : this.expressionMutatesThis(item));
     if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement)) : this.expressionMutatesThis(node.body);
     if (node.kind === "MemberCallExpression") return this.expressionMutatesThis(node.object) || node.args.some(arg => this.expressionMutatesThis(arg));
     if (node.kind === "MemberExpression") return this.expressionMutatesThis(node.object);
@@ -465,8 +465,29 @@ export class CppGenerator {
       case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(node.name);
       case "ArrayLiteralExpression": {
         const type = this.expressionType(node);
+        if (type && isTupleType(type)) {
+          const values = node.elements.map(item => this.emitExpression(item));
+          return `std::make_tuple(${values.join(", ")})`;
+        }
+        if (node.elements.some(item => item.kind === "SpreadElement")) {
+          // Spread en array literal: generamos un lambda inmediato que toma
+          // el vector destino por valor (RVO al final) y va `push_back` para
+          // cada elemento y `insert(end, src.begin(), src.end())` para cada
+          // spread. La sintaxis `[](auto dst) -> decltype(dst) { ... return dst; }(T{})`
+          // deja el resultado como una expresión de tipo T (copy elision).
+          const cpp = cppType(type ?? "void[]");
+          const items: string[] = [];
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") {
+              items.push(`dst.insert(dst.end(), (${this.emitExpression(item.expression)}).begin(), (${this.emitExpression(item.expression)}).end());`);
+            } else {
+              items.push(`dst.push_back(${this.emitExpression(item)});`);
+            }
+          }
+          return `([](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; })(${cpp}{})`;
+        }
         const values = node.elements.map(item => this.emitExpression(item)).join(", ");
-        return type && isTupleType(type) ? `std::make_tuple(${values})` : `${cppType(type ?? "void[]")}{${values}}`;
+        return `${cppType(type ?? "void[]")}{${values}}`;
       }
       case "ArrowFunctionExpression": {
         const type = this.expressionType(node); const result = type && isFunctionType(type) ? functionResult(type) : (node.returnType ?? "void");

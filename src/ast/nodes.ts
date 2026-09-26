@@ -42,7 +42,13 @@ export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpress
 export type Expression = LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression;
 export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; raw?: string; span: Span }
 export interface IdentifierExpression { kind: "IdentifierExpression"; name: string; span: Span }
-export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: Expression[]; span: Span }
+export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: ArrayElement[]; span: Span }
+// Un `ArrayElement` puede ser una expresión normal o un spread (`...expr`).
+// El spread se aplica como `insert`/`push_back` sobre el `std::vector` del
+// literal resultante. El dialecto no soporta `...[a, b, ...rest]` con varios
+// spreads anidados; el primer spread debe ser el último elemento.
+export type ArrayElement = Expression | SpreadElement;
+export interface SpreadElement { kind: "SpreadElement"; expression: Expression; span: Span }
 export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }
 // `parts` y `expressions` tienen la misma longitud menos 1 (siempre hay un
 // parte más que expresiones). Las partes son los trozos literales; las
