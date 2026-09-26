@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -36,6 +36,10 @@ export class Parser {
     if (this.check("@")) return this.classDeclaration(true, exported);
     if (this.match("type")) return this.typeAliasDeclaration(this.previous(), exported);
     if (this.match("enum")) return this.enumDeclaration(this.previous(), exported);
+    if (exported) {
+      if (this.match("default")) return this.exportDefaultDeclaration();
+      if (this.match("{")) return this.exportNamedDeclaration();
+    }
     if (exported) this.error(this.peek(), "'export' debe preceder a let, const, function, async function, interface o class");
     if (this.match("if")) return this.ifStatement(this.previous());
     if (this.match("while")) return this.whileStatement(this.previous());
@@ -276,6 +280,52 @@ export class Parser {
   // `enum X { Member1, Member2 = expr, ... }`. Soporta enums numéricos (auto-incremento
   // desde 0, valores explícitos opcionales) y de cadena (todos los miembros deben tener
   // valor explícito). Se rechazan enums mixtos y valores computados.
+  // `export default <decl-or-expr>;`. Parsea el cuerpo como una declaración
+  // completa (let/const/class/function) o una expresión, terminada por ';'.
+  // El dialecto emite un marcador `// export default: <kind>` en C++ pero
+  // compila normalmente (single-translation-unit no necesita dispatch).
+  private exportDefaultDeclaration(): ExportDefaultDeclaration {
+    const start = this.previous().span.start;
+    let declaration: Statement | Expression;
+    if (this.match("class")) {
+      declaration = this.classDeclaration(true, false);
+    } else if (this.match("function")) {
+      declaration = this.functionDeclaration(this.previous(), false, false);
+    } else if (this.match("async")) {
+      this.match("function");
+      declaration = this.functionDeclaration(this.previous(), true, false);
+    } else if (this.match("let", "const")) {
+      declaration = this.variable(this.previous(), false);
+    } else {
+      declaration = this.expression();
+      this.consume(";", "Se esperaba ';' después de la expresión de 'export default'");
+    }
+    const endSpan = (declaration as { span?: import("../core/span.ts").Span }).span;
+    return { kind: "ExportDefaultDeclaration", declaration, span: span(start, endSpan?.end ?? start) };
+  }
+
+  // `export { name1, name2 as alias2, ... };`. Marca los bindings como
+  // exportados sin generar código nuevo (ya están declarados arriba).
+  private exportNamedDeclaration(): ExportNamedDeclaration {
+    const start = this.previous().span.start;
+    const specifiers: ExportSpecifier[] = [];
+    do {
+      const nameToken = this.consume("identifier", "Se esperaba un nombre en el export");
+      let alias: string | undefined;
+      if (this.check("identifier") && this.peek().lexeme === "as") { this.advance(); alias = this.consume("identifier", "Se esperaba un alias después de 'as'").lexeme; }
+      specifiers.push({ kind: "ExportSpecifier", name: nameToken.lexeme, alias, span: span(nameToken.span.start, this.peek().span.start) });
+    } while (this.match(","));
+    this.consume("}", "Se esperaba '}' al final de la lista de exports");
+    let source: string | undefined;
+    if (this.check("identifier") && this.peek().lexeme === "from") {
+      this.advance();
+      const sourceToken = this.consume("string", "Se esperaba un literal de módulo después de 'from'");
+      source = (sourceToken as { literal?: string }).literal;
+    }
+    this.consume(";", "Se esperaba ';' después de 'export {...}'");
+    return { kind: "ExportNamedDeclaration", specifiers, source, span: span(start, this.peek().span.start) };
+  }
+
   private enumDeclaration(keyword: Token, exported = false): Statement {
     const name = this.consume("identifier", "Se esperaba el nombre del enum");
     this.consume("{", "Se esperaba '{' después del nombre del enum");

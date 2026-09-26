@@ -33,6 +33,9 @@ export class CppGenerator {
   // referencias en el código generado se reescriben al pasar por `cppName`.
   private readonly runtimeGlobals = new Set(["console", "fs", "path", "process", "JSON"]);
   private readonly localRenames = new Map<string, string>();
+  // Map de alias introducidos por `export { x as y }` para que el codegen
+  // resuelva `y` al símbolo original `x`. Se rellena desde type-checker.
+  private readonly exportAliases = new Map<string, string>();
   private destructuringCounter = 0;
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
@@ -40,19 +43,25 @@ export class CppGenerator {
   }
   // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
   // por colisión con un global del runtime, devuelve el nombre prefijado.
+  private resolveAlias(name: string): string { return this.exportAliases.get(name) ?? name; }
   private cppName(name: string): string {
     return this.localRenames.get(name) ?? name;
   }
   private prepare(program: Program): void {
-    const interfaces = program.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
-    const classes = program.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
+    // `export default` envuelve una declaración; el dialecto es single-
+    // translation-unit, así que la declaración se procesa como si fuera
+    // top-level directa. Unwrap para que `prepare` la vea igual que las demás.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrapped = program.statements.map(unwrap);
+    const interfaces = unwrapped.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
+    const classes = unwrapped.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
     this.interfaceNames.clear(); interfaces.forEach(contract => this.interfaceNames.add(contract.name));
     this.classNames.clear(); classes.forEach(node => this.classNames.add(node.name));
     this.aliasNames.clear();
     this.enumNames.clear();
     this.enumUnderlying.clear();
     this.topLevelFunctions.clear();
-    for (const stmt of program.statements) {
+    for (const stmt of unwrapped) {
       if (stmt.kind === "TypeAliasDeclaration") this.aliasNames.add(stmt.name);
       if (stmt.kind === "EnumDeclaration") { this.enumNames.add(stmt.name); this.enumUnderlying.set(stmt.name, stmt.underlying); }
       if (stmt.kind === "FunctionDeclaration") {
@@ -62,6 +71,10 @@ export class CppGenerator {
       }
     }
     this.indent = 0;
+    // Escaneamos el programa para detectar alias de export (`export { x as y }`)
+    // y registrarlos en `exportAliases` para que el codegen los resuelva.
+    this.exportAliases.clear();
+    for (const stmt of unwrapped) if (stmt.kind === "ExportNamedDeclaration") for (const spec of stmt.specifiers) if (spec.alias) this.exportAliases.set(spec.alias, spec.name);
   }
   private usesTls(program: Program): boolean { return /\b(?:TlsContext|TlsConnection|createTlsServer|acceptTls|readTls|writeTls|closeTls)\b/.test(JSON.stringify(program)); }
   private usesCompilerAst(program: Program): boolean { return /\b(?:validateSyntax|syntaxTreeJson|syntaxTreeRecords|estaticAstRecords|estaticTypedAstJson|estaticTypedAstRecords)\b/.test(JSON.stringify(program)); }
@@ -69,16 +82,21 @@ export class CppGenerator {
     return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : [])];
   }
   generate(program: Program): string {
-    const functions = program.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
-    const interfaces = program.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
-    const classes = program.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
-    const enums = program.statements.filter((s): s is EnumDeclaration => s.kind === "EnumDeclaration");
-    this.prepare(program);
-    const topLevelVariables = program.statements.filter((s): s is VariableDeclaration => s.kind === "VariableDeclaration");
-    const topLevelOther = program.statements.filter(s =>
+    // `export default` envuelve una declaración; hacemos unwrap para que el
+    // dialecto (single-translation-unit) las procese como top-level directas.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrapped = { ...program, statements: program.statements.map(unwrap) };
+    const functions = unwrapped.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
+    const interfaces = unwrapped.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
+    const classes = unwrapped.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
+    const enums = unwrapped.statements.filter((s): s is EnumDeclaration => s.kind === "EnumDeclaration");
+    this.prepare(unwrapped);
+    const topLevelVariables = unwrapped.statements.filter((s): s is VariableDeclaration => s.kind === "VariableDeclaration");
+    const topLevelOther = unwrapped.statements.filter(s =>
       s.kind !== "FunctionDeclaration" && s.kind !== "InterfaceDeclaration" &&
       s.kind !== "ClassDeclaration" && s.kind !== "VariableDeclaration" &&
-      s.kind !== "TypeAliasDeclaration" && s.kind !== "EnumDeclaration"
+      s.kind !== "TypeAliasDeclaration" && s.kind !== "EnumDeclaration" &&
+      s.kind !== "ExportNamedDeclaration"
     );
     const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
@@ -138,14 +156,19 @@ export class CppGenerator {
     return lines.join("\n");
   }
   generateModule(program: Program, combinedProgram: Program, headerName: string, initializer: string, entryInitializers?: string[]): string {
+    // `export default` envuelve una declaración; el dialecto es single-
+    // translation-unit, así que la declaración se procesa como si fuera
+    // top-level directa. Unwrap antes del flujo principal.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrappedProgram = { ...program, statements: program.statements.map(unwrap) };
     this.prepare(combinedProgram);
-    const allFunctions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
+    const allFunctions = unwrappedProgram.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
     const functions = allFunctions.filter(statement => statement.typeParameters.length === 0);
     const privateFunctions = allFunctions.filter(statement => !statement.exported);
-    const privateInterfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
-    const privateClasses = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
-    const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration");
-    const topLevel = program.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration");
+    const privateInterfaces = unwrappedProgram.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
+    const privateClasses = unwrappedProgram.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
+    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration");
+    const topLevel = unwrappedProgram.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration" && statement.kind !== "ExportNamedDeclaration");
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of privateClasses) lines.push(this.classForward(node));
@@ -408,6 +431,18 @@ export class CppGenerator {
         const declaredType = node.declaredType ? cppType(node.declaredType) : "auto";
         return `${this.pad()}${declaredType} ${node.name} = ${this.emitExpression(node.initializer)};`;
       }
+      case "ExportDefaultDeclaration": {
+        // Marcador en C++ + emite la declaración subyacente. El dialecto es
+        // single-translation-unit, así que `export default` no genera
+        // dispatch runtime; solo registramos la intención para tooling.
+        return `// export default: ${node.declaration.kind}\n` + this.emitStatement(node.declaration as Statement);
+      }
+      case "ExportNamedDeclaration": {
+        // `export { x as y }` no genera código nuevo (las declaraciones ya
+        // están emitidas). Solo añadimos un marcador para tooling.
+        const names = node.specifiers.map(s => s.alias ? `${s.name} as ${s.alias}` : s.name).join(", ");
+        return `// export { ${names}${node.source ? ` } from "${node.source}"` : "}"}`;
+      }
     }
   }
 
@@ -552,7 +587,7 @@ export class CppGenerator {
         }
         return parts.length ? `ets::concat(${parts.join(", ")})` : `std::string("")`;
       }
-      case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(node.name);
+      case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(this.resolveAlias(node.name));
       case "ArrayLiteralExpression": {
         const type = this.expressionType(node);
         if (type && isTupleType(type)) {
@@ -695,7 +730,8 @@ export class CppGenerator {
           }
         }
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);
-        return node.callee === "print" ? `print(${args.join(", ")})` : `${node.callee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        const callee = this.resolveAlias(node.callee);
+        return callee === "print" ? `print(${args.join(", ")})` : `${callee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);

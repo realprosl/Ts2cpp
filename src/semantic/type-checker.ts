@@ -1,6 +1,6 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
-import { Scope, type FunctionSignature, type FunctionSymbol } from "./symbols.ts";
+import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
@@ -287,8 +287,11 @@ export class TypeChecker {
     // nombre de alias (o a su instanciación genérica) por su forma canónica.
     // Así codegen ve directamente `number[]` en vez de `NumberArray`.
     this.expandAliasesInProgram(program);
+    // `export default` envuelve una declaración; hacemos unwrap para que las
+    // declaraciones internas se declaren igual que las top-level.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
     for (const statement of program.statements) if (statement.kind === "ClassDeclaration") this.validateClass(statement, global);
-    for (const statement of program.statements) if (statement.kind === "FunctionDeclaration") this.declareFunction(statement, global);
+    for (const statement of program.statements) if (unwrap(statement).kind === "FunctionDeclaration") this.declareFunction(unwrap(statement) as FunctionDeclaration, global);
     for (const statement of program.statements) this.statement(statement, global);
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
   }
@@ -742,6 +745,24 @@ export class TypeChecker {
         if (expected === "void") this.report(node, "Un recurso 'using' no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
         if (!scope.define(node.name, { kind: "variable", type: expected, mutable: false })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        break;
+      }
+      case "ExportDefaultDeclaration": {
+        // `export default <decl-or-expr>` parsea una declaración completa
+        // (class/function/let/const) o una expresión. Se type-checkea
+        // normalmente; el codegen emite un marcador pero compila igual.
+        this.statement(node.declaration as Statement, scope);
+        break;
+      }
+      case "ExportNamedDeclaration": {
+        // `export { name1, name2 as alias2 }` re-exporta bindings ya
+        // declarados arriba. Verificamos que existan; el alias es opcional
+        // y se registra en el scope para que pueda usarse como nombre local.
+        for (const spec of node.specifiers) {
+          const original = scope.resolve(spec.name);
+          if (!original) { this.report(spec, `Símbolo no definido '${spec.name}'`); continue; }
+          if (spec.alias) scope.define(spec.alias, { ...original, name: spec.alias } as unknown as SymbolInfo);
+        }
         break;
       }
       case "FunctionDeclaration": {

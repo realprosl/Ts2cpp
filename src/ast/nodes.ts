@@ -4,7 +4,7 @@ export type PrimitiveType = "number" | "string" | "boolean" | "void" | "undefine
 export type TypeName = string;
 export type ParameterPassing = "automatic" | "mut" | "out" | "move";
 export interface Program { kind: "Program"; statements: Statement[]; span: Span }
-export type Statement = VariableDeclaration | FunctionDeclaration | InterfaceDeclaration | ClassDeclaration | BlockStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement | BreakStatement | ContinueStatement | ReturnStatement | TypeAliasDeclaration | EnumDeclaration | SwitchStatement | ForOfStatement | ForInStatement | DeleteStatement | UsingDeclaration;
+export type Statement = VariableDeclaration | FunctionDeclaration | InterfaceDeclaration | ClassDeclaration | BlockStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement | BreakStatement | ContinueStatement | ReturnStatement | TypeAliasDeclaration | EnumDeclaration | SwitchStatement | ForOfStatement | ForInStatement | DeleteStatement | UsingDeclaration | ExportDefaultDeclaration | ExportNamedDeclaration;
 export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: boolean; mutable: boolean; name: string; declaredType?: TypeName; initializer: Expression; arrayBindings?: ArrayBinding[]; span: Span }
 // `using name = expr;` (TC39 stage 3): declara un recurso cuyo destructor se
 // invoca al salir del bloque. En el dialecto es syntactic sugar sobre
@@ -12,6 +12,9 @@ export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: b
 // al final del bloque contenedor (RAII automático). Si el tipo define un método
 // `dispose()`, también se invoca explícitamente.
 export interface UsingDeclaration { kind: "UsingDeclaration"; exported?: boolean; name: string; declaredType?: TypeName; initializer: Expression; span: Span }
+export interface ExportDefaultDeclaration { kind: "ExportDefaultDeclaration"; declaration: Statement | Expression; span: Span }
+export interface ExportSpecifier { kind: "ExportSpecifier"; name: string; alias?: string; span: Span }
+export interface ExportNamedDeclaration { kind: "ExportNamedDeclaration"; specifiers: ExportSpecifier[]; source?: string; span: Span }
 // `ArrayBinding` representa un binding de destructuring de arrays del estilo
 // `const [a, b, c] = arr;`. Cada elemento es el nombre de una variable local
 // (y opcionalmente su tipo declarado). No hay default values ni rest
