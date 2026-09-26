@@ -76,7 +76,10 @@ try {
     await mkdir(dirname(config.output.binary), { recursive: true });
     const tlsLibraries = result.cpp.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
     const libraries = config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`);
-    await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, output, "-o", config.output.binary, ...libraries, ...tlsLibraries, ...config.compiler.linkFlags], logger);
+    // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
+    // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
+    // el objeto para resolver símbolos externos en las libs.
+    await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...libraries, ...tlsLibraries], logger);
     console.log(`Compilado ${config.output.binary}`);
   }
   await logger?.record("info", "transpile", "finished", { output, binary: nativeBuild ? config?.output.binary : undefined });

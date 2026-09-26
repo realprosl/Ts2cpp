@@ -801,18 +801,28 @@ export class TypeChecker {
         break;
       }
       case "IdentifierExpression": {
+        // Los enums se referencian por nombre (`Color.Green`); permitimos el identificador
+        // desnudo como valor y devolvemos el nombre del enum como tipo de la expresión.
+        // Comprobamos esto ANTES del scope porque `Color` está registrado como
+        // TypeSymbol (no como variable), y sin este atajo el type-checker diría
+        // que `Color` no es un valor.
+        if (this.enums.has(node.name)) { result = node.name; break; }
+        // Luego buscamos en el scope: una declaración local (variable,
+        // parámetro) debe ganar sobre el tipo builtin del mismo nombre. Esto
+        // permite `const path: string = argument(1); path + ".ext"` sin que
+        // el type-checker reclame "Path" donde se espera "string".
+        const symbol = scope.resolve(node.name);
+        if (symbol) {
+          if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
+          else { result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node); }
+          break;
+        }
         if (node.name === "console") { result = "Console"; break; }
         if (node.name === "fs") { result = "Filesystem"; break; }
         if (node.name === "path") { result = "Path"; break; }
         if (node.name === "process") { result = "Process"; break; }
         if (node.name === "JSON") { result = "Json"; break; }
-        // Los enums se referencian por nombre (`Color.Green`); permitimos el identificador
-        // desnudo como valor y devolvemos el nombre del enum como tipo de la expresión.
-        if (this.enums.has(node.name)) { result = node.name; break; }
-        const symbol = scope.resolve(node.name);
-        if (!symbol) this.report(node, `Símbolo no definido '${node.name}'`);
-        else if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
-        else { result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node); }
+        this.report(node, `Símbolo no definido '${node.name}'`);
         break;
       }
       case "UnaryExpression": {

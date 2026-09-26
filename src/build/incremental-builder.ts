@@ -187,12 +187,17 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   let linked = false;
   const binaryExists = await fileExists(binaryPath);
   if (!binaryExists || linkFlagsChanged) {
+    // Si la salida incluye la cabecera TLS, hay que enlazar libssl/libcrypto.
+    // En modo incremental esto se deduce del .cpp que escribimos arriba.
+    const needsTls = result.cpp.includes("runtime/ets_tls.hpp");
+    const tlsLibraries = needsTls ? ["-lssl", "-lcrypto"] : [];
     const linkArgs = [
       ...config.compiler.flags.filter(flag => flag !== "-c" && flag !== "-flto" && !flag.startsWith("-Wl,")),
       objectPath,
       "-o", binaryPath,
       ...config.compiler.linkFlags,
       ...config.linkLibraries.map(lib => lib.startsWith("-") ? lib : `-l${lib}`),
+      ...tlsLibraries,
     ];
     await mkdir(dirname(binaryPath), { recursive: true });
     await runNative(config.compiler.command, linkArgs);

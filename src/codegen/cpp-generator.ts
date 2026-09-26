@@ -24,9 +24,20 @@ export class CppGenerator {
   private inClassMethod = false;
   private inStaticInit = false;
   private inAsyncFunction = false;
+  // Renombrados de variables que colisionan con singletons globales del runtime
+  // (`console`, `fs`, `path`, `process`, `JSON`). Se prefijan con `ets_local_`
+  // en C++ para evitar la colisión con `inline ets_path path{}` etc. Las
+  // referencias en el código generado se reescriben al pasar por `cppName`.
+  private readonly runtimeGlobals = new Set(["console", "fs", "path", "process", "JSON"]);
+  private readonly localRenames = new Map<string, string>();
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
+  }
+  // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
+  // por colisión con un global del runtime, devuelve el nombre prefijado.
+  private cppName(name: string): string {
+    return this.localRenames.get(name) ?? name;
   }
   private prepare(program: Program): void {
     const interfaces = program.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
@@ -74,7 +85,13 @@ export class CppGenerator {
       const previous = this.inStaticInit; this.inStaticInit = true;
       const initializer = this.emitExpression(variable.initializer);
       this.inStaticInit = previous;
-      lines.push(`static ${cppType(type)} ${variable.name} = ${initializer};`);
+      // Si el nombre colisiona con un singleton global del runtime, lo
+      // renombramos en C++ y registramos el rename para que las referencias
+      // posteriores se emitan con el nombre canónico.
+      const cppName = this.runtimeGlobals.has(variable.name)
+        ? (this.localRenames.set(variable.name, `ets_local_${variable.name}`), `ets_local_${variable.name}`)
+        : variable.name;
+      lines.push(`static ${cppType(type)} ${cppName} = ${initializer};`);
     }
     if (topLevelVariables.length) lines.push("");
     for (const fn of functions) lines.push(this.function(fn), "");
@@ -253,7 +270,7 @@ export class CppGenerator {
   }
   private emitStatement(node: Statement): string {
     switch (node.kind) {
-      case "VariableDeclaration": return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${node.name} = ${this.emitExpression(node.initializer)};`;
+      case "VariableDeclaration": return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
       case "ClassDeclaration": return "";
@@ -273,7 +290,7 @@ export class CppGenerator {
       case "WhileStatement": return `${this.pad()}while (${this.emitExpression(node.condition)}) ${this.statementBody(node.body)}`;
       case "ForStatement": {
         let initializer = "";
-        if (node.initializer?.kind === "VariableDeclaration") initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${node.initializer.name} = ${this.emitExpression(node.initializer.initializer)}`;
+        if (node.initializer?.kind === "VariableDeclaration") initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${this.cppName(node.initializer.name)} = ${this.emitExpression(node.initializer.initializer)}`;
         else if (node.initializer?.kind === "ExpressionStatement") initializer = this.emitExpression(node.initializer.expression);
         return `${this.pad()}for (${initializer}; ${node.condition ? this.emitExpression(node.condition) : ""}; ${node.increment ? this.emitExpression(node.increment) : ""}) ${this.statementBody(node.body)}`;
       }
@@ -391,7 +408,7 @@ export class CppGenerator {
         }
         return parts.length ? `ets::concat(${parts.join(", ")})` : `std::string("")`;
       }
-      case "IdentifierExpression": return node.name === "this" ? "(*this)" : node.name;
+      case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(node.name);
       case "ArrayLiteralExpression": {
         const type = this.expressionType(node);
         const values = node.elements.map(item => this.emitExpression(item)).join(", ");

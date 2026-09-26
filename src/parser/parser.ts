@@ -430,7 +430,13 @@ export class Parser {
         const close = this.consume(")", "Se esperaba ')' después de los argumentos");
         expr = { kind: "CallExpression", callee: expr.name, typeArguments, args, span: span(expr.span.start, close.span.end) };
       } else if (this.match(".")) {
-        const member = this.consume("identifier", "Se esperaba el nombre del miembro");
+        // Aceptamos `delete` como nombre de miembro (Map/Set.delete, etc.).
+        // La keyword `delete` también se usa como statement (`delete map[k];`)
+        // y se desambigua en el dispatcher de `statement()` antes de llegar
+        // aquí: ese path consume `delete` y luego exige un `IndexExpression`,
+        // nunca `member_access`. Por tanto, en contexto de miembro `delete`
+        // es siempre un nombre de método.
+        const member = this.check("delete") ? this.advance() : this.consume("identifier", "Se esperaba el nombre del miembro");
         const typeArguments: TypeName[] = [];
         if (this.match("<")) {
           do { typeArguments.push(this.typeName()); } while (this.match(","));
