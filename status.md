@@ -9,7 +9,19 @@
   - Type-checker: `p.optional` ⇒ tipo efectivo `Optional<T>` (sin doble envoltorio). `matchOverload.requiredCount` ignora opcionales.
   - Codegen: firma C++ envuelve en `ets::Optional<T>` si `optional=true`. Call sites rellenan args omitidos con `Optional<T>::none()`.
 - **Bug colateral**: `JSON_HELPERS` y `OPTIONAL_HELPERS` heredaban de `Object.prototype` (igual que `KEYWORDS` antes). Llamar a `toString`, `hasOwnProperty`, etc., entraba al chequeo JSON/OPTIONAL con el método heredado y crasheaba. Arreglado con `Object.assign(Object.create(null), {...})`.
-- **Próxima fase**: Fase 1.7 — Template literals con `${expr}` interpolado.
+- **Próxima fase**: Fase 1.7 — Template literals con `${expr}`.
+
+### Fase 1.7 — Template literals (verificado, sin cambios)
+
+- **Tests**: el golden de `template-strings-demo.ets` coincide con stdout. Suite 126/126 PASS ya cubre el caso.
+- **Estado**: ya estaba implementado antes de esta sesión:
+  - Lexer: depth-tracking para `${...}` dentro de backticks (lexer.ts:104-134).
+  - Parser: `templateLiteral()` parte el raw en `parts[]` y `expressions[]` reusando el sub-parser (parser.ts:645-681).
+  - Type-checker: expresiones interpoladas se evalúan en su scope.
+  - Runtime: `ets::concat(parts...)` en `runtime/ets_string.hpp` (variadic template con `(oss << ... << parts)`).
+  - Codegen: emite `ets::concat(std::string("literal"), expr, ...)` (cpp-generator.ts:504-513).
+- **Demo**: `examples/template-strings-demo.ets` (6 escenarios con strings, numbers, booleans, anidamiento).
+- **Próxima fase**: Fase 1.8 — `for await...of`.
 
 ## Plan en cola
 
@@ -23,8 +35,8 @@
 | 1.4 | `?.` (optional chaining) sobre `Optional<T>` | ✅ commit 764317e |
 | 1.5 | Decoradores (TC39 stage 3) | ✅ commit aac7c30 |
 | 1.6 | Optional `?` en parámetros | ✅ commit bb6c360 |
-| 1.7 | Template literals con `${expr}` interpolado | ⏳ **siguiente** |
-| 1.8 | `for await...of` | ⏳ |
+| 1.7 | Template literals con `${expr}` interpolado | ✅ ya estaba, verificado |
+| 1.8 | `for await...of` | ⏳ **siguiente** |
 | 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ |
 | 1.10 | Match expressions (TC39 stage 2) | ⏳ |
 | 1.11 | `satisfies` operator | ⏳ |
