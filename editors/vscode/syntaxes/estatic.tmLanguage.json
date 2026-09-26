@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Estatic",
+  "scopeName": "source.estatic",
+  "patterns": [
+    { "include": "#parameter-modifiers" },
+    { "include": "source.ts" }
+  ],
+  "repository": {
+    "parameter-modifiers": {
+      "patterns": [
+        {
+          "match": "\\b(mut|out)\\b(?=\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*:)",
+          "name": "storage.modifier.parameter.estatic"
+        }
+      ]
+    }
+  }
+}

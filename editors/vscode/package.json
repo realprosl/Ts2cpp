@@ -1,0 +1,32 @@
+{
+  "name": "estatic-language-support",
+  "displayName": "Estatic Language Support",
+  "description": "Soporte sintáctico para el lenguaje Estatic",
+  "version": "0.1.0",
+  "publisher": "estatic",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "estatic",
+        "aliases": ["Estatic", "estatic"],
+        "extensions": [".ts", ".ets"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "estatic",
+        "scopeName": "source.estatic",
+        "path": "./syntaxes/estatic.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "estatic",
+        "path": "./snippets/estatic.json"
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "estatic",
+      "camelcase": "Estatic",
+      "scope": "source.estatic",
+      "path": ".",
+      "file-types": ["ts", "ets"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injections": "queries/injections.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Gramática Tree-sitter para Estatic",
+    "links": {}
+  }
+}

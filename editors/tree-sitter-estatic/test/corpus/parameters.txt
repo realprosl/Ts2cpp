@@ -1,0 +1,26 @@
+==================
+Constant and mutable borrows
+==================
+
+function inspect(value: Document): string { return value.name; }
+function update(mut value: Document): void { value.name = "updated"; }
+function produce(out value: Document): void { value = new Document(); }
+
+---
+
+(program
+  (function_declaration
+    name: (identifier)
+    parameters: (formal_parameters (required_parameter pattern: (identifier) type: (type_annotation (type_identifier))))
+    return_type: (type_annotation (predefined_type))
+    body: (statement_block (return_statement (member_expression object: (identifier) property: (property_identifier)))))
+  (function_declaration
+    name: (identifier)
+    parameters: (formal_parameters (required_parameter modifier: (parameter_modifier) pattern: (identifier) type: (type_annotation (type_identifier))))
+    return_type: (type_annotation (predefined_type))
+    body: (statement_block (expression_statement (assignment_expression left: (member_expression object: (identifier) property: (property_identifier)) right: (string)))))
+  (function_declaration
+    name: (identifier)
+    parameters: (formal_parameters (required_parameter modifier: (parameter_modifier) pattern: (identifier) type: (type_annotation (type_identifier))))
+    return_type: (type_annotation (predefined_type))
+    body: (statement_block (expression_statement (assignment_expression left: (identifier) right: (new_expression constructor: (identifier) arguments: (arguments)))))))
