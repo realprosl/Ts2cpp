@@ -658,3 +658,7 @@ build/tools/ets-ast-dump examples/hello.ets --syntax
 - Resolución DNS asíncrona y una capa HTTP completa.
 - Source maps entre `.ets` y C++.
 - Backend abstracto para generar C++ u otros destinos.
+
+## Licencia
+
+MIT — ver [`LICENSE`](LICENSE).
