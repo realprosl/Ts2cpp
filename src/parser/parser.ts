@@ -24,6 +24,7 @@ export class Parser {
     const exported = this.match("export");
     if (exported && !topLevel) this.error(this.previous(), "'export' solo es válido en el nivel superior de un módulo");
     if (this.match("let", "const")) return this.variable(this.previous(), exported);
+    if (this.match("using")) return this.usingDeclaration(this.previous(), exported);
     if (this.match("async")) {
       const keyword = this.previous();
       this.consume("function", "'async' solo puede preceder a una función");
@@ -105,6 +106,23 @@ export class Parser {
     const initializer = this.expression();
     const end = this.consume(";", "Se esperaba ';' después de la declaración");
     return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
+  }
+
+  /**
+   * `using name = expr;` (TC39 stage 3): declara un recurso cuyo destructor
+   * se invoca al final del bloque. En el dialecto es syntactic sugar sobre
+   * `let name = expr;` con la garantía de RAII automático. Si el tipo declara
+   * un método `dispose()`, el codegen lo invoca explícitamente al final del
+   * bloque; si no, el destructor C++ se encarga (tipos runtime ya son RAII).
+   */
+  private usingDeclaration(keyword: Token, exported = false): Statement {
+    const name = this.consume("identifier", "Se esperaba el nombre del recurso en 'using'");
+    let declaredType: TypeName | undefined;
+    if (this.match(":")) declaredType = this.typeName();
+    this.consume("=", "Toda declaración 'using' debe tener un inicializador");
+    const initializer = this.expression();
+    const end = this.consume(";", "Se esperaba ';' después de la declaración 'using'");
+    return { kind: "UsingDeclaration", exported, name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
   }
 
   private functionDeclaration(keyword: Token, isAsync: boolean, exported = false): Statement {

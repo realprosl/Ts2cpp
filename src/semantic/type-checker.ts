@@ -730,6 +730,20 @@ export class TypeChecker {
         } else if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
+      case "UsingDeclaration": {
+        // `using name = expr;` se type-checkea igual que `let name = expr`,
+        // con el matiz de que el binding es siempre inmutable (los recursos
+        // RAII no se reasignan) y se permite cualquier tipo Disposable o con
+        // destructor C++. Por ahora aceptamos cualquier tipo.
+        const expandedDeclared = node.declaredType ? this.expandType(node.declaredType, scope) : undefined;
+        const actual = this.expression(node.initializer, scope, expandedDeclared);
+        const expected = expandedDeclared ?? actual;
+        if (expandedDeclared) this.validateType(expandedDeclared, node, true, false, scope);
+        if (expected === "void") this.report(node, "Un recurso 'using' no puede ser de tipo void");
+        if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+        if (!scope.define(node.name, { kind: "variable", type: expected, mutable: false })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        break;
+      }
       case "FunctionDeclaration": {
         this.withTypeParameters(node.typeParameters, () => {
           const local = new Scope(scope);

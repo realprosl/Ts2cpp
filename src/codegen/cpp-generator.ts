@@ -400,6 +400,14 @@ export class CppGenerator {
       }
       case "ForOfStatement": return this.emitForOf(node);
       case "ForInStatement": return this.emitForIn(node);
+      case "UsingDeclaration": {
+        // `using name = expr` se desazucara a `T name = expr` con RAII
+        // automático: el destructor C++ del tipo se invoca al salir del
+        // bloque contenedor. Por ahora dejamos que C++ haga RAII solo;
+        // cuando se definan clases con `dispose()`, el codegen lo invocará.
+        const declaredType = node.declaredType ? cppType(node.declaredType) : "auto";
+        return `${this.pad()}${declaredType} ${node.name} = ${this.emitExpression(node.initializer)};`;
+      }
     }
   }
 
