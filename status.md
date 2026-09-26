@@ -71,7 +71,23 @@
   - Codegen: `exportAliases` map para resolver `y` → `x` cuando `export { x as y }`. Unwrap `ExportDefaultDeclaration` para que la declaración interna se procese como top-level directa.
 - **Ejemplo**: `exports-demo.ets` (6 escenarios: `export const`, `export function`, `export default`, `export { ... as alias }`).
 - **Limitación**: `import` NO está soportado (single-translation-unit). Los exports son marcas para tooling; en runtime el dialecto procesa todas las declaraciones como top-level.
-- **Próxima fase**: Fase 2 — Closure/lambda capture detection.
+## Última fase cerrada: Fase 2.1 — error reporting legible · commit 270050c
+
+- **Tests**: 130/130 PASS (78 unit + 52 integration)
+- **Cambios**:
+  - `src/core/diagnostic.ts`: `DiagnosticPhase`, `DiagnosticSeverity` exportados. `formatDiagnostic` reescrito con colores ANSI (por fase y severidad), gutter con número de línea, carets multilínea y sección de notes/hints. `formatDiagnostics` agrupa diagnósticos. Respeta `NO_COLOR` (estándar) y soporta `FORCE_COLOR=1`.
+  - `src/semantic/symbols.ts`: `Scope.names()` itera todos los nombres visibles (incluyendo padres).
+  - `src/semantic/type-checker.ts`: función top-level `levenshtein(a, b)`. Método privado `suggestSimilar(name, candidates)` que devuelve hint `¿Quisiste decir 'X'?` si hay candidato a distancia ≤2. `report` sobrecargado con `hint?` y `notes?` opcionales. Aplicado a "Símbolo no definido" y "Función no definida".
+  - `src/cli.ts`: usa `formatDiagnostics`.
+- **Output ejemplo**:
+  ```
+  error[semantic]: Función no definida 'gret'
+    --> /tmp/test-suggest.ets:4:1
+  4 | gret();
+    | ^^^^^^
+    = hint: ¿Quisiste decir 'greet'?
+  ```
+- **Próxima fase**: Fase 2.2 — docs completas (README, LIMITATIONS, ejemplos organizados).
 
 ## Plan en cola
 
@@ -95,7 +111,16 @@
 | 1.14 | `const` generics | ⏸️ pospuesto (no aplica sin reificación) |
 | 1.15 | Named/default exports round-trip | ✅ commit 5bb149a |
 
-### Fase 2 — Rendimiento del compilador
+### Fase 2 — Pulido del dialecto
+
+| # | Mejora | Estado |
+|---|---|---|
+| 2.1 | Error reporting legible (colores, multi-line, did you mean) | ✅ commit 270050c |
+| 2.2 | Documentación completa (README, LIMITATIONS, ejemplos) | ⏳ **siguiente** |
+| 2.3 | Compilación incremental pulida (verbose, errores claros) | ⏸️ pospuesto |
+| 2.4 | Página web de demos | ⏸️ pospuesto |
+
+### Fase 3 — Compilación incremental
 
 - [ ] Caché de tokens/AST entre invocaciones (daemon que escucha en socket)
 - [ ] Worker pool para compilación paralela
