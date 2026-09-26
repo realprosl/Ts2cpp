@@ -865,6 +865,17 @@ export class TypeChecker {
         }
         const right = this.expression(node.right, scope);
         if (node.operator === "+" && left === "string" && right === "string") result = "string";
+        else if (node.operator === "??") {
+          // `??` (nullish coalescing) no se admite en este dialecto: el único
+          // ausente sería `void`, pero `void` puro no es un valor reutilizable
+          // en C++ (no tiene `.value_or`) y las uniones `T | void` que produce
+          // el lenguaje se modelan con `std::variant<T, ets::void_t>`, que
+          // tampoco tiene `.value_or`. El dialecto prefiere la API explícita:
+          //   - `Map.has(k) ? m.get(k) : default`
+          //   - `result.isOk() ? result.value() : default`
+          this.report(node, "El operador '??' no se admite; usá la API explícita del tipo (Map.has/get, Result.isOk/value)");
+          result = left ?? right;
+        }
         else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
         else if (["<", "<=", ">", ">="].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "boolean"; }
         else if (["==", "!="].includes(node.operator)) { if (left !== right) this.report(node, "Los operandos comparados deben tener el mismo tipo"); result = "boolean"; }
@@ -1072,6 +1083,16 @@ export class TypeChecker {
         if (!this.mutableTarget(node.target, scope)) this.report(node, "No se puede modificar una constante ni uno de sus campos");
         else this.markCapturedMutation(node.target, scope);
         this.require(value, targetType, node.value); result = targetType;
+        break;
+      }
+      case "TernaryExpression": {
+        // `cond ? then : else`. La condición debe ser booleana; las dos
+        // ramas deben producir tipos compatibles (uno asignable al otro).
+        this.require(this.expression(node.condition, scope, "boolean"), "boolean", node.condition);
+        const thenType = this.expression(node.thenBranch, scope);
+        const elseType = this.expression(node.elseBranch, scope, thenType);
+        if (!typeMatches(elseType, thenType) && !typeMatches(thenType, elseType)) this.report(node, "Las ramas del ternario deben tener tipos compatibles");
+        result = thenType;
         break;
       }
     }

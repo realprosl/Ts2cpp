@@ -5,7 +5,7 @@ import { Lexer } from "../lexer/lexer.ts";
 import type { Token, TokenKind } from "../lexer/token.ts";
 import { arrayType, functionType, genericType, tupleType, typeofType } from "../types/type-system.ts";
 
-const PRECEDENCE: Partial<Record<TokenKind, number>> = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, "<=": 4, ">": 4, ">=": 4, "instanceof": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 };
+const PRECEDENCE: Partial<Record<TokenKind, number>> = { "??": 1, "||": 2, "&&": 3, "==": 4, "!=": 4, "<": 5, "<=": 5, ">": 5, ">=": 5, "instanceof": 5, "+": 6, "-": 6, "*": 7, "/": 7, "%": 7 };
 
 export class Parser {
   private readonly tokens: Token[];
@@ -345,7 +345,25 @@ export class Parser {
     return { kind: "BlockStatement", statements, span: span(open.span.start, close.span.end) };
   }
 
-  private expression(): Expression { return this.isArrowStart() ? this.arrowFunction() : this.assignment(); }
+  private expression(): Expression {
+    const left = this.isArrowStart() ? this.arrowFunction() : this.assignment();
+    return this.ternary(left);
+  }
+  // `cond ? then : else`. La condición se parsea por `assignment()`, lo que
+  // excluye el `?:` de la derecha (right-associative). Si no hay `:`, devuelve
+  // la expresión sin envolver.
+  private ternary(condition: Expression): Expression {
+    if (!this.match("?")) return condition;
+    const thenBranch = this.expression();
+    if (!thenBranch) { this.error(this.previous(), "Se esperaba una expresión después de '?'"); return condition; }
+    if (!this.match(":")) {
+      this.error(this.previous(), "Se esperaba ':' en el operador ternario");
+      return condition;
+    }
+    const elseBranch = this.expression();
+    if (!elseBranch) { this.error(this.previous(), "Se esperaba una expresión después de ':'"); return condition; }
+    return { kind: "TernaryExpression", condition, thenBranch, elseBranch, span: span(condition.span.start, elseBranch.span.end) };
+  }
   private arrowFunction(): Expression {
     const open = this.consume("(", "Se esperaba '('");
     const params: Parameter[] = [];
@@ -436,6 +454,14 @@ export class Parser {
         // aquí: ese path consume `delete` y luego exige un `IndexExpression`,
         // nunca `member_access`. Por tanto, en contexto de miembro `delete`
         // es siempre un nombre de método.
+        // Rechazamos `?.` (optional chaining): el dialecto no tiene `null` ni
+        // `undefined` como valores normales; el único ausente es `void`/
+        // `Result<T>`, que se modela con `Result.isOk()`. El azúcar de `?.`
+        // no tendría semántica clara aquí.
+        if (this.check("?")) {
+          this.error(this.peek(), "Optional chaining '?.' no se admite: el dialecto no tiene null ni undefined");
+          this.advance();
+        }
         const member = this.check("delete") ? this.advance() : this.consume("identifier", "Se esperaba el nombre del miembro");
         const typeArguments: TypeName[] = [];
         if (this.match("<")) {

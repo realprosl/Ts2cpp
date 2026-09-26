@@ -458,9 +458,20 @@ export class CppGenerator {
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
         if (node.operator === "+" && this.expressionType(node) === "string") return `ets::concat(${this.stringConcatParts(node).map(part => this.emitExpression(part)).join(", ")})`;
+        // `??` (nullish coalescing) está rechazado semánticamente por el type-checker;
+        // dejamos una rama aquí por si en el futuro se re-introduce con una
+        // representación de "ausente" mejor (p.ej. `std::optional`).
+        if (node.operator === "??") {
+          const leftType = this.expressionType(node.left);
+          const left = this.emitExpression(node.left);
+          const right = this.emitExpression(node.right);
+          if (leftType === "void") return `(${left}.has_value() ? ${left}.value() : ${right})`;
+          return `(${left}.has_value() ? ${left} : ${right})`;
+        }
         return node.operator === "%" ? `std::fmod(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})` : `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
       }
       case "AssignmentExpression": return `(${this.emitExpression(node.target)} = ${this.emitExpression(node.value)})`;
+      case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
       case "CallExpression": {
         const args = node.args.map(argument => {
           let text = this.emitExpression(argument);

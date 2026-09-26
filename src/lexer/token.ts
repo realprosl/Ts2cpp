@@ -4,9 +4,9 @@ export type TokenKind =
   | "identifier" | "number" | "string" | "template" | "let" | "const" | "function" | "interface" | "class" | "new" | "return"
   | "if" | "else" | "while" | "for" | "break" | "continue" | "extends" | "export" | "true" | "false" | "mut" | "out" | "async" | "await" | "type"
   | "enum" | "switch" | "case" | "default" | "of" | "in" | "delete" | "instanceof" | "typeof"
-  | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..."
+  | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
-  | "&&" | "||" | "=>" | "!" | "eof";
+  | "&&" | "||" | "??" | "=>" | "!" | "eof";
 
 export interface Token { kind: TokenKind; lexeme: string; span: Span }
 
