@@ -661,7 +661,17 @@ export class TypeChecker {
         }
         if (expected === "void") this.report(node, "Una variable no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
-        if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        if (node.arrayBindings && node.arrayBindings.length > 0) {
+          // Destructuring de arrays: cada binding hereda el tipo del elemento
+          // del initializer (no del array completo). Si el initializer es
+          // `string[]`, los bindings son `string`. Si el binding declara su
+          // propio tipo, lo respetamos.
+          const elementType = (actual && actual.endsWith("[]")) ? actual.slice(0, -2) : actual;
+          for (const binding of node.arrayBindings) {
+            const bindingType = binding.declaredType ? this.expandType(binding.declaredType, scope) : elementType;
+            if (!scope.define(binding.name, { kind: "variable", type: bindingType, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${binding.name}'`);
+          }
+        } else if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
       case "FunctionDeclaration": {

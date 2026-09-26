@@ -68,6 +68,25 @@ export class Parser {
   }
 
   private variable(keyword: Token, exported = false): Statement {
+    // Destructuring de arrays: `const [a, b, c] = expr;`
+    if (this.check("[")) {
+      const open = this.advance();
+      const bindings: { name: string; declaredType?: TypeName }[] = [];
+      while (!this.check("]")) {
+        const ident = this.consume("identifier", "Se esperaba un identificador en el patrón de destructuring");
+        let declaredType: TypeName | undefined;
+        if (this.match(":")) declaredType = this.typeName();
+        bindings.push({ name: ident.lexeme, declaredType });
+        if (!this.match(",")) break;
+      }
+      const close = this.consume("]", "Se esperaba ']' después del patrón de destructuring");
+      let declaredType: TypeName | undefined;
+      if (this.match(":")) declaredType = this.typeName();
+      this.consume("=", "Toda variable debe tener un inicializador");
+      const initializer = this.expression();
+      const end = this.consume(";", "Se esperaba ';' después de la declaración");
+      return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: "", declaredType, initializer, arrayBindings: bindings, span: span(keyword.span.start, end.span.end) };
+    }
     const name = this.consume("identifier", "Se esperaba el nombre de la variable");
     let declaredType: TypeName | undefined;
     if (this.match(":")) declaredType = this.typeName();
@@ -136,11 +155,12 @@ export class Parser {
     const fields: ClassField[] = [];
     const methods: ClassMethod[] = [];
     while (!this.check("}") && !this.check("eof")) {
+      const readonly = this.match("readonly");
       const member = this.consume("identifier", "Se esperaba un campo o método");
       if (this.match(":")) {
         const type = this.typeName();
         const end = this.consume(";", "Se esperaba ';' después del campo");
-        fields.push({ name: member.lexeme, type, span: span(member.span.start, end.span.end) });
+        fields.push({ name: member.lexeme, type, readonly, span: span(member.span.start, end.span.end) });
       } else {
         const generics = this.typeParameterNames();
         this.consume("(", "Se esperaba '(' en el método");

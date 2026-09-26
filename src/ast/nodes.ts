@@ -5,12 +5,18 @@ export type TypeName = string;
 export type ParameterPassing = "automatic" | "mut" | "out" | "move";
 export interface Program { kind: "Program"; statements: Statement[]; span: Span }
 export type Statement = VariableDeclaration | FunctionDeclaration | InterfaceDeclaration | ClassDeclaration | BlockStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement | BreakStatement | ContinueStatement | ReturnStatement | TypeAliasDeclaration | EnumDeclaration | SwitchStatement | ForOfStatement | ForInStatement | DeleteStatement;
-export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: boolean; mutable: boolean; name: string; declaredType?: TypeName; initializer: Expression; span: Span }
+export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: boolean; mutable: boolean; name: string; declaredType?: TypeName; initializer: Expression; arrayBindings?: ArrayBinding[]; span: Span }
+// `ArrayBinding` representa un binding de destructuring de arrays del estilo
+// `const [a, b, c] = arr;`. Cada elemento es el nombre de una variable local
+// (y opcionalmente su tipo declarado). No hay default values ni rest
+// patterns por ahora; el dialecto favorece el acceso explícito por índice
+// (`arr[0]`, `arr[1]`) cuando hace falta más azúcar.
+export interface ArrayBinding { name: string; declaredType?: TypeName }
 export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; span: Span }
 export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
 export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; span: Span }
 export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; span: Span }
-export interface ClassField { name: string; type: TypeName; span: Span }
+export interface ClassField { name: string; type: TypeName; readonly?: boolean; span: Span }
 export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
 export interface ClassDeclaration { kind: "ClassDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; fields: ClassField[]; methods: ClassMethod[]; span: Span }
 export interface BlockStatement { kind: "BlockStatement"; statements: Statement[]; span: Span }

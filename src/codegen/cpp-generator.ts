@@ -30,6 +30,7 @@ export class CppGenerator {
   // referencias en el código generado se reescriben al pasar por `cppName`.
   private readonly runtimeGlobals = new Set(["console", "fs", "path", "process", "JSON"]);
   private readonly localRenames = new Map<string, string>();
+  private destructuringCounter = 0;
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
@@ -80,7 +81,11 @@ export class CppGenerator {
     // que cualquier función declarada después pueda verlas. La inicialización ocurre en
     // la fase de static init, así que tipos sin constructor por defecto (Result, etc.)
     // siguen funcionando porque la inicialización forma parte de la declaración.
-    for (const variable of topLevelVariables) {
+    // Separamos las top-level: las que tienen destructuring se emiten en main()
+// (no son static-init válidas), el resto va al bloque de static init.
+    const simpleTopLevel = topLevelVariables.filter(variable => !variable.arrayBindings || variable.arrayBindings.length === 0);
+    const destructuringTopLevel = topLevelVariables.filter(variable => !!variable.arrayBindings && variable.arrayBindings.length > 0);
+    for (const variable of simpleTopLevel) {
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
       const initializer = this.emitExpression(variable.initializer);
@@ -93,11 +98,12 @@ export class CppGenerator {
         : variable.name;
       lines.push(`static ${cppType(type)} ${cppName} = ${initializer};`);
     }
-    if (topLevelVariables.length) lines.push("");
+    if (simpleTopLevel.length) lines.push("");
     for (const fn of functions) lines.push(this.function(fn), "");
     lines.push("int main(int argc, char** argv) {"); this.indent++;
     lines.push(this.pad() + "ets_argc = argc;");
     lines.push(this.pad() + "ets_argv = argv;");
+    for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevelOther) lines.push(this.emitStatement(statement));
     lines.push(this.pad() + "return 0;"); this.indent--; lines.push("}", "");
     return lines.join("\n");
@@ -179,7 +185,7 @@ export class CppGenerator {
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     const header = `${templatePart}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name} {`;
     const lines = [header]; this.indent++;
-    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)} ${field.name};`);
+    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly ? " const" : ""} ${field.name};`);
     if (node.fields.length && node.methods.length) lines.push("");
     for (const method of node.methods) lines.push(this.pad() + this.classMethod(method), "");
     if (lines.at(-1) === "") lines.pop();
@@ -270,7 +276,27 @@ export class CppGenerator {
   }
   private emitStatement(node: Statement): string {
     switch (node.kind) {
-      case "VariableDeclaration": return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
+      case "VariableDeclaration": {
+        // Array destructuring: `const [a, b, c] = expr;` se desazucara a una
+        // variable temporal oculta + N declaraciones `const T x = tmp[i];`.
+        // El tipo declarado (si lo hay) se aplica a los bindings que no tengan
+        // tipo propio; el del temporal es el del initializer (lo deduce `auto`).
+        if (node.arrayBindings && node.arrayBindings.length > 0) {
+          const counter = ++this.destructuringCounter;
+          const tmpName = `__ets_destructure_${counter}`;
+          const tmpType = node.declaredType ? cppType(node.declaredType) : "auto";
+          const lines: string[] = [];
+          lines.push(`${this.pad()}${this.variableIsConst(node) ? "const " : ""}${tmpType} ${tmpName} = ${this.emitExpression(node.initializer)};`);
+          for (let index = 0; index < node.arrayBindings.length; ++index) {
+            const binding = node.arrayBindings[index];
+            const type = binding.declaredType ? cppType(binding.declaredType) : "auto";
+            const mutable = node.mutable ? "" : "const ";
+            lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${tmpName}[${index}];`);
+          }
+          return lines.join("\n");
+        }
+        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
+      }
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
       case "ClassDeclaration": return "";
