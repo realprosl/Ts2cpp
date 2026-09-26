@@ -68,15 +68,19 @@ export class Parser {
   }
 
   private variable(keyword: Token, exported = false): Statement {
-    // Destructuring de arrays: `const [a, b, c] = expr;`
+    // Destructuring de arrays: `const [a, b, c] = expr;` con soporte para
+    // default values (`const [a = 5, b = "x"] = arr`) y tipos declarados
+    // (`const [a: number, b: string] = arr`).
     if (this.check("[")) {
       const open = this.advance();
-      const bindings: { name: string; declaredType?: TypeName }[] = [];
+      const bindings: ArrayBinding[] = [];
       while (!this.check("]")) {
         const ident = this.consume("identifier", "Se esperaba un identificador en el patrón de destructuring");
         let declaredType: TypeName | undefined;
         if (this.match(":")) declaredType = this.typeName();
-        bindings.push({ name: ident.lexeme, declaredType });
+        let defaultValue: Expression | undefined;
+        if (this.match("=")) defaultValue = this.expression();
+        bindings.push({ name: ident.lexeme, declaredType, defaultValue });
         if (!this.match(",")) break;
       }
       const close = this.consume("]", "Se esperaba ']' después del patrón de destructuring");

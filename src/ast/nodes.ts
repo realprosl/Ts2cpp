@@ -11,7 +11,7 @@ export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: b
 // (y opcionalmente su tipo declarado). No hay default values ni rest
 // patterns por ahora; el dialecto favorece el acceso explícito por índice
 // (`arr[0]`, `arr[1]`) cuando hace falta más azúcar.
-export interface ArrayBinding { name: string; declaredType?: TypeName }
+export interface ArrayBinding { name: string; declaredType?: TypeName; defaultValue?: Expression }
 export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; span: Span }
 export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
 export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; span: Span }

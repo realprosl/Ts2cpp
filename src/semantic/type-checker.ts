@@ -670,6 +670,13 @@ export class TypeChecker {
           const elementType = (actual && actual.endsWith("[]")) ? actual.slice(0, -2) : actual;
           for (const binding of node.arrayBindings) {
             const bindingType = binding.declaredType ? this.expandType(binding.declaredType, scope) : elementType;
+            // Default value: si lo hay, su tipo debe ser compatible con el binding.
+            // Si el initializer tiene menos elementos que bindings, los que tengan
+            // default obtienen ese default; el resto produce error en runtime.
+            if (binding.defaultValue) {
+              const defaultType = this.expression(binding.defaultValue, scope, bindingType);
+              if (!typeMatches(defaultType, bindingType)) this.report(binding.defaultValue, `Default value de '${binding.name}': se esperaba ${bindingType}, se obtuvo ${defaultType}`);
+            }
             if (!scope.define(binding.name, { kind: "variable", type: bindingType, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${binding.name}'`);
           }
         } else if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);

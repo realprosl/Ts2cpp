@@ -291,13 +291,19 @@ export class CppGenerator {
           const counter = ++this.destructuringCounter;
           const tmpName = `__ets_destructure_${counter}`;
           const tmpType = node.declaredType ? cppType(node.declaredType) : "auto";
+          const initType = this.expressionType(node.initializer);
+          const initIsArray = initType && isArrayType(initType);
           const lines: string[] = [];
           lines.push(`${this.pad()}${this.variableIsConst(node) ? "const " : ""}${tmpType} ${tmpName} = ${this.emitExpression(node.initializer)};`);
           for (let index = 0; index < node.arrayBindings.length; ++index) {
             const binding = node.arrayBindings[index];
             const type = binding.declaredType ? cppType(binding.declaredType) : "auto";
             const mutable = node.mutable ? "" : "const ";
-            lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${tmpName}[${index}];`);
+            const access = `${tmpName}[${index}]`;
+            const value = (binding.defaultValue && initIsArray)
+              ? `(${tmpName}.size() > ${index} ? ${access} : (${this.emitExpression(binding.defaultValue)}))`
+              : access;
+            lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${value};`);
           }
           return lines.join("\n");
         }
