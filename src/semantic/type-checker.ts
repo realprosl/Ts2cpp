@@ -45,16 +45,41 @@ const PROCESS_METHODS: Record<string, { params: TypeName[]; returnType: TypeName
   exit: { params: ["number"], returnType: "void" },
 };
 
-// Tabla de métodos del built-in `JSON`. Solo `stringify` por ahora; `parse`
-// requiere union types (`string | number | boolean`).
+// Tabla de métodos del built-in `JSON`. `parse` (legacy) devuelve `string`
+// y solo maneja escalares JSON. `parseValue` (nuevo) devuelve `JsonValue`,
+// un tipo opaco (variant) que el usuario manipula con helpers globales
+// (jsonIsString, jsonAsString, jsonArrayGet, etc.). Ambos coexisten para
+// mantener compatibilidad: código existente con `JSON.parse(s): string`
+// sigue funcionando.
 const JSON_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
   stringify: { params: ["string"], returnType: "string" },
-  // `JSON.parse` devuelve `string`: el dialecto no tiene `Object`/`any`, así que
-  // no podemos construir un árbol JSON arbitrario. Por ahora el dialecto solo
-  // permite parsear literales JSON simples (strings, números, booleanos) y
-  // devuelve su representación textual normalizada. Para estructuras complejas
-  // el usuario debe definir su propio parser tipado.
+  stringifyNumber: { params: ["number"], returnType: "string" },
+  stringifyBool: { params: ["boolean"], returnType: "string" },
+  stringifyValue: { params: ["JsonValue"], returnType: "string" },
+  // `parse` legacy: devuelve `std::string` con la representación textual
+  // canónica del escalar JSON. Para datos estructurados, usar `parseValue`.
   parse: { params: ["string"], returnType: "string" },
+  // `parseValue` nuevo: devuelve el árbol completo (recursivo).
+  parseValue: { params: ["string"], returnType: "JsonValue" },
+};
+
+// Funciones helper globales para manipular JsonValue. El dialecto no tiene
+// `Object`/`any`/`unknown`, así que se accede a campos vía funciones libres.
+// Todas devuelven tipos primitivos (string/number/boolean) excepto las que
+// devuelven JsonValue (array/object get).
+const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+  jsonIsString: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsNumber: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsBool: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsArray: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsObject: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsNull: { params: ["JsonValue"], returnType: "boolean" },
+  jsonAsString: { params: ["JsonValue"], returnType: "string" },
+  jsonAsNumber: { params: ["JsonValue"], returnType: "number" },
+  jsonAsBool: { params: ["JsonValue"], returnType: "boolean" },
+  jsonArrayLength: { params: ["JsonValue"], returnType: "number" },
+  jsonArrayGet: { params: ["JsonValue", "number"], returnType: "JsonValue" },
+  jsonObjectGet: { params: ["JsonValue", "string"], returnType: "JsonValue" },
 };
 
 // Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
@@ -642,7 +667,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     if (!primitive && (primitiveOnly || (!concrete && !contract))) this.report(node, `Tipo no definido o no permitido '${type}'`);
   }
@@ -946,6 +971,12 @@ export class TypeChecker {
         break;
       }
       case "CallExpression": {
+        if (JSON_HELPERS[node.callee]) {
+          const signature = JSON_HELPERS[node.callee];
+          if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
+          node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
+          result = signature.returnType; break;
+        }
         const symbol = scope.resolve(node.callee);
         if (!symbol) { this.report(node, `Función no definida '${node.callee}'`); node.args.forEach(a => this.expression(a, scope)); break; }
         if (symbol.kind === "variable" && isFunctionType(symbol.type)) {

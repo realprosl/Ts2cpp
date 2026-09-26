@@ -584,6 +584,25 @@ export class CppGenerator {
         const objectType = this.expressionType(node.object);
         const isContainer = objectType && isGenericType(objectType) && (genericBase(objectType) === "Map" || genericBase(objectType) === "Set");
         const method = isContainer && node.method === "delete" ? "removeKey" : node.method;
+        // `JSON.parse` (legacy) devuelve `std::string`. La versión que el dialecto
+        // expone como `parse: string → JsonValue` se mapea a `parseValue` en C++.
+        // También distinguimos `stringify(string/number/bool/JsonValue)` por el tipo
+        // del argumento para que el overload correcto del runtime se elija.
+        const isJsonGlobal = node.object.kind === "IdentifierExpression" && node.object.name === "JSON";
+        if (isJsonGlobal) {
+          // `JSON.parse` (legacy, retorna string) y `JSON.parseValue` (nuevo,
+          // retorna JsonValue) coexisten. El dialecto decide cuál emitir por el
+          // nombre del método en el AST; el type-checker valida el tipo de
+          // retorno esperado por el llamador.
+          if (method === "parse") return `JSON.parse(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          if (method === "parseValue") return `JSON.parseValue(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          if (method === "stringify") {
+            const argType = node.args[0] ? this.expressionType(node.args[0]) : undefined;
+            // El overload de C++ se elige por el tipo del argumento; los nombres
+            // de método en el dialecto son los mismos (`stringify`) en todos los casos.
+            return `JSON.stringify(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          }
+        }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {

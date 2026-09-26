@@ -24,5 +24,6 @@ export function cppType(type: TypeName): string {
     return `${base}<${genericArguments(type).map(cppType).join(", ")}>`;
   }
   if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken"].includes(type)) return `ets::${type}`;
+  if (type === "JsonValue") return "ets_json::Value";
   return type;
 }
