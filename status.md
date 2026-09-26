@@ -1,15 +1,16 @@
 # Ts2cpp — Status
 
-## Última fase cerrada: Fase 1.4 (`?.` optional chaining) · commit 764317e
+## Última fase cerrada: Fase 1.5 (Decoradores) · commit aac7c30
 
-- **Tests**: 124/124 PASS (78 unit + 46 integration)
+- **Tests**: 125/125 PASS (78 unit + 47 integration)
 - **Cambios**:
-  - Lexer: `?.` como token doble.
-  - Parser: `MemberExpression.optional?: boolean`, `MemberCallExpression.optional?: boolean`.
-  - Type-checker: `obj?.field` requiere `obj: Optional<T>` y `T` con el campo; resultado es `Optional<typeof field>`.
-  - Codegen: `optionalAndThen(obj, e => optionalSome(e.field))`.
-  - Ejemplo: `optional-chaining-demo.ets` (3 escenarios).
-- **Próxima fase**: Fase 1.5 — Decoradores (TC39 stage 3).
+  - Lexer: `@` como single token.
+  - AST: `Decorator = { name, args }`; listas de decoradores en `ClassDeclaration`, `ClassField`, `ClassMethod`.
+  - Parser: `parseDecorators()` consume `@name(args)` consecutivos; soporta decoradores antes de `class` o antes de cada miembro.
+  - Codegen: `@deprecated("msg")` o `@deprecated` en métodos inyecta `std::cerr << "WARN: ..."` al principio del cuerpo.
+  - `@sealed` se acepta pero es no-op (reservado para Fase 3, cuando haya herencia).
+  - Ejemplo: `decorator-demo.ets` (3 escenarios).
+- **Próxima fase**: Fase 1.6 — Optional `?` en parámetros (`name?: type`).
 
 ## Plan en cola
 
@@ -21,8 +22,8 @@
 | 1.2 | `Optional<T>` runtime + dialecto | ✅ commit b0be64a |
 | 1.3 | `??` (nullish coalescing) sobre `Optional<T>` | ✅ commit 4dcf28b |
 | 1.4 | `?.` (optional chaining) sobre `Optional<T>` | ✅ commit 764317e |
-| 1.5 | Decoradores (TC39 stage 3) | ⏳ **siguiente** |
-| 1.6 | Optional `?` en parámetros | ⏳ |
+| 1.5 | Decoradores (TC39 stage 3) | ✅ commit aac7c30 |
+| 1.6 | Optional `?` en parámetros | ⏳ **siguiente** |
 | 1.7 | Template literals con `${expr}` interpolado | ⏳ |
 | 1.8 | `for await...of` | ⏳ |
 | 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ |
