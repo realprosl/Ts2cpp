@@ -36,6 +36,19 @@
 - **Demo**: `examples/template-strings-demo.ets` (6 escenarios con strings, numbers, booleans, anidamiento).
 - **Próxima fase**: Fase 1.8 — `for await...of`.
 
+## Última fase cerrada: Fase 1.9 (`using`) · commit c546812
+
+- **Tests**: 128/128 PASS (78 unit + 50 integration)
+- **Cambios**:
+  - Lexer: `using` como keyword.
+  - AST: `UsingDeclaration { name, declaredType?, initializer, span }`.
+  - Parser: dispatcher de statements; `usingDeclaration(keyword, exported)`.
+  - Type-checker: binding inmutable (mutable=false), type-check estándar.
+  - Codegen: `T name = expr` con RAII automático de C++.
+  - Ejemplo: `using-demo.ets` (3 casos en demoBasic + scope-limit en demoScope).
+- **Limitación**: como el dialecto no tiene destructores user-defined todavía, `using` es funcionalmente equivalente a `let` con scope-limit. La invocación explícita de `dispose()` se añadirá cuando se implemente destructores de usuario (Fase 3).
+- **Próxima fase**: Fase 1.10 — Match expressions (TC39 stage 2).
+
 ## Plan en cola
 
 ### Fase 1 — Sintaxis TS que el dialecto puede asumir
@@ -50,8 +63,8 @@
 | 1.6 | Optional `?` en parámetros | ✅ commit bb6c360 |
 | 1.7 | Template literals con `${expr}` interpolado | ✅ ya estaba, verificado |
 | 1.8 | `for await...of` | ✅ commit 3801f73 |
-| 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ **siguiente** |
-| 1.10 | Match expressions (TC39 stage 2) | ⏳ |
+| 1.9 | `using` / RAII declarativo | ✅ commit c546812 |
+| 1.10 | Match expressions (TC39 stage 2) | ⏳ **siguiente** |
 | 1.11 | `satisfies` operator | ⏳ |
 | 1.12 | Variadic tuples `[T, ...U]` | ⏳ |
 | 1.13 | `Promise.all` / `Promise.race` / cancellation | ⏳ |
