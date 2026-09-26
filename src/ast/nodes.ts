@@ -34,7 +34,7 @@ export interface ForInStatement { kind: "ForInStatement"; binding: VariableDecla
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
 export type Expression = LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression;
-export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; span: Span }
+export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; raw?: string; span: Span }
 export interface IdentifierExpression { kind: "IdentifierExpression"; name: string; span: Span }
 export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: Expression[]; span: Span }
 export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }

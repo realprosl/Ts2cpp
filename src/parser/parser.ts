@@ -5,7 +5,7 @@ import { Lexer } from "../lexer/lexer.ts";
 import type { Token, TokenKind } from "../lexer/token.ts";
 import { arrayType, functionType, genericType, tupleType, typeofType } from "../types/type-system.ts";
 
-const PRECEDENCE: Partial<Record<TokenKind, number>> = { "??": 1, "||": 2, "&&": 3, "==": 4, "!=": 4, "<": 5, "<=": 5, ">": 5, ">=": 5, "instanceof": 5, "+": 6, "-": 6, "*": 7, "/": 7, "%": 7 };
+const PRECEDENCE: Partial<Record<TokenKind, number>> = { "??": 1, "||": 2, "&&": 3, "==": 4, "!=": 4, "<": 5, "<=": 5, ">": 5, ">=": 5, "instanceof": 5, "|": 6, "&": 6, "^": 6, "<<": 6, ">>": 6, "+": 7, "-": 7, "*": 8, "/": 8, "%": 8 };
 
 export class Parser {
   private readonly tokens: Token[];
@@ -509,7 +509,7 @@ export class Parser {
       const close = this.consume("]", "Se esperaba ']' después del literal");
       return { kind: "ArrayLiteralExpression", elements, span: span(token.span.start, close.span.end) };
     }
-    if (token.kind === "number") return { kind: "LiteralExpression", value: Number(token.lexeme), literalType: "number", span: token.span };
+    if (token.kind === "number") return { kind: "LiteralExpression", value: Number(token.lexeme.replace(/_/g, "")), literalType: "number", raw: token.lexeme, span: token.span };
     if (token.kind === "string") return { kind: "LiteralExpression", value: token.lexeme, literalType: "string", span: token.span };
     if (token.kind === "true" || token.kind === "false") return { kind: "LiteralExpression", value: token.kind === "true", literalType: "boolean", span: token.span };
     if (token.kind === "identifier") return { kind: "IdentifierExpression", name: token.lexeme, span: token.span };

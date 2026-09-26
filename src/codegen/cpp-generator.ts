@@ -396,7 +396,29 @@ export class CppGenerator {
   private emitBlock(node: BlockStatement, appendCoReturn = false): string { const lines = ["{"]; this.indent++; for (const s of node.statements) lines.push(this.emitStatement(s)); if (appendCoReturn) lines.push(this.pad() + "co_return;"); this.indent--; lines.push(this.pad() + "}"); return lines.join("\n"); }
   private emitExpression(node: Expression): string {
     switch (node.kind) {
-      case "LiteralExpression": return typeof node.value === "string" ? `std::string(${JSON.stringify(node.value)})` : typeof node.value === "boolean" ? String(node.value) : Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
+      case "LiteralExpression": {
+        if (typeof node.value === "string") return `std::string(${JSON.stringify(node.value)})`;
+        if (typeof node.value === "boolean") return String(node.value);
+        // Para números: si el parser guardó el lexema original con un prefijo
+        // no decimal (`0x`/`0o`/`0b` de TS), lo emitimos tal cual (limpiando
+        // los `_` separadores) para preservar la forma legible. C++ acepta
+        // los mismos prefijos que TS, así que la traducción es directa.
+        // Para números: si el parser guardó el lexema original con un prefijo no
+        // decimal, lo emitimos como literal C++ válido.
+        //   - `0x`/`0X` (hex): se preserva porque C++ lo soporta nativamente.
+        //     Para forzar el tipo `double` (el dialecto modela `number` como
+        //     `double`), añadimos `p0` que es el exponente binario C++.
+        //   - `0o`/`0O` (octal) y `0b`/`0B` (binario): C++ NO los soporta como
+        //     literales estándar, así que los convertimos a decimal. El
+        //     resultado es funcionalmente equivalente y evita requerir
+        //     `-fext-numeric-literals` (extensión GCC).
+        if (node.raw && /^0[xXoObB]/.test(node.raw)) {
+          const cleaned = node.raw.replace(/_/g, "");
+          if (/^0[xX]/.test(cleaned)) return `${cleaned}.0p0`;
+          return `${node.value}.0`;
+        }
+        return Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
+      }
       case "TemplateLiteralExpression": {
         // Emitimos cada parte como literal y cada expresión tal cual; `ets::concat`
         // usa `operator<<` para que cualquier tipo (number, boolean, string, etc.)
@@ -458,6 +480,12 @@ export class CppGenerator {
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
         if (node.operator === "+" && this.expressionType(node) === "string") return `ets::concat(${this.stringConcatParts(node).map(part => this.emitExpression(part)).join(", ")})`;
+        // Operadores bitwise: el dialecto modela `number` como `double`, pero
+        // C++ rechaza `|`/`&`/`^`/etc. entre doubles. Hacemos cast explícito
+        // a `std::int64_t` para la operación y devolvemos `double`.
+        if (["|", "&", "^", "<<", ">>"].includes(node.operator)) {
+          return `(static_cast<std::int64_t>(${this.emitExpression(node.left)}) ${node.operator} static_cast<std::int64_t>(${this.emitExpression(node.right)}))`;
+        }
         // `??` (nullish coalescing) está rechazado semánticamente por el type-checker;
         // dejamos una rama aquí por si en el futuro se re-introduce con una
         // representación de "ausente" mejor (p.ej. `std::optional`).

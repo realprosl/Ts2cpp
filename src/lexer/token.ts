@@ -6,7 +6,7 @@ export type TokenKind =
   | "enum" | "switch" | "case" | "default" | "of" | "in" | "delete" | "instanceof" | "typeof"
   | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
-  | "&&" | "||" | "??" | "=>" | "!" | "eof";
+  | "&&" | "||" | "??" | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "eof";
 
 export interface Token { kind: TokenKind; lexeme: string; span: Span }
 

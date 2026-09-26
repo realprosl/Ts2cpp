@@ -51,10 +51,29 @@ export class Lexer {
 
   private number(start: Position): void {
     let value = "";
-    while (/[0-9]/.test(this.peek())) value += this.advance();
-    if (this.peek() === "." && /[0-9]/.test(this.peek(1))) {
-      value += this.advance();
-      while (/[0-9]/.test(this.peek())) value += this.advance();
+    // Reconoce prefijos numéricos no decimales:
+    //   0xFF 0xff 0X1A    -> hexadecimal
+    //   0o77  0O7         -> octal
+    //   0b101 0B0         -> binario
+    //   1_000_000         -> separadores '_' (TS moderno), válidos entre dígitos
+    if (this.peek() === "0" && /[xXoObB]/.test(this.peek(1))) {
+      const prefix = this.advance() + this.advance();
+      value = prefix;
+      let charset: RegExp;
+      if (/[xX]/.test(prefix[1])) charset = /[0-9a-fA-F_]/;
+      else if (/[oO]/.test(prefix[1])) charset = /[0-7_]/;
+      else charset = /[01_]/;
+      while (charset.test(this.peek())) value += this.advance();
+      // Rechaza caracteres válidos para decimal pero no para el prefijo actual
+      // (p.ej. `0x12g`): el lexer ya paró en el primer char inválido, así que
+      // no hay nada más que hacer aquí. La conversión a número ocurre en el
+      // codegen (que prefiere el literal original cuando está disponible).
+    } else {
+      while (/[0-9_]/.test(this.peek())) value += this.advance();
+      if (this.peek() === "." && /[0-9]/.test(this.peek(1))) {
+        value += this.advance();
+        while (/[0-9_]/.test(this.peek())) value += this.advance();
+      }
     }
     this.add("number", value, start);
   }
@@ -124,7 +143,7 @@ export class Lexer {
       this.advance(); this.advance(); this.add(two as TokenKind, two, start); return;
     }
     const one = this.advance();
-    const singles = "(){}[] ,;:.-+*/%=<>!?|&".replace(" ", "");
+    const singles = "(){}[] ,;:.-+*/%=<>!?|&^~".replace(" ", "");
     if (singles.includes(one)) this.add(one as TokenKind, one, start);
     else this.diagnostics.push({ phase: "lexer", message: `Carácter inesperado '${one}'`, span: span(start, this.position()) });
   }

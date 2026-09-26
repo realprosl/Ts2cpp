@@ -908,6 +908,7 @@ export class TypeChecker {
           result = left ?? right;
         }
         else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
+        else if (["|", "&", "^", "<<", ">>"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
         else if (["<", "<=", ">", ">="].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "boolean"; }
         else if (["==", "!="].includes(node.operator)) { if (left !== right) this.report(node, "Los operandos comparados deben tener el mismo tipo"); result = "boolean"; }
         else { this.require(left, "boolean", node.left); this.require(right, "boolean", node.right); result = "boolean"; }
