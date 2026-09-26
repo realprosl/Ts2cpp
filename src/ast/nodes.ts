@@ -37,7 +37,7 @@ export interface EnumDeclaration { kind: "EnumDeclaration"; exported?: boolean; 
 export interface CaseClause { labels: Expression[]; body: Statement[]; span: Span }
 export interface DefaultClause { body: Statement[]; span: Span }
 export interface SwitchStatement { kind: "SwitchStatement"; discriminant: Expression; cases: CaseClause[]; defaultClause?: DefaultClause; span: Span }
-export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDeclaration; iterable: Expression; body: Statement; span: Span }
+export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDeclaration; iterable: Expression; await?: boolean; body: Statement; span: Span }
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 

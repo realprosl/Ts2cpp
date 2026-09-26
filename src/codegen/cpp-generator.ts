@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, TypeParameter } from "../ast/nodes.ts";
 import { cppType } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
-import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult } from "../types/type-system.ts";
+import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
 // `Concept1<P> && Concept2<P>`). Las restricciones concept siempre se aplican al
@@ -406,11 +406,23 @@ export class CppGenerator {
   // Emite `for (const auto& name : iterable)` para arrays y strings, envuelve
   // tuplas en un bloque con una única iteración, y proyecta pares de Map<K,V>
   // en tuplas `[K,V]` para mantener la semántica de indexación.
-  private emitForOf(node: { binding: { name: string; mutable: boolean }; iterable: Expression; body: Statement; span: import("../core/span.ts").Span }): string {
+  private emitForOf(node: { binding: { name: string; mutable: boolean }; iterable: Expression; await?: boolean; body: Statement; span: import("../core/span.ts").Span }): string {
     const iterableType = this.expressionType(node.iterable);
     const name = node.binding.name;
     const iter = this.emitExpression(node.iterable);
     const bodyStr = this.bodyInBlock(node.body);
+    // `for await (const x of arr)`: el iterable es `Promise<T>[]` y cada
+    // elemento se desempaqueta con `co_await` (o `ets::syncWait` si no estamos
+    // en una función async). La variable de iteración queda como `T`.
+    if (node.await && iterableType && isArrayType(iterableType) && isGenericType(arrayElement(iterableType)) && genericBase(arrayElement(iterableType)) === "Promise") {
+      const awaiter = this.inAsyncFunction ? "co_await" : "ets::syncWait";
+      const itName = `${name}_iter`;
+      const awaitedName = `${name}_awaited`;
+      const unpack = `${this.pad()}auto ${awaitedName} = ${awaiter}(${itName});`;
+      const innerBind = `${this.pad()}auto ${name} = ${awaitedName};`;
+      const header = `${this.pad()}for (const auto& ${itName} : ${iter}) {\n${unpack}\n${innerBind}`;
+      return `${header}\n${bodyStr}\n${this.pad()}}`;
+    }
     if (iterableType && isArrayType(iterableType)) {
       return `${this.pad()}for (${node.binding.mutable ? "auto& " : "const auto& "}${name} : ${iter}) {\n${bodyStr}\n${this.pad()}}`;
     }
@@ -519,6 +531,10 @@ export class CppGenerator {
           const values = node.elements.map(item => this.emitExpression(item));
           return `std::make_tuple(${values.join(", ")})`;
         }
+        // Envoltorio en `std::move(...)` para que el initializer_list acepte
+        // tipos move-only (Task<T>, Optional<T>, Result<T>). Para tipos copiables
+        // es equivalente (mover es una opción, copiar es la otra).
+        const moveValues = (items: string[]) => items.map(item => `std::move(${item})`).join(", ");
         if (node.elements.some(item => item.kind === "SpreadElement")) {
           // Spread en array literal: generamos un lambda inmediato que toma
           // el vector destino por valor (RVO al final) y va `push_back` para
@@ -536,8 +552,24 @@ export class CppGenerator {
           }
           return `([](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; })(${cpp}{})`;
         }
-        const values = node.elements.map(item => this.emitExpression(item)).join(", ");
-        return `${cppType(type ?? "void[]")}{${values}}`;
+        // Para arrays con tipos move-only (Task<T>, Optional<T>, Result<T>), el
+        // initializer_list de std::vector siempre copia, así que generamos un
+        // lambda que hace push_back por movimiento. Para tipos copiables,
+        // `std::vector<T>{...}` funciona directamente.
+        const valueType = cppType(type ?? "void[]");
+        const values = node.elements.map(item => this.emitExpression(item as import("../ast/nodes.ts").Expression));
+        if (node.elements.some(item => item.kind === "SpreadElement")) {
+          // (spread path) - ver bloque arriba
+        }
+        if (values.length === 0) return `${valueType}()`;
+        // Detectar tipos move-only por inspección del nombre del tipo (heurística
+        // simple). Para esos tipos, generar una lambda constructora con push_back.
+        const isMoveOnlyType = /ets::Task<|ets::Optional<|ets::Result</.test(valueType);
+        if (isMoveOnlyType) {
+          const pushes = values.map(value => `dst.push_back(std::move(${value}));`).join(" ");
+          return `([](${valueType} dst) -> ${valueType} { ${pushes} return dst; })(${valueType}())`;
+        }
+        return `${valueType}{${moveValues(values)}}`;
       }
       case "ArrowFunctionExpression": {
         const type = this.expressionType(node); const result = type && isFunctionType(type) ? functionResult(type) : (node.returnType ?? "void");

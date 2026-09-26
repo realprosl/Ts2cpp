@@ -40,13 +40,19 @@ export class Parser {
     if (this.match("while")) return this.whileStatement(this.previous());
     if (this.match("for")) {
       const keyword = this.previous();
+      // `for await (const x of iterable)` — `await` opcional entre `for` y `(`.
+      const awaitToken = this.match("await");
       this.consume("(", "Se esperaba '(' después de 'for'");
       // Detecta `for..of` / `for..in` mirando hacia adelante dentro del paréntesis:
       // la presencia de `of` / `in` como identifier a profundidad 1 distingue el
       // bucle estilo TypeScript del clásico `for(init; cond; incr)`.
       const kind = this.lookAheadForOfOrIn();
-      if (kind === "of") return this.forOfStatement(keyword);
-      if (kind === "in") return this.forInStatement(keyword);
+      if (kind === "of") return this.forOfStatement(keyword, awaitToken ? this.previous() : undefined);
+      if (kind === "in") {
+        if (awaitToken) this.error(this.previous(), "'for await...in' no se admite; solo 'for await...of'");
+        return this.forInStatement(keyword);
+      }
+      if (awaitToken) this.error(this.previous(), "'await' solo es válido con 'for...of'");
       return this.forStatement(keyword);
     }
     if (this.match("break", "continue")) {
@@ -326,8 +332,9 @@ export class Parser {
     return { kind: "ForStatement", initializer, condition, increment, body, span: span(keyword.span.start, body.span.end) };
   }
 
-  private forOfStatement(keyword: Token): Statement {
+  private forOfStatement(keyword: Token, awaited: Token | undefined): Statement {
     // Patrón: `for ( let|const IDENT [ : TYPE ] of EXPR ) STMT`
+    // El flag `awaited` indica `for await (const x of iterable)`.
     if (!this.match("let", "const")) this.error(this.peek(), "Se esperaba 'let' o 'const' en for..of");
     const bindingKeyword = this.previous();
     const mutable = bindingKeyword.kind === "let";
@@ -346,7 +353,7 @@ export class Parser {
       kind: "VariableDeclaration", mutable, name: name.lexeme, declaredType, initializer: syntheticInit,
       span: span(bindingKeyword.span.start, name.span.end),
     };
-    return { kind: "ForOfStatement", binding, iterable, body, span: span(keyword.span.start, body.span.end) };
+    return { kind: "ForOfStatement", binding, iterable, await: !!awaited, body, span: span(keyword.span.start, body.span.end) };
   }
 
   private forInStatement(keyword: Token): Statement {

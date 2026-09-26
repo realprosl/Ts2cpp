@@ -782,6 +782,13 @@ export class TypeChecker {
         else if (isMapType(iterableType)) elementType = tupleType(genericArguments(iterableType));
         else if (isSetType(iterableType)) elementType = genericArguments(iterableType)[0] ?? "void";
         else { this.report(node.iterable, `El tipo '${iterableType}' no es iterable en for..of`); elementType = "void"; }
+        // `for await (const x of arr)`: el elemento debe ser Promise<T> y el
+        // binding tiene tipo T. Es la inversa de `Promise.all`-like pero
+        // secuencial: `await` cada elemento.
+        if (node.await) {
+          if (!isPromiseType(elementType)) { this.report(node.iterable, `'for await' requiere un iterable de Promise<T>, no '${elementType}'`); }
+          else elementType = promiseResult(elementType);
+        }
         const local = new Scope(scope);
         if (!local.define(node.binding.name, { kind: "variable", type: elementType, mutable: node.binding.mutable })) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
         this.loopDepth++; this.statement(node.body, local); this.loopDepth--; break;
