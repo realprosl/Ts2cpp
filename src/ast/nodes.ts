@@ -58,8 +58,8 @@ export interface UnaryExpression { kind: "UnaryExpression"; operator: "!" | "-" 
 export interface AwaitExpression { kind: "AwaitExpression"; operand: Expression; span: Span }
 export interface BinaryExpression { kind: "BinaryExpression"; operator: string; left: Expression; right: Expression; span: Span }
 export interface CallExpression { kind: "CallExpression"; callee: string; typeArguments: TypeName[]; args: Expression[]; span: Span }
-export interface MemberExpression { kind: "MemberExpression"; object: Expression; member: string; span: Span }
-export interface MemberCallExpression { kind: "MemberCallExpression"; object: Expression; method: string; typeArguments: TypeName[]; args: Expression[]; span: Span }
+export interface MemberExpression { kind: "MemberExpression"; object: Expression; member: string; optional?: boolean; span: Span }
+export interface MemberCallExpression { kind: "MemberCallExpression"; object: Expression; method: string; typeArguments: TypeName[]; args: Expression[]; optional?: boolean; span: Span }
 export interface IndexExpression { kind: "IndexExpression"; object: Expression; index: Expression; span: Span }
 export interface NewExpression { kind: "NewExpression"; className: string; args: Expression[]; span: Span }
 export interface AssignmentExpression { kind: "AssignmentExpression"; target: IdentifierExpression | MemberExpression | IndexExpression; value: Expression; span: Span }

@@ -474,21 +474,17 @@ export class Parser {
         if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
         const close = this.consume(")", "Se esperaba ')' después de los argumentos");
         expr = { kind: "CallExpression", callee: expr.name, typeArguments, args, span: span(expr.span.start, close.span.end) };
-      } else if (this.match(".")) {
+      } else if (this.match(".", "?.")) {
+        // `?.` marca el MemberExpression como `optional`. El type-checker
+        // valida que el objeto sea `Optional<X>`; el codegen lo desazucara
+        // a `optionalAndThen(obj, e => optionalSome(e.member))`.
+        const isOptional = this.previous().kind === "?.";
         // Aceptamos `delete` como nombre de miembro (Map/Set.delete, etc.).
         // La keyword `delete` también se usa como statement (`delete map[k];`)
         // y se desambigua en el dispatcher de `statement()` antes de llegar
         // aquí: ese path consume `delete` y luego exige un `IndexExpression`,
         // nunca `member_access`. Por tanto, en contexto de miembro `delete`
         // es siempre un nombre de método.
-        // Rechazamos `?.` (optional chaining): el dialecto no tiene `null` ni
-        // `undefined` como valores normales; el único ausente es `void`/
-        // `Result<T>`, que se modela con `Result.isOk()`. El azúcar de `?.`
-        // no tendría semántica clara aquí.
-        if (this.check("?")) {
-          this.error(this.peek(), "Optional chaining '?.' no se admite: el dialecto no tiene null ni undefined");
-          this.advance();
-        }
         const member = this.check("delete") ? this.advance() : this.consume("identifier", "Se esperaba el nombre del miembro");
         const typeArguments: TypeName[] = [];
         if (this.match("<")) {
@@ -499,10 +495,10 @@ export class Parser {
           const args: Expression[] = [];
           if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
           const close = this.consume(")", "Se esperaba ')' después de los argumentos");
-          expr = { kind: "MemberCallExpression", object: expr, method: member.lexeme, typeArguments, args, span: span(expr.span.start, close.span.end) };
+          expr = { kind: "MemberCallExpression", object: expr, method: member.lexeme, typeArguments, args, optional: isOptional, span: span(expr.span.start, close.span.end) };
         } else {
           if (typeArguments.length) this.error(member, "Los argumentos de tipo de un método requieren una llamada");
-          expr = { kind: "MemberExpression", object: expr, member: member.lexeme, span: span(expr.span.start, member.span.end) };
+          expr = { kind: "MemberExpression", object: expr, member: member.lexeme, optional: isOptional, span: span(expr.span.start, member.span.end) };
         }
       } else if (this.match("[")) {
         const index = this.expression();

@@ -1222,6 +1222,32 @@ export class TypeChecker {
           result = node.object.name;
           break;
         }
+        if (node.optional) {
+          // `?.`: el operando debe ser `Optional<T>`; el resultado es
+          // `Optional<field_type>`. Se valida contra el nombre del campo en
+          // la clase T.
+          if (!isGenericType(objectType) || genericBase(objectType) !== "Optional") {
+            this.report(node.object, `Optional chaining '?.': el operando debe ser Optional<T>, se obtuvo '${objectType}'`);
+            result = "void";
+            break;
+          }
+          const element = genericArguments(objectType)[0] ?? "void";
+          const resolvedInner = this.resolveClass(element); const ownerInner = resolvedInner?.owner;
+          if (!ownerInner) {
+            this.report(node.object, `Optional chaining '?.': '${element}' no es una clase concreta`);
+            result = "void";
+            break;
+          }
+          const fieldInner = ownerInner.fields.find(candidate => candidate.name === node.member);
+          if (!fieldInner) {
+            this.report(node, `La clase '${element}' no declara el campo '${node.member}'`);
+            result = "void";
+            break;
+          }
+          const fieldInnerType = this.substituteType(fieldInner.type, resolvedInner?.substitutions ?? new Map());
+          result = genericType("Optional", [fieldInnerType]);
+          break;
+        }
         const resolved = this.resolveClass(objectType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
         if (!owner) this.report(node.object, `El tipo '${objectType}' no es una clase concreta`);

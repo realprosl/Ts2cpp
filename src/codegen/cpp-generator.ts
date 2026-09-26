@@ -608,6 +608,12 @@ export class CppGenerator {
         // porque los enums numéricos se emiten como `enum class` y los de cadena como struct
         // con miembros estáticos, ninguno de los cuales admite el operador `.` desde fuera.
         if (node.object.kind === "IdentifierExpression" && this.enumNames.has(node.object.name)) return `${node.object.name}::${node.member}`;
+        // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
+        // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
+        if (node.optional) {
+          const obj = this.emitExpression(node.object);
+          return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
+        }
         return `${this.emitExpression(node.object)}.${node.member}`;
       }
       case "IndexExpression": {

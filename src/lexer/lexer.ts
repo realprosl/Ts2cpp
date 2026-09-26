@@ -138,7 +138,7 @@ export class Lexer {
       this.advance(); this.advance(); this.advance(); this.add("...", "...", start); return;
     }
     const two = this.peek() + this.peek(1);
-    const doubles: TokenKind[] = ["==", "!=", "<=", ">=", "&&", "||", "=>", "??"];
+    const doubles: TokenKind[] = ["==", "!=", "<=", ">=", "&&", "||", "=>", "??", "?."];
     if (doubles.includes(two as TokenKind)) {
       this.advance(); this.advance(); this.add(two as TokenKind, two, start); return;
     }
