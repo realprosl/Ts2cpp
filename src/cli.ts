@@ -88,7 +88,8 @@ try {
   await logger?.error("transpile", error); await logger?.flush();
   if (error instanceof DiagnosticError) {
     const source = await readFile(input, "utf8").catch(() => "");
-    console.error(error.diagnostics.map(d => formatDiagnostic(input, source, d)).join("\n\n"));
+    const { formatDiagnostics } = await import("./core/diagnostic.ts");
+    console.error(formatDiagnostics(input, source, error.diagnostics));
   } else console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }

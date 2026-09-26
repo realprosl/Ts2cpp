@@ -14,4 +14,9 @@ export class Scope {
   define(name: string, symbol: SymbolInfo): boolean { if (this.symbols.has(name)) return false; this.symbols.set(name, symbol); return true; }
   resolveLocal(name: string): SymbolInfo | undefined { return this.symbols.get(name); }
   resolve(name: string): SymbolInfo | undefined { return this.symbols.get(name) ?? this.parent?.resolve(name); }
+  /** Itera todos los nombres visibles desde este scope (incluyendo padres). */
+  *names(): IterableIterator<string> {
+    for (const key of this.symbols.keys()) yield key;
+    if (this.parent) yield* this.parent.names();
+  }
 }

@@ -144,6 +144,27 @@ const SET_METHODS: Record<string, { params: (typeArgs: TypeName[]) => TypeName[]
   forEach: { params: ([T]) => [`(${T})=>void`],                             returnType: () => "void" },
 };
 
+/** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
+ *  borrados o sustituciones para convertir `a` en `b`). Implementación
+ *  iterativa con matriz 2D; O(|a|·|b|) tiempo, O(min(|a|,|b|)) espacio. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const previous: number[] = new Array(b.length + 1).fill(0);
+  const current: number[] = new Array(b.length + 1).fill(0);
+  for (let j = 0; j <= b.length; j++) previous[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) previous[j] = current[j];
+  }
+  return previous[b.length];
+}
+
 export class TypeChecker {
   private readonly diagnostics: Diagnostic[] = [];
   private readonly types = new WeakMap<Expression, TypeName>();
@@ -998,7 +1019,7 @@ export class TypeChecker {
         if (node.name === "JSON") { result = "Json"; break; }
         if (node.name === "Math") { result = "Math"; break; }
         if (node.name === "Date") { result = "Date"; break; }
-        this.report(node, `Símbolo no definido '${node.name}'`);
+        this.report(node, `Símbolo no definido '${node.name}'`, this.suggestSimilar(node.name, scope.names()));
         break;
       }
       case "UnaryExpression": {
@@ -1126,7 +1147,7 @@ export class TypeChecker {
           break;
         }
         const symbol = scope.resolve(node.callee);
-        if (!symbol) { this.report(node, `Función no definida '${node.callee}'`); node.args.forEach(a => this.expression(a, scope)); break; }
+        if (!symbol) { this.report(node, `Función no definida '${node.callee}'`, this.suggestSimilar(node.callee, scope.names())); node.args.forEach(a => this.expression(a, scope)); break; }
         if (symbol.kind === "variable" && isFunctionType(symbol.type)) {
           const parameters = functionParameters(symbol.type);
           if (node.args.length !== parameters.length) this.report(node, `'${node.callee}' espera ${parameters.length} argumentos, recibió ${node.args.length}`);
@@ -1664,5 +1685,23 @@ export class TypeChecker {
     action();
     this.activeTypeParameters = previous; this.activeTypeConstraints = previousConstraints; this.activeTypeDefaults = previousDefaults;
   }
-  private report(node: { span: import("../core/span.ts").Span }, message: string): void { this.diagnostics.push({ phase: "semantic", message, span: node.span }); }
+  private report(node: { span: import("../core/span.ts").Span }, message: string): void;
+  private report(node: { span: import("../core/span.ts").Span }, message: string, hint?: string, notes?: string[]): void;
+  private report(node: { span: import("../core/span.ts").Span }, message: string, hint?: string, notes?: string[]): void {
+    const diagnostic: import("../core/diagnostic.ts").Diagnostic = { phase: "semantic", message, span: node.span };
+    if (hint) diagnostic.hint = hint;
+    if (notes) diagnostic.notes = notes;
+    this.diagnostics.push(diagnostic);
+  }
+  /** Sugiere un nombre cercano (distancia Levenshtein ≤ 2) para errores tipo
+   *  "Símbolo no definido 'X'". Devuelve el mensaje de hint o undefined si
+   *  no encuentra candidato razonable. */
+  private suggestSimilar(name: string, candidates: Iterable<string>): string | undefined {
+    let best: { candidate: string; distance: number } | undefined;
+    for (const candidate of candidates) {
+      const distance = levenshtein(name, candidate);
+      if (distance <= 2 && (!best || distance < best.distance)) best = { candidate, distance };
+    }
+    return best ? `¿Quisiste decir '${best.candidate}'?` : undefined;
+  }
 }
