@@ -1,5 +1,5 @@
-# Salidas del transpilador y del compilador nativo
-build/
+# Salidas del transpilador y del compilador nativo (solo raíz del proyecto)
+/build/
 *.bin
 *.o
 *.obj
