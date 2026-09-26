@@ -11,6 +11,19 @@
 - **Bug colateral**: `JSON_HELPERS` y `OPTIONAL_HELPERS` heredaban de `Object.prototype` (igual que `KEYWORDS` antes). Llamar a `toString`, `hasOwnProperty`, etc., entraba al chequeo JSON/OPTIONAL con el método heredado y crasheaba. Arreglado con `Object.assign(Object.create(null), {...})`.
 - **Próxima fase**: Fase 1.7 — Template literals con `${expr}`.
 
+## Última fase cerrada: Fase 1.8 (`for await...of`) · commit 3801f73
+
+- **Tests**: 127/127 PASS (78 unit + 49 integration)
+- **Cambios**:
+  - AST: `ForOfStatement.await?: boolean`.
+  - Parser: dispatcher de `for` acepta `await` opcional entre `for` y `(`.
+  - Type-checker: `await=true` requiere iterable `Promise<T>`; binding queda como `T`.
+  - Codegen: `emitForOf` inyecta `co_await`/`syncWait` por elemento. Nombres `_iter`/`_awaited` evitan shadowing.
+  - Codegen: `ArrayLiteralExpression` usa lambda con push_back para tipos move-only (Task/Optional/Result) en lugar de initializer_list.
+  - Rechaza `for await...in` y `for await (init; cond; incr)`.
+  - Ejemplo: `for-await-demo.ets` (3 escenarios: collect, sum, empty).
+- **Próxima fase**: Fase 1.9 — `using` / RAII declarativo.
+
 ### Fase 1.7 — Template literals (verificado, sin cambios)
 
 - **Tests**: el golden de `template-strings-demo.ets` coincide con stdout. Suite 126/126 PASS ya cubre el caso.
@@ -36,8 +49,8 @@
 | 1.5 | Decoradores (TC39 stage 3) | ✅ commit aac7c30 |
 | 1.6 | Optional `?` en parámetros | ✅ commit bb6c360 |
 | 1.7 | Template literals con `${expr}` interpolado | ✅ ya estaba, verificado |
-| 1.8 | `for await...of` | ⏳ **siguiente** |
-| 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ |
+| 1.8 | `for await...of` | ✅ commit 3801f73 |
+| 1.9 | `using` / RAII declarativo (TC39 stage 3) | ⏳ **siguiente** |
 | 1.10 | Match expressions (TC39 stage 2) | ⏳ |
 | 1.11 | `satisfies` operator | ⏳ |
 | 1.12 | Variadic tuples `[T, ...U]` | ⏳ |
