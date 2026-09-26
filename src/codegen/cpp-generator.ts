@@ -411,6 +411,26 @@ export class CppGenerator {
     }
   }
 
+  // Emite `match (subject) { when (pattern) => result; ... }` como una cadena
+  // de ternarios. Cada arm es `(subject == pattern ? result : ...)`. El último
+  // arm actúa como default (no se compara). Si el pattern es `_` (wildcard),
+  // se ignora también la comparación y siempre se evalúa el resultado.
+  private emitMatch(node: { subject: Expression; arms: { pattern: Expression; result: Expression }[] }): string {
+    const subject = this.emitExpression(node.subject);
+    if (node.arms.length === 0) return "/* empty match */";
+    const last = node.arms[node.arms.length - 1];
+    let result = this.emitExpression(last.result);
+    for (let index = node.arms.length - 2; index >= 0; index--) {
+      const arm = node.arms[index];
+      const patternText = this.emitExpression(arm.pattern);
+      // Wildcard `_`: si el pattern es solo un identifier "_", no comparamos.
+      const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
+      if (isWildcard) result = this.emitExpression(arm.result);
+      else result = `(${subject} == ${patternText} ? ${this.emitExpression(arm.result)} : ${result})`;
+    }
+    return result;
+  }
+
   // Emite `for (const auto& name : iterable)` para arrays y strings, envuelve
   // tuplas en un bloque con una única iteración, y proyecta pares de Map<K,V>
   // en tuplas `[K,V]` para mantener la semántica de indexación.
@@ -641,6 +661,7 @@ export class CppGenerator {
       }
       case "AssignmentExpression": return `(${this.emitExpression(node.target)} = ${this.emitExpression(node.value)})`;
       case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
+      case "MatchExpression": return this.emitMatch(node);
       case "CallExpression": {
         const args = node.args.map(argument => {
           let text = this.emitExpression(argument);

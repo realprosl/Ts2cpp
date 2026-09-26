@@ -873,6 +873,23 @@ export class TypeChecker {
         result = "string";
         break;
       }
+      case "MatchExpression": {
+        // `match (subject) { when (pattern) => result; ... }` requiere que todos
+        // los resultados sean del mismo tipo. El subject y los patterns se
+        // evalúan para propagar tipos; el type-check de pattern == subject se
+        // hace en codegen (runtime), no aquí. El wildcard `_` no se evalúa.
+        const subjectType = this.expression(node.subject, scope);
+        let resultType: TypeName | undefined;
+        for (const arm of node.arms) {
+          const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
+          if (!isWildcard) this.expression(arm.pattern, scope, subjectType);
+          const armResultType = this.expression(arm.result, scope, expected);
+          if (!resultType) resultType = armResultType;
+          else if (!typeMatches(armResultType, resultType)) this.report(arm.result, `El arm devuelve '${armResultType}', se esperaba '${resultType}'`);
+        }
+        result = resultType ?? "void";
+        break;
+      }
       case "ArrayLiteralExpression": {
         if (expected && isArrayType(expected)) {
           const element = arrayElement(expected);

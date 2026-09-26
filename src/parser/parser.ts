@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -432,8 +432,36 @@ export class Parser {
   }
 
   private expression(): Expression {
-    const left = this.isArrowStart() ? this.arrowFunction() : this.assignment();
+    const left = this.isArrowStart() ? this.arrowFunction() : (this.check("match") ? this.matchExpression() : this.assignment());
     return this.ternary(left);
+  }
+
+  /**
+   * Parsea `match (subject) { when (pattern) => result; when (...) => ...; _ => default }`.
+   * El subject se evalúa una vez. Cada arm se evalúa como `subject == pattern ? result : ...`.
+   * El último arm con pattern `_` actúa como default (siempre matchea).
+   */
+  private matchExpression(): MatchExpression {
+    const keyword = this.previous(); // no debería ser undefined porque verificamos check("match") antes
+    const start = this.peek().span.start;
+    this.match("match");
+    this.consume("(", "Se esperaba '(' después de 'match'");
+    const subject = this.expression();
+    this.consume(")", "Se esperaba ')' después del sujeto de 'match'");
+    this.consume("{", "Se esperaba '{' para los arms de 'match'");
+    const arms: MatchArm[] = [];
+    while (!this.check("}") && !this.check("eof")) {
+      this.consume("when", "Se esperaba 'when' para iniciar un arm de 'match'");
+      this.consume("(", "Se esperaba '(' después de 'when'");
+      const pattern = this.expression();
+      this.consume(")", "Se esperaba ')' después del pattern");
+      this.consume("=>", "Se esperaba '=>' en el arm de 'match'");
+      const result = this.expression();
+      const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+      arms.push({ pattern, result, span: span(start, end.span.end) });
+    }
+    this.consume("}", "Se esperaba '}' al final de 'match'");
+    return { kind: "MatchExpression", subject, arms, span: span(keyword.span.start, this.peek().span.start) };
   }
   // `cond ? then : else`. La condición se parsea por `assignment()`, lo que
   // excluye el `?:` de la derecha (right-associative). Si no hay `:`, devuelve
