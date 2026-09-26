@@ -2,6 +2,8 @@
 
 Transpilador modular escrito en TypeScript de un lenguaje con sintaxis inspirada en TypeScript, tipado estático y salida C++20. La implementación canónica vive en `src/`.
 
+> **¿Qué se soporta exactamente?** Lee [`LIMITATIONS.md`](./LIMITATIONS.md) para ver la lista completa de features rechazadas o pospuestas. Este README documenta cómo usar el dialecto y qué features están implementadas.
+
 ## Uso rápido
 
 Requiere Node.js 22.6+ y, para compilar la salida, un compilador C++20.
@@ -726,16 +728,61 @@ print(s);                       // hello
 
 ## Limitaciones conocidas
 
-Esta sección documenta **explícitamente** features de TypeScript estándar que el dialecto **rechaza** con diagnóstico claro, y por qué. Cualquier PR que intente reintroducirlas debe reconsiderar primero la decisión de diseño.
+Esta sección documenta **explícitamente** features de TypeScript estándar que el dialecto **rechaza** con diagnóstico claro, y por qué. Para una lista completa de lo que el dialecto NO soporta (incluyendo posposiciones justificadas de Fase 1), consultar [`LIMITATIONS.md`](./LIMITATIONS.md).
 
-- **`??` (nullish coalescing)**: rechazado. El dialecto no tiene `null` ni `undefined`; el único "ausente" es `void`, que se modela como `std::variant<T, ets::void_t>` (no `std::optional`). El operador no tiene una semántica limpia aquí. El dialecto prefiere la API explícita del tipo: `Map.has(k) ? m.get(k) : default`, `result.isOk() ? result.value() : default`.
-- **`?.` (optional chaining)**: rechazado. Mismo motivo: sin `null`/`undefined`, no hay "campo opcional" runtime.
-- **`>>>` (logical right shift)**: no soportado. C++ estándar no tiene equivalente directo; usar `>>` con casteo explícito a `unsigned` si hace falta.
-- **Object destructuring `{}`**: no soportado. El dialecto no tiene literales de objeto ni `Object` runtime (la regla de diseño excluye cualquier tipo dinámico).
-- **Spread/rest `[...rest]`**: no soportado en array literals ni en llamadas a funciones. Los variadics solo existen en el lado de los parámetros (`function f(...args: T[])`).
-- **Regex literals `/foo/`**: no soportados. Requerirían un runtime de regex que el dialecto no expone.
-- **`BigInt`**: no soportado. El dialecto modela `number` como `double` (C++); no hay enteros de precisión arbitraria.
-- **Constructores múltiples / overload**: cada clase tiene a lo sumo un constructor (no hay overloading).
+**Rechazos irreversibles** (decisiones de diseño del dialecto):
+
+- **`Object`, `any`, `unknown`**: sin tipado dinámico.
+- **`throw` / `try` / `catch`**: el dialecto usa `Result<T, E>` para propagar errores (preserva RAII).
+- **Herencia** (`extends`, `implements`): sin polimorfismo dinámico ni vtable.
+- **`>>>`** (logical right shift): C++ no tiene equivalente directo.
+- **`Object destructuring` (`{}`)**: el dialecto no tiene literales de objeto.
+- **BigInt**: `number` se modela como `double`; sin precisión arbitraria.
+- **`eval`, `arguments`, `with`**: prohibidos por seguridad/rendimiento.
+
+**Features reabiertas o añadidas en Fase 1** (ya soportadas):
+
+- `??` (nullish coalescing) sobre `Optional<T>` (1.3).
+- `?.` (optional chaining) sobre `Optional<T>` (1.4).
+- Decoradores TC39 stage 3 (1.5).
+- Parámetros opcionales `name?: T` (1.6).
+- Template literals con `${expr}` (1.7).
+- `for await...of` sobre `Promise<T>[]` (1.8).
+- `using name = expr` con RAII automático (1.9).
+- Match expressions con `when (pattern) => result` (1.10).
+- `export default` y `export { x as y }` (1.15).
+
+Cualquier PR que intente reintroducir un rechazo irreversible debe reconsiderar primero la decisión de diseño.
+
+## Ejemplos disponibles
+
+El directorio `examples/` contiene 50 ejemplos cubriendo todas las features del dialecto. Cada uno tiene su golden file en `test/golden/`.
+
+| Categoría | Ejemplos |
+|---|---|
+| **Hello world** | `hello.ets` |
+| **Constructores y clases** | `constructor-demo.ets`, `complete-demo.ets`, `composition.ets`, `interface.ets`, `mutable-borrows.ets`, `default-args-demo.ets` |
+| **Genéricos y tipos** | `generics.ets`, `overloads-variadics.ets`, `union-demo.ets`, `intersection-demo.ets`, `type-aliases.ets`, `default-type-params.ets`, `typeof-type.ets`, `typeof-value.ets`, `function-type-demo.ets` |
+| **Colecciones y arrays** | `collections.ets`, `map-set-demo.ets`, `spread-array-demo.ets`, `destructuring-demo.ets`, `destructuring-default.ets` |
+| **Async y promesas** | `async-await.ets`, `async-files.ets`, `cancellation.ets`, `for-await-demo.ets` |
+| **Closures y funciones** | `closures.ets`, `for-of-demo.ets`, `for-in-demo.ets`, `match-demo.ets`, `using-demo.ets` |
+| **Stdlib runtime** | `math-date-demo.ets`, `numeric-literal.ets`, `enum-demo.ets`, `delete-demo.ets`, `instanceof-demo.ets` |
+| **JSON y strings** | `json-tree-demo.ets`, `template-strings-demo.ets` |
+| **Tipos nullish** | `optional-demo.ets`, `nullish-coalescing-demo.ets`, `optional-chaining-demo.ets`, `optional-parameter-demo.ets` |
+| **Decoradores** | `decorator-demo.ets` |
+| **Módulos** | `exports-demo.ets` |
+| **I/O nativo** | `native-io.ets`, `fs-demo.ets`, `result-files.ets`, `node-api-demo.ets`, `console-demo.ets` |
+| **Red y TLS** | `http-server.ets`, `tls-server.ets` |
+
+Para ejecutar un ejemplo:
+
+```bash
+node --experimental-strip-types src/cli.ts examples/hello.ets -o hello.cpp --unity
+g++ -std=c++20 -fno-exceptions -pthread -I. hello.cpp -o hello
+./hello
+```
+
+O directamente con `npm start -- examples/<nombre>.ets -o <salida>.cpp` y luego compilar con `g++`.
 
 ## Licencia
 
