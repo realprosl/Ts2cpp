@@ -185,7 +185,13 @@ export class CppGenerator {
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     const header = `${templatePart}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name} {`;
     const lines = [header]; this.indent++;
-    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly ? " const" : ""} ${field.name};`);
+    // C++ no permite reasignar campos `const` en el cuerpo del constructor.
+    // Si la clase declara un constructor, los `readonly` se emiten SIN `const`
+    // y el semantic checker rechaza asignaciones fuera del constructor. Si no
+    // hay constructor, los `readonly` se emiten como `const` (solo se pueden
+    // inicializar aggregate-style).
+    const hasConstructor = node.methods.some(method => method.name === "constructor");
+    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
     if (node.fields.length && node.methods.length) lines.push("");
     for (const method of node.methods) lines.push(this.pad() + this.classMethod(method), "");
     if (lines.at(-1) === "") lines.pop();

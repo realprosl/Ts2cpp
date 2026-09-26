@@ -176,8 +176,11 @@ export class Parser {
           params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, span: parameter.span });
         } while (this.match(","));
         this.consume(")", "Se esperaba ')' después de los parámetros");
-        this.consume(":", "El método necesita un tipo de retorno");
-        const returnType = this.typeName();
+        // El método `constructor` es especial: no tiene tipo de retorno
+        // explícito y siempre devuelve void. Lo detectamos por nombre; C++
+        // también usa ese nombre, así que la traducción es directa.
+        const isConstructor = member.lexeme === "constructor";
+        const returnType: TypeName = isConstructor ? "void" : (this.match(":") ? this.typeName() : (this.error(this.peek(), "El método necesita un tipo de retorno"), "void"));
         const open = this.consume("{", "Se esperaba el cuerpo del método");
         const body = this.block(open);
         methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, span: span(member.span.start, body.span.end) });

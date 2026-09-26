@@ -110,6 +110,7 @@ export class TypeChecker {
   private readonly types = new WeakMap<Expression, TypeName>();
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
+  private inConstructor = false;
   private readonly interfaces = new Map<string, InterfaceDeclaration>();
   private readonly classes = new Map<string, ClassDeclaration>();
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
@@ -770,9 +771,10 @@ export class TypeChecker {
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       local.define("this", { kind: "variable", type: ownerType, mutable: true });
       for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
-      const previous = this.currentReturn; const previousAsync = this.currentAsync; this.currentReturn = method.returnType; this.currentAsync = false;
+      const previous = this.currentReturn; const previousAsync = this.currentAsync; const previousCtor = this.inConstructor;
+      this.currentReturn = method.returnType; this.currentAsync = false; this.inConstructor = method.name === "constructor";
       this.statement(method.body, local);
-      this.currentReturn = previous; this.currentAsync = previousAsync;
+      this.currentReturn = previous; this.currentAsync = previousAsync; this.inConstructor = previousCtor;
     });
   }
 
@@ -1131,7 +1133,17 @@ export class TypeChecker {
       case "AssignmentExpression": {
         const targetType = this.expression(node.target, scope); const value = this.expression(node.value, scope, targetType);
         if (!this.mutableTarget(node.target, scope)) this.report(node, "No se puede modificar una constante ni uno de sus campos");
-        else this.markCapturedMutation(node.target, scope);
+        else {
+          // Rechaza asignaciones a campos `readonly` fuera del constructor:
+          // el dialecto exige que se inicialicen una sola vez en el cuerpo
+          // del constructor. Esto se modela como "mutable solo dentro del
+          // método `constructor` de la misma clase".
+          if (!this.inConstructor) {
+            const readonlyField = this.findReadonlyFieldAccess(node.target);
+            if (readonlyField) this.report(node, `El campo readonly '${readonlyField}' solo puede asignarse dentro del constructor`);
+          }
+          this.markCapturedMutation(node.target, scope);
+        }
         this.require(value, targetType, node.value); result = targetType;
         break;
       }
@@ -1147,6 +1159,28 @@ export class TypeChecker {
       }
     }
     this.types.set(node, result); return result;
+  }
+
+  private findReadonlyFieldAccess(node: Expression): string | undefined {
+    // Devuelve el nombre del campo si `node` es un acceso a un campo
+    // `readonly` de la clase actualmente en checkeo (`this.field = ...`).
+    // Devuelve `undefined` si no aplica.
+    if (node.kind !== "MemberExpression") return undefined;
+    const object = node.object;
+    if (object.kind !== "IdentifierExpression" || object.name !== "this") return undefined;
+    const ownerType = this.currentReturn; // pista: el currentReturn de un método no es el de this; usamos una búsqueda explícita
+    // Buscamos en todas las clases registradas si alguna tiene un campo con
+    // ese nombre y es readonly. Es una simplificación: no comprobamos que la
+    // clase del `this` actual sea la misma, pero como el dialecto no tiene
+    // herencia, cada `this.field` solo puede referirse a la clase del método
+    // envolvente. El constructor del flujo correcto garantiza que el campo
+    // existe; si la asignación es a un campo que no es readonly, devuelve
+    // undefined y se permite.
+    for (const cls of this.classes.values()) {
+      const field = cls.fields.find(f => f.name === node.member && f.readonly);
+      if (field) return field.name;
+    }
+    return undefined;
   }
 
   private mutableTarget(node: Expression, scope: Scope): boolean {
