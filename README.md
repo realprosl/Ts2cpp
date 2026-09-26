@@ -659,6 +659,84 @@ build/tools/ets-ast-dump examples/hello.ets --syntax
 - Source maps entre `.ets` y C++.
 - Backend abstracto para generar C++ u otros destinos.
 
+## Estado del dialecto
+
+Esta sección resume lo que **ya está implementado** en el dialecto "Estatic" más allá del subconjunto mínimo documentado arriba. Cada bloque se documentó en su commit correspondiente; aquí solo se listan con un ejemplo.
+
+### Operador ternario `cond ? then : else`
+
+```ets
+const grade: string = score >= 90 ? "A" : score >= 70 ? "B" : "F";
+```
+
+Right-associative. La condición debe ser `boolean`; las dos ramas deben tener tipos compatibles.
+
+### Literales numéricos no decimales y bitwise
+
+```ets
+const hex: number = 0xFF;
+const bin: number = 0b1010;
+const sep: number = 1_000_000;
+
+const mask: number = 0b1111 | 0b0101;
+const shift: number = 0x10 << 2;
+```
+
+El dialecto acepta `0x`/`0X`, `0o`/`0O`, `0b`/`0B` (TS estándar) y separadores `_` entre dígitos. Los operadores bitwise `|`, `&`, `^`, `<<`, `>>` y el unario `~` están soportados. `>>>` (logical shift right de JS) **no** se incluye porque no existe en C++ estándar.
+
+### Array destructuring
+
+```ets
+const arr: number[] = [10, 20, 30];
+const [a, b, c] = arr;
+print(a + b + c);  // 60
+```
+
+Se desazucara a una variable temporal + N bindings indexados. Cada binding hereda el tipo del elemento (no del array). No hay rest patterns ni default values (esos quedan para una iteración futura).
+
+### `readonly` en campos y constructores
+
+```ets
+class Point {
+  readonly x: number;
+  readonly y: number;
+  label: string;
+  constructor(x: number, y: number, label: string) {
+    this.x = x;
+    this.y = y;
+    this.label = label;
+  }
+}
+```
+
+Los campos `readonly` solo pueden asignarse dentro del constructor; el semantic checker rechaza asignaciones posteriores con un mensaje claro.
+
+### Math, Date y JSON.parse (stdlib mínima)
+
+```ets
+print(Math.floor(3.7));        // 3
+print(Math.sqrt(16));           // 4
+print(Math.pow(2, 10));         // 1024
+print(Date.now() > 0);          // true
+const s: string = JSON.parse('"hello"');
+print(s);                       // hello
+```
+
+`Math` cubre `floor/ceil/round/abs/sqrt/pow/min/max`. `Date` expone `now()` y `utc(year, month, day)` (timestamps numéricos). `JSON.parse` solo maneja literales JSON escalares (`string`/`number`/`true`/`false`/`null`) y devuelve su representación canónica como `string`.
+
+## Limitaciones conocidas
+
+Esta sección documenta **explícitamente** features de TypeScript estándar que el dialecto **rechaza** con diagnóstico claro, y por qué. Cualquier PR que intente reintroducirlas debe reconsiderar primero la decisión de diseño.
+
+- **`??` (nullish coalescing)**: rechazado. El dialecto no tiene `null` ni `undefined`; el único "ausente" es `void`, que se modela como `std::variant<T, ets::void_t>` (no `std::optional`). El operador no tiene una semántica limpia aquí. El dialecto prefiere la API explícita del tipo: `Map.has(k) ? m.get(k) : default`, `result.isOk() ? result.value() : default`.
+- **`?.` (optional chaining)**: rechazado. Mismo motivo: sin `null`/`undefined`, no hay "campo opcional" runtime.
+- **`>>>` (logical right shift)**: no soportado. C++ estándar no tiene equivalente directo; usar `>>` con casteo explícito a `unsigned` si hace falta.
+- **Object destructuring `{}`**: no soportado. El dialecto no tiene literales de objeto ni `Object` runtime (la regla de diseño excluye cualquier tipo dinámico).
+- **Spread/rest `[...rest]`**: no soportado en array literals ni en llamadas a funciones. Los variadics solo existen en el lado de los parámetros (`function f(...args: T[])`).
+- **Regex literals `/foo/`**: no soportados. Requerirían un runtime de regex que el dialecto no expone.
+- **`BigInt`**: no soportado. El dialecto modela `number` como `double` (C++); no hay enteros de precisión arbitraria.
+- **Constructores múltiples / overload**: cada clase tiene a lo sumo un constructor (no hay overloading).
+
 ## Licencia
 
 MIT — ver [`LICENSE`](LICENSE).
