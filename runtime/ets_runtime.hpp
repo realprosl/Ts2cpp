@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cctype>
+#include <chrono>
 #include <functional>
 #include <filesystem>
 #include <iostream>
@@ -309,9 +311,112 @@ struct ets_json {
         output.push_back('"');
         return output;
     }
+    // `JSON.parse` mínimo: parsea SOLO literales JSON escalares (`"string"`,
+    // `number`, `true`, `false`, `null`). Devuelve la representación textual
+    // canónica. El dialecto no tiene `Object`/`any`, así que no construimos
+    // un árbol JSON dinámico: para datos estructurados el usuario define su
+    // propio parser tipado. Errores de sintaxis devuelven `std::nullopt`.
+    static std::string parse(const std::string& input) noexcept {
+        const std::string trimmed = trim(input);
+        if (trimmed.empty()) return std::string();
+        if (trimmed.front() == '"' && trimmed.back() == '"' && trimmed.size() >= 2) {
+            // Desescapa el string: \" → ", \\ → \, \n → salto de línea, etc.
+            std::string output; output.reserve(trimmed.size() - 2);
+            for (std::size_t index = 1; index + 1 < trimmed.size(); ++index) {
+                if (trimmed[index] == '\\' && index + 2 < trimmed.size()) {
+                    switch (trimmed[index + 1]) {
+                        case '"': output.push_back('"'); index++; break;
+                        case '\\': output.push_back('\\'); index++; break;
+                        case '/': output.push_back('/'); index++; break;
+                        case 'b': output.push_back('\b'); index++; break;
+                        case 'f': output.push_back('\f'); index++; break;
+                        case 'n': output.push_back('\n'); index++; break;
+                        case 'r': output.push_back('\r'); index++; break;
+                        case 't': output.push_back('\t'); index++; break;
+                        case 'u':
+                            if (index + 5 < trimmed.size()) {
+                                output.push_back('?'); // escape Unicode no soportado en este runtime mínimo
+                                index += 4;
+                            } else return std::string();
+                            break;
+                        default: return std::string();
+                    }
+                } else output.push_back(trimmed[index]);
+            }
+            return output;
+        }
+        if (trimmed == "true") return std::string("true");
+        if (trimmed == "false") return std::string("false");
+        if (trimmed == "null") return std::string("null");
+        // número: debe consistir solo en dígitos, signo, punto o exponente
+        bool isNumber = !trimmed.empty();
+        for (const char character : trimmed) {
+            if (!(std::isdigit(static_cast<unsigned char>(character)) || character == '-' || character == '+' || character == '.' || character == 'e' || character == 'E')) { isNumber = false; break; }
+        }
+        if (isNumber) return trimmed;
+        return std::string();
+    }
+private:
+    static std::string trim(const std::string& input) noexcept {
+        const auto first = input.find_first_not_of(" \t\n\r");
+        if (first == std::string::npos) return "";
+        const auto last = input.find_last_not_of(" \t\n\r");
+        return input.substr(first, last - first + 1);
+    }
 };
 
 inline ets_json JSON{};
+
+// `Math` (Bloque E): operaciones numéricas básicas sobre `double` que
+// envuelven `<cmath>` con una API ergonómica estilo TypeScript. Todas las
+// funciones son estáticas (`ets_math::floor(x)`) y se exponen como globales
+// `Math.floor(x)` en el lenguaje fuente. No hay funciones que dependan de
+// `Object`/`any` (p.ej. `Math.max` con número variable de argumentos solo
+// soporta 2 argumentos por la restricción de variadics del dialecto).
+struct ets_math {
+    static double floor(const double value) noexcept { return std::floor(value); }
+    static double ceil(const double value) noexcept { return std::ceil(value); }
+    static double round(const double value) noexcept { return std::round(value); }
+    static double abs(const double value) noexcept { return std::fabs(value); }
+    static double sqrt(const double value) noexcept { return std::sqrt(value); }
+    static double pow(const double base, const double exponent) noexcept { return std::pow(base, exponent); }
+    static double min(const double left, const double right) noexcept { return left < right ? left : right; }
+    static double max(const double left, const double right) noexcept { return left > right ? left : right; }
+};
+
+inline ets_math Math{};
+
+// `Date` (Bloque E): API mínima estilo JavaScript para tiempo. El dialecto
+// no tiene zona horaria dinámica ni objetos fecha mutables (eso requeriría
+// `Object`). Solo se exponen constructores y accesores que devuelven números
+// primitivos (`number` en etsc).
+struct ets_date {
+    static double now() noexcept {
+        return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    }
+    // `Date.UTC(year, month, day, ...)` devuelve el timestamp UTC en ms. Se
+    // toman 3 argumentos posicionales (no se admiten tuplas): año, mes 0-11,
+    // día 1-31. Coherente con la API estándar.
+    static double utc(const double year, const double month, const double day) noexcept {
+        std::tm time{};
+        time.tm_year = static_cast<int>(year) - 1900;
+        time.tm_mon = static_cast<int>(month);
+        time.tm_mday = static_cast<int>(day);
+        time.tm_isdst = 0;
+        return static_cast<double>(static_cast<std::int64_t>(timegm(&time)) * 1000);
+    }
+};
+
+inline ets_date Date{};
+
+inline bool ensureParentDirectory(const std::string& path, std::string& error) noexcept {
+    std::error_code status;
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent, status);
+    if (status) { error = "No se puede crear el directorio de salida: " + status.message(); return false; }
+    return true;
+}
 
 inline bool fail(const std::string& message, std::string& error) noexcept {
     error = message;
@@ -387,12 +492,4 @@ inline std::string pathDirectory(const std::string& path) {
 inline std::string resolveProjectPath(const std::string& configFile, const std::string& value) {
     const std::filesystem::path requested(value);
     return normalizePath((requested.is_absolute() ? requested : std::filesystem::path(configFile).parent_path() / requested).string());
-}
-
-inline bool ensureParentDirectory(const std::string& path, std::string& error) noexcept {
-    std::error_code status;
-    const auto parent = std::filesystem::path(path).parent_path();
-    if (!parent.empty()) std::filesystem::create_directories(parent, status);
-    if (status) { error = "No se puede crear el directorio de salida: " + status.message(); return false; }
-    return true;
 }

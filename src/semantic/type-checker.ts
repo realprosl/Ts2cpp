@@ -49,6 +49,35 @@ const PROCESS_METHODS: Record<string, { params: TypeName[]; returnType: TypeName
 // requiere union types (`string | number | boolean`).
 const JSON_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
   stringify: { params: ["string"], returnType: "string" },
+  // `JSON.parse` devuelve `string`: el dialecto no tiene `Object`/`any`, así que
+  // no podemos construir un árbol JSON arbitrario. Por ahora el dialecto solo
+  // permite parsear literales JSON simples (strings, números, booleanos) y
+  // devuelve su representación textual normalizada. Para estructuras complejas
+  // el usuario debe definir su propio parser tipado.
+  parse: { params: ["string"], returnType: "string" },
+};
+
+// Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
+// (mapeado a `double` en C++). Las funciones que en JavaScript aceptan
+// número variable de argumentos (`Math.max(...args)`) se limitan a dos
+// argumentos aquí por la restricción del dialecto (variadics no uniformes).
+const MATH_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+  floor: { params: ["number"], returnType: "number" },
+  ceil:  { params: ["number"], returnType: "number" },
+  round: { params: ["number"], returnType: "number" },
+  abs:   { params: ["number"], returnType: "number" },
+  sqrt:  { params: ["number"], returnType: "number" },
+  pow:   { params: ["number", "number"], returnType: "number" },
+  min:   { params: ["number", "number"], returnType: "number" },
+  max:   { params: ["number", "number"], returnType: "number" },
+};
+
+// Bloque E: tabla de métodos de `Date`. La API es mínima: solo timestamps.
+// Fechas estructuradas (year/month/day getters, formatos) requieren tipos
+// compuestos que este dialecto evita por ahora.
+const DATE_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+  now: { params: [], returnType: "number" },
+  utc: { params: ["number", "number", "number"], returnType: "number" },
 };
 
 // Tabla de métodos de `Map<K, V>`. Las firmas son plantillas que se materializan
@@ -822,6 +851,8 @@ export class TypeChecker {
         if (node.name === "path") { result = "Path"; break; }
         if (node.name === "process") { result = "Process"; break; }
         if (node.name === "JSON") { result = "Json"; break; }
+        if (node.name === "Math") { result = "Math"; break; }
+        if (node.name === "Date") { result = "Date"; break; }
         this.report(node, `Símbolo no definido '${node.name}'`);
         break;
       }
@@ -932,6 +963,14 @@ export class TypeChecker {
         }
         if (objectType === "Process") {
           result = this.dispatchBuiltin("process", PROCESS_METHODS, node, scope);
+          break;
+        }
+        if (objectType === "Math") {
+          result = this.dispatchBuiltin("Math", MATH_METHODS, node, scope);
+          break;
+        }
+        if (objectType === "Date") {
+          result = this.dispatchBuiltin("Date", DATE_METHODS, node, scope);
           break;
         }
         if (objectType === "Json") {
