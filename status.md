@@ -87,7 +87,16 @@
     | ^^^^^^
     = hint: ¿Quisiste decir 'greet'?
   ```
-- **Próxima fase**: Fase 2.2 — docs completas (README, LIMITATIONS, ejemplos organizados).
+## Última fase cerrada: Fase 2.2 — documentación completa · commit 89c4883
+
+- **Tests**: 130/130 PASS (sin cambios en código)
+- **Cambios**:
+  - `LIMITATIONS.md` nuevo (149 líneas): documenta exhaustivamente rechazos irreversibles (sin Object/any/unknown, sin throw/try/catch, sin herencia, sin >>>, sin Object destructuring, sin BigInt, sin eval/arguments/with), posposiciones de Fase 1 (satisfies, variadic tuples, Promise.all, const generics) y limitaciones intencionales del diseño.
+  - `README.md` actualizado:
+    - Enlace prominente a `LIMITATIONS.md` al inicio.
+    - Sección 'Limitaciones conocidas' reescrita: solo rechazos irreversibles; las features reabiertas en Fase 1 se mencionan con referencia al commit.
+    - Nueva sección 'Ejemplos disponibles' con tabla categorizada de los 50 ejemplos y comandos para ejecutarlos.
+- **Próxima fase**: Fase 2.3 — compilación incremental pulida (verbose, errores claros).
 
 ## Plan en cola
 
@@ -116,8 +125,8 @@
 | # | Mejora | Estado |
 |---|---|---|
 | 2.1 | Error reporting legible (colores, multi-line, did you mean) | ✅ commit 270050c |
-| 2.2 | Documentación completa (README, LIMITATIONS, ejemplos) | ⏳ **siguiente** |
-| 2.3 | Compilación incremental pulida (verbose, errores claros) | ⏸️ pospuesto |
+| 2.2 | Documentación completa (README, LIMITATIONS, ejemplos) | ✅ commit 89c4883 |
+| 2.3 | Compilación incremental pulida (verbose, errores claros) | ⏳ **siguiente** |
 | 2.4 | Página web de demos | ⏸️ pospuesto |
 
 ### Fase 3 — Compilación incremental
