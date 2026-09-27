@@ -22,6 +22,10 @@
 #include "runtime/ets_file.hpp"
 #include "runtime/ets_net.hpp"
 #include "runtime/ets_optional.hpp"
+#include "runtime/ets_un.hpp"
+#include "runtime/ets_rc.hpp"
+#include "runtime/ets_mutref.hpp"
+#include "runtime/ets_mut.hpp"
 #include "runtime/ets_process.hpp"
 #include "runtime/ets_string.hpp"
 

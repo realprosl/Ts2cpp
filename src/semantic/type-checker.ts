@@ -96,6 +96,37 @@ const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: bool
   optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
 });
 
+// Helpers sobre `Un<T>` (unique_ptr). Mismo patrón que OPTIONAL_HELPERS:
+// helpers globales para evitar `Un<T>.some(...)` que el dialecto no soporta
+// en genéricos. `unSome` y `unNone` requieren un `expected` contextual para
+// inferir T. `unIsSome` devuelve boolean; `unValue` devuelve T& (asume no vacío).
+const UN_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
+  unSome: { minParams: 1, returnsGeneric: true },              // (T) → Un<T>
+  unNone: { minParams: 0, returnsGeneric: true },              // <T>() → Un<T>
+  unIsSome: { minParams: 1, returnsGeneric: false },           // (Un<T>) → boolean
+  unValue: { minParams: 1, returnsGeneric: false },            // (Un<T>) → T
+});
+
+// Helpers sobre `Rc<T>` (shared_ptr).
+const RC_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
+  rcShare: { minParams: 1, returnsGeneric: true },             // (T) → Rc<T>
+  rcStrongCount: { minParams: 1, returnsGeneric: false },      // (Rc<T>) → number
+  rcValue: { minParams: 1, returnsGeneric: false },            // (Rc<T>) → T
+});
+
+// Helpers sobre `MutRef<T>` (referencia mutable) y `Mut<T>` (puntero crudo
+// mutable constante). Solo constructores; el dialecto no tiene métodos sobre
+// estos (la sintaxis `ptr.some()` no funciona para genéricos).
+const REF_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
+  mutRefOf: { minParams: 1, returnsGeneric: true },           // (T&) → MutRef<T>
+  mutRefFrom: { minParams: 1, returnsGeneric: true },         // (T&) → MutRef<T>
+  mutRefValue: { minParams: 1, returnsGeneric: false },       // (MutRef<T>) → T
+  mutOf: { minParams: 1, returnsGeneric: true },              // (T*) → Mut<T>
+  mutFrom: { minParams: 1, returnsGeneric: true },            // (T&) → Mut<T>
+  mutValue: { minParams: 1, returnsGeneric: false },          // (Mut<T>) → T
+  mutIsSome: { minParams: 1, returnsGeneric: false },        // (Mut<T>) → boolean
+});
+
 // Helpers sobre `Task<T>[]` (Promise-like arrays). El dialecto expone
 // `all(tasks)` y `race(tasks)` que devuelven el T del array (o `T[]` para
 // `all`). Se modelan con un tipo contextual: el user declara `const x: T =
@@ -710,6 +741,15 @@ export class TypeChecker {
         this.validateType(arguments_[0], node, false, primitiveOnly, scope);
         return type;
       }
+      // Issue #3: smart pointers. Aceptan exactamente 1 argumento de tipo,
+      // que NO puede ser primitivo (los primitivos van siempre por valor).
+      if (base === "Un" || base === "Rc" || base === "MutRef" || base === "Mut") {
+        if (arguments_.length !== 1) this.report(node, `'${base}' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        const inner = arguments_[0];
+        if (inner && isPrimitive(inner)) this.report(node, `'${base}<${inner}>' no soporta primitivos (los primitivos van por valor)`);
+        this.validateType(inner, node, false, primitiveOnly, scope);
+        return type;
+      }
       if (base === "Set") {
         if (arguments_.length !== 1) this.report(node, `'Set' espera 1 argumento de tipo, recibió ${arguments_.length}`);
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
@@ -1180,6 +1220,48 @@ export class TypeChecker {
             break;
           }
           if (result === undefined) { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
+          break;
+        }
+        // Helpers de smart pointers (Issue #3): Un<T>, Rc<T>, MutRef<T>, Mut<T>.
+        // Patrón idéntico a OPTIONAL_HELPERS pero con detección del base genérico
+        // correspondiente. Los 4 helpers `unSome`, `unNone`, `rcShare` esperan un
+        // `expected` contextual (e.g. `const x: Un<Counter> = unSome(...)`) para
+        // inferir T.
+        if (UN_HELPERS[node.callee] || RC_HELPERS[node.callee] || REF_HELPERS[node.callee]) {
+          const isMutRef = node.callee === "mutRefOf" || node.callee === "mutRefFrom" || node.callee === "mutRefValue";
+          const smartBase = UN_HELPERS[node.callee] ? "Un" : RC_HELPERS[node.callee] ? "Rc" : isMutRef ? "MutRef" : "Mut";
+          // Para constructores (unSome, unNone, rcShare, mutRefOf, etc.) usamos
+          // el `expected` contextual. Para inspectors (unIsSome, unValue,
+          // rcStrongCount, rcValue) inferimos desde el tipo del primer argumento.
+          const isInspector = node.callee === "unIsSome" || node.callee === "unValue" || node.callee === "rcStrongCount" || node.callee === "rcValue" || node.callee === "mutRefValue" || node.callee === "mutValue" || node.callee === "mutIsSome";
+          let expectedElement: TypeName | undefined;
+          if (isInspector && node.args[0]) {
+            const arg0Type = this.expression(node.args[0], scope);
+            expectedElement = isGenericType(arg0Type) && genericBase(arg0Type) === smartBase ? genericArguments(arg0Type)[0] : undefined;
+            if (!expectedElement) this.report(node, `'${node.callee}' espera ${smartBase}<T>, se obtuvo '${arg0Type}'`);
+          } else {
+            expectedElement = expected && isGenericType(expected) && genericBase(expected) === smartBase ? genericArguments(expected)[0] : undefined;
+          }
+          if (expectedElement) {
+            if (node.callee === "unSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Un", [expectedElement]); }
+            else if (node.callee === "unNone") result = genericType("Un", [expectedElement]);
+            else if (node.callee === "unIsSome") { result = "boolean"; }
+            else if (node.callee === "unValue") { result = expectedElement; }
+            else if (node.callee === "rcShare" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Rc", [expectedElement]); }
+            else if (node.callee === "rcStrongCount") { result = "number"; }
+            else if (node.callee === "rcValue") { result = expectedElement; }
+            else if ((node.callee === "mutRefOf" || node.callee === "mutRefFrom") && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("MutRef", [expectedElement]); }
+            else if (node.callee === "mutRefValue") { result = expectedElement; }
+            else if ((node.callee === "mutOf" || node.callee === "mutFrom") && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Mut", [expectedElement]); }
+            else if (node.callee === "mutValue") { result = expectedElement; }
+            else if (node.callee === "mutIsSome") { result = "boolean"; }
+            else { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
+          } else {
+            // Sin expected ni tipo inferible: reportamos.
+            this.report(node, `'${node.callee}' requiere contexto de tipo ${smartBase}<T>`);
+            node.args.forEach(arg => this.expression(arg, scope));
+            result = "void";
+          }
           break;
         }
         if (JSON_HELPERS[node.callee]) {
