@@ -1,0 +1,15 @@
+sumTo(0)  = 0
+sumTo(1)  = 1
+sumTo(5)  = 15
+sumTo(10) = 55
+count = 5
+count = 4
+count = 3
+count = 2
+count = 1
+done
+even = 0
+even = 2
+even = 4
+even = 6
+even = 8

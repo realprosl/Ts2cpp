@@ -1,0 +1,9 @@
+name inicial = outside
+counter inicial = 0
+counter final = 6
+name en bloque = inside
+counter en bloque = 100
+name fuera = outside
+counter fuera = 6
+inferredStr = inferred
+inferredNum = 42

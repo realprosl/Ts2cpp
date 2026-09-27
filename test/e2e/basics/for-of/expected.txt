@@ -1,0 +1,13 @@
+n = 10
+n = 20
+n = 30
+n = 40
+word = alpha
+word = beta
+word = gamma
+total = 100
+char = h
+char = i
+scaled = 10
+scaled = 20
+scaled = 30
