@@ -5,145 +5,199 @@ NO es un transpilador TS-completo: muchas features de TypeScript se han
 rechazado explícitamente para mantener las garantías del dialecto (RAII
 puro, sin herencia, sin `Object`/`any`/`unknown`).
 
-Esta lista documenta lo que el dialecto **NO soporta** y por qué. Para ver
-lo que SÍ soporta, consultar `README.md`.
+Este documento está dividido en tres secciones:
 
-## Tipos del sistema
+- **✅ Implementado** — features de TS soportadas. Para uso y ejemplos ver `README.md`.
+- **❌ Rechazado por diseño** — features que el dialecto NUNCA tendrá (con motivo).
+- **🟡 Pendiente / TS no cubierto** — features en TS que aún no están en el dialecto.
 
-- **`Object`, `any`, `unknown`** — rechazados. Sin tipo "trampolín" para
-  valores dinámicos. Si necesitas tipar algo flexible, usa un union
-  explícito o un tipo definido por el usuario.
-- **`never`** — rechazado. No se distingue de `void` en este dialecto.
-- **Implicit conversions** entre tipos no relacionados — rechazadas.
-  Excepción: `Path` se convierte a `string` automáticamente en llamadas a
-  `path.*` y funciones que esperan string.
-- **Type assertions (`as`, `<T>x`)** — no soportados. El dialecto prefiere
-  generics y type narrowing. Si necesitas convertir un union a un tipo
-  concreto, refactoriza con `match`.
+> Este doc se sincroniza con el código vía `scripts/check-docs-sync.ts`. Si
+> encuentras una feature implementada que no aparece en "Implementado", o una
+> limitación que el código ya no aplica, ejecuta el check y abre una PR.
 
-## Inferencia
+---
 
-- **`satisfies` operator** — pospuesto. El dialecto no distingue entre
-  tipo inferido y tipo declarado en la misma expresión (siempre es uno).
-- **`const` generics** — pospuesto. Sin reificación, no se pueden usar
-  tipos como `T extends 1 | 2 | 3` para derivar otros tipos.
-- **Conditional types / mapped types / `infer`** — no soportados.
-  El dialecto no tiene un sistema de tipos computacional.
-- **Template literal types** (`\`hello ${T}\`` como tipo) — no soportados.
+## ✅ Implementado
 
-## Clases y objetos
+Lista no exhaustiva — ver `README.md`, `examples/` y los nodos AST en
+`src/ast/nodes.ts` para la cobertura completa.
 
-- **Herencia (`extends`, `implements`)** — rechazado. Las clases son
-  *value types* planos sin vtable. Si necesitas reutilizar comportamiento,
-  usa composición + interfaces estructurales.
-- **Polimorfismo dinámico** — no soportado. Sin `instanceof` con jerarquía,
-  sin despacho virtual, sin override de métodos.
-- **Mixins** — no soportados. Misma razón que herencia.
-- **Decoradores stage 2 (con metadata reflection)** — solo se soporta
-  el subset TC39 stage 3 simple. `@deprecated` emite un warning a stderr
-  en cada llamada. `@sealed` es no-op (sin herencia donde aplicarse).
-- **Getters / setters** — no soportados como sintaxis TS. El dialecto
-  usa métodos `getX()` / `setX()` cuando es necesario.
-- **Operador `delete`** — soportado solo para propiedades dinámicas
-  (path-keyed maps); no libera memoria como en JS.
+### Sistema de tipos
 
-## Funciones
+- Tipos primitivos: `number`, `string`, `boolean`, `void`.
+- Genéricos con constraints (`<T extends X>`) y parameter packs (`<T...>`).
+- Sobrecargas de funciones libres resueltas estáticamente por firma.
+- Type aliases (`type X = …`).
+- **Unions** (`A | B | C`) e **intersecciones** (`A & B`) de tipos.
+- **Satisfies operator** (`expr satisfies T`, TS 4.9).
+- `typeof` valor y `typeof` tipo (`T typeof expr`).
+- `instanceof` para validar miembros de un union contra una clase.
+- `readonly` en campos de clase.
+- Optional parameters (`name?: T`).
+- Tipos literales numéricos no decimales (`0xFF`, `0b1010`, `0o17`).
 
-- **`this` binding dinámico** — no soportado. El dialecto usa `(*this)`
-  explícito en métodos. No hay `Function.prototype.bind`.
-- **`arguments`** — no soportado. Usa parámetros rest (`...args`).
-- **Funciones generadoras (`function*`)** — no soportadas. Usa async
-  functions + promesas.
-- **Async iterators (`Symbol.asyncIterator`)** — solo `for await...of`
-  sobre arrays de promesas. No hay iteración lazy.
+### Clases y objetos
 
-## Arrays y colecciones
+- Clases por valor (sin herencia, sin vtable) — `class X { field: T; method(): R }`.
+- Constructores (`constructor(params) { this.x = params.x; }`).
+- Decoradores simples (`@deprecated` emite warning; `@sealed` no-op).
+- Interfaces estructurales (sin `implements` explícito).
+- Composición de campos (la clase satisface una interface por estructura).
 
-- **`Array<T>` como clase** — el dialecto usa `T[]`. No hay métodos
-  `Array.prototype.*` dinámicos; solo `length(arr)`, indexing, y loops.
-- **`push`, `pop`, `shift`, `unshift`** — no soportados en el dialecto
-  source. Para inicializar vectores move-only, usa el literal con lambda
-  helper que el codegen emite (Fase 1.8 fix). Para mutación, usa índices.
-- **`splice`, `slice`** — no soportados.
-- **Spread con arrays grandes** — funciona pero con copia completa; en
-  C++ no hay COW.
-- **Tuples con spread variádico (`[T, ...U]`)** — pospuesto. Sin
-  reificación de tuples, no se puede despachar por aridad dinámica.
+### Funciones y control de flujo
 
-## Strings
+- `function`, arrow functions, closures, lambdas con `std::function`.
+- Parámetros rest (`...args: T[]`) y variádicos genéricos.
+- `if/else`, `while`, `for`, `for..in`, `for..of`, `for await..of`.
+- `break`, `continue` validados por contexto.
+- **Operador ternario** `cond ? then : else`.
+- **Match expressions** `match (x) { when (pat) => result; _ => default }` —
+  patrón por igualdad, no narrowing.
+- `switch / case / default` sobre enums, strings y números.
+- `delete` sobre propiedades dinámicas de Map/Set.
+- `await` y `async function` (compilados a corutinas C++20).
+- `for await (const x of Promise<T>[])` para iterar arrays de promesas.
 
-- **String indexing mutable** — no soportado (`s[0] = "a"`).
-- **Template literal types** — ver arriba (en tipos).
-- **Tagged templates** — no soportados.
+### Strings y literales
 
-## Errores y control de flujo
+- String literals con escapes (`\n`, `\t`, `\"`, etc.).
+- **Template literals con interpolación** `` `Hola ${name}` `` y anidamiento.
+- Multi-línea literal.
 
-- **`throw` / `try` / `catch`** — rechazados. El dialecto usa `Result<T, E>`
-  para propagar errores. Esto es por diseño (RAII requiere no saltar
-  entre scopes).
-- **`Promise.reject`** — la operación sí existe pero no es preferida;
-  usa `Result<T, E>` o valores centinela.
-- **`process.exit(n)`** — soportado vía runtime, pero no es idiomático.
-  En el dialecto se prefiere devolver `Result<...>` y que el caller
-  decida.
+### Operadores
 
-## Módulos
+- Aritméticos: `+ - * / %`.
+- Relacionales: `< <= > >= == !=`.
+- Lógicos: `&& || !`.
+- Bitwise: `& | ^ ~ << >>` (TS 5.x).
+- **Nullish coalescing `??`** sobre `Optional<T>`.
+- **Optional chaining `?.`** sobre `Optional<T>`.
+- Ternario `cond ? a : b`.
 
-- **`import`** — no soportado. El dialecto es single-translation-unit
-  por diseño. Para multi-archivo, concatena los fuentes antes de
-  transpilar o usa el sistema de `moduleRoots`/`aliases` para resolver
-  rutas virtuales.
-- **`require`** — no soportado (mismo motivo).
-- **Dynamic imports** — no soportados.
-- **`export default` / `export { x as y }`** — soportados como marcas
-  semánticas (AST-level). En runtime se procesan como top-level directas.
-  No hay sistema de módulos ES en C++.
+### Módulos
 
-## Runtime
+- `export` de declaraciones top-level.
+- **`export default`** y **`export { x as y }`**.
+- Sistema de módulos con `moduleRoots` y aliases (`src/modules/`).
+- `import` interno para resolver referencias (no dinámico).
 
-- **`setTimeout`, `setInterval`** — soportados vía `runtime/ets_async.hpp`.
-  No devuelven `NodeJS.Timeout`, devuelven handles numéricos.
-- **`fetch`** — no soportado. Usa el cliente HTTP de la runtime
-  (`ets_http.hpp`) o una librería externa.
-- **`console.log`** — reconocido como alias de `print`. Todos los métodos
-  `log/info/debug/trace/warn/error` funcionan.
+### Stdlib y runtime (`runtime/`)
 
-## Operadores
+- `Result<T>`, `Optional<T>`, `Task<T>` (Promise C++).
+- `Map<T>`, `Set<T>` con `forEach`, `has`, `get`, `set`, `delete`, `size`.
+- `etS::concat` para strings heterogéneos.
+- `numberToString`, `length`, `charAt`, `concat`.
+- **Smart pointers**: `Un<T>`, `Rc<T>`, `Mut<T>`, `MutRef<T>` (Issue #3, Fase 1.16).
+- Helpers async: `all(tasks)`, `race(tasks)`, `sleep(ms)`.
+- File I/O: `readFile`, `writeFile`, `appendFile`, `copyFile`, `moveFile`,
+  `removeFile`, `fileExists` (+ variantes `Async`).
+- Console: `print`, `printError`, `write`, `writeError` + `console.log/info/debug/trace/warn/error`.
+- HTTP: `http-server.ets` con `TcpListener` y `TcpConnection`.
+- TLS: `tls-server.ets` con `TlsContext` y `TlsConnection`.
+- JSON.parse con árbol dinámico `JsonValue`.
 
-- **`===`, `!==`** — usar `==` y `!=`. El dialecto no distingue identidad
-  vs igualdad estructural (todo es igualdad por valor).
-- **`>>>` (logical right shift)** — rechazado. C++20 tiene `>>` con
-  semántica implementation-defined para signed; en el dialecto solo
-  soportamos `>>` aritmético.
-- **`typeof x === "string"`** — soportado vía operador `typeof`, pero el
-  resultado es un tipo (`TypeName`), no un string literal. No hay
-  narrowing dinámico como en JS.
+### Compilador y tooling
 
-## Output C++
+- CLI `init` para scaffolding de proyectos.
+- Modo incremental con cache SHA-256 por módulo.
+- Build unitario con `--unity` para inspección.
+- Suite de tests con `node:test` y golden files.
+- Informe de compilación JSON (`build/.estatic/transpiler-report.json`).
+- Tree-sitter grammar para editores (vendored en `third_party/`).
 
-- **Sin templates genéricos en user code** — los generics se reifican
-  al tipo concreto en el código generado. Si defines `function id<T>(x: T): T`,
-  no se emite un template C++; se emite una función no-template (porque
-  el dialecto no tiene reificación en runtime).
-- **Sin múltiples unidades de traducción** — todo el código se emite
-  en un solo `.cpp`. Para multi-archivo, usa `#pragma once` en headers
-  pre-compilados o concatena los sources.
-- **Sin LTO automático** — el LTO en C++ requiere flags especiales
-  (`-flto`). El CLI pasa `config.compiler.flags` tal cual.
+---
 
-## Limitaciones intencionales del dialecto
+## ❌ Rechazado por diseño
 
-El dialecto rechaza por diseño estas features porque rompen las
-garantías de RAII o pureza funcional:
+Estas features **no se implementarán** — son incompatibles con las garantías
+del dialecto (RAII puro, sin vtable, sin tipado dinámico).
 
 | Feature rechazada | Razón |
 |---|---|
-| `Object`, `any`, `unknown` | Sin tipado dinámico |
-| `throw`/`try`/`catch` | Rompe RAII |
-| Herencia | Polimorfismo dinámico requiere vtable |
-| `>>>`, `==` con coerción | Operadores ambiguos en C++ |
-| `arguments` | C++ no tiene arguments object |
+| `Object`, `any`, `unknown` | Sin tipado dinámico — sin tipo "trampolín" para valores flexibles |
+| `throw` / `try` / `catch` | Rompe RAII — usar `Result<T, E>` |
+| Herencia (`extends`, `implements`) | Polimorfismo dinámico requiere vtable |
+| `>>>`, `===`, `!==` | Operadores ambiguos o coerción no deseada en C++ |
+| `arguments` | C++ no tiene arguments object — usar rest (`...args`) |
 | `eval` | Seguridad + rendimiento |
+| `function*` (generadores) | Lazy iteration no encaja con RAII — usar async/Promise |
+| Tagged templates (`tag\`...\``) | Sin uso idiomático claro en el dialecto |
+| Dynamic imports (`import("...")`) | El dialecto es single-translation-unit |
 
-Si necesitas una de estas features, considera reescribir el código en
-TypeScript nativo o en otro lenguaje con el runtime apropiado.
+---
+
+## 🟡 Pendiente / TS no cubierto
+
+Features de TypeScript presentes en versiones modernas (TS 3.x+ / 4.x / 5.x)
+que el dialecto aún no implementa. **Se aceptan contribuciones** en estas
+áreas si no rompen las garantías del dialecto.
+
+### Sistema de tipos avanzado
+
+- `as` / `<T>x` type assertions — se prefiere `match` para narrowing.
+- `const` type parameters (`<T const>`).
+- Conditional types (`T extends U ? X : Y`) en tipos.
+- Mapped types (`{ [K in keyof T]: V }`).
+- `keyof T` operator.
+- Utility types (`Partial`, `Pick`, `Record`, `Required`, `Omit`).
+- Template literal types (`` `prefix_${T}` ``).
+- `infer U` en conditional types.
+- Variadic tuple types (`[...T, ...U]`).
+- Tuples con spread variádico (`[T, ...U]`).
+- Narrowing por flujo de control (`if (typeof x === "string") { x.toUpperCase() }`).
+- Discriminated unions (`type Shape = { kind: "circle" } | { kind: "square" }`).
+- Exhaustiveness checking con `never`.
+- Type predicates `x is T`.
+
+### Clases y objetos
+
+- Getters / setters (`get` / `set`).
+- Modificadores `private` / `protected` / `public` / `abstract`.
+- `static` en miembros.
+- Index signatures `[key: string]: T`.
+- Override de métodos (no aplica — sin herencia).
+
+### Módulos y tooling
+
+- Dynamic imports.
+- Type-only imports (`import type { X }`).
+- Re-exports `export { X } from "..."`.
+- Triple-slash directives.
+- `globalThis` / `global`.
+
+### Stdlib y runtime
+
+- `fetch` nativo (usar `runtime/ets_net.hpp` o librería externa).
+- Streams / `ReadableStream`.
+- Workers / `SharedArrayBuffer`.
+- `Buffer` (Node-style).
+
+### Compilador
+
+- Source maps entre `.ets` y C++.
+- Backend abstracto para generar otros destinos (no solo C++).
+- Cabeceras individuales por módulo para ABI precisa.
+
+---
+
+## Cómo se mantiene este doc
+
+`scripts/check-docs-sync.ts` cruza automáticamente:
+
+- Nodos AST exportados en `src/ast/nodes.ts`.
+- `TokenKind` y `KEYWORDS` en `src/lexer/token.ts`.
+- Ejemplos en `examples/*.ets`.
+- Afirmaciones en este `LIMITATIONS.md`.
+
+Si un nodo, keyword o ejemplo **no** aparece mencionado en este doc, el check
+falla. Si una afirmación aquí contradice el código (ej. decir "no soportado"
+cuando hay un nodo AST para ello), también falla.
+
+Para ejecutarlo:
+
+```bash
+node --experimental-strip-types scripts/check-docs-sync.ts
+```
+
+El test `test/docs-sync.test.ts` lo invoca automáticamente y falla el build si
+la documentación se desincroniza del compilador.
