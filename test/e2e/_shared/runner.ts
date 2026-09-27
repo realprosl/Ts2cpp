@@ -174,7 +174,9 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.once("error", () => resolvePromise({ stdout, code: -1 }));
-    child.once("exit", code => resolvePromise({ stdout, code: code ?? -1 }));
+    // `close` en lugar de `exit`: evita perder el último chunk de stdout
+    // cuando hay concurrencia de compilación.
+    child.once("close", code => resolvePromise({ stdout, code: code ?? -1 }));
   });
 
   // 4. Compare
