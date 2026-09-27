@@ -1,8 +1,11 @@
-// mutref-demo.ets — `MutRef<T>` (alias mutable, equivalente a T& en C++).
+// mutref-demo.ets — `MutRef<T>` (alias mutable).
 //
-// `MutRef<T>` representa una referencia mutable al objeto del caller. Se usa
-// en parámetros de función para mutar in-place sin tomar ownership ni
-// retornar. Se construye con `mutRefOf<T>(lvalue)` que toma la dirección.
+// `MutRef<T>` se usa como tipo de parámetro para indicar que la función
+// recibe una referencia mutable al objeto del caller.
+//
+// En C++:
+//   function increment(ref: MutRef<Counter>): void  →  void increment(Counter& ref)
+//   increment(c)                                     →  increment(c)  (paso por referencia)
 
 class Counter {
   value: number;
@@ -10,12 +13,11 @@ class Counter {
 }
 
 function increment(ref: MutRef<Counter>): void {
-  // El alias permite acceder al objeto subyacente. Para mutarlo, asignamos
-  // a una variable NO-const.
-  let holder: Counter = mutRefValue(ref);
-  holder.value = holder.value + 1;
+  // Como `ref: MutRef<Counter>` se traduce a `Counter& ref`, podemos mutar
+  // directamente.
+  ref.value = ref.value + 1;
 }
 
 const c: Counter = new Counter(99);
-increment(mutRefOf<Counter>(c));
+increment(c);
 print(numberToString(c.value));  // 100

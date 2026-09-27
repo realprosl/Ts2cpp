@@ -209,8 +209,11 @@ export class CppGenerator {
     // pasamos `false` al emitir el cuerpo.
     // `p?: T` se traduce a `Optional<T>` en C++. Si el user ya escribió
     // `Optional<T>` no duplicamos el envoltorio.
+    // Detección automática de modificadores de paso por puntero/referencia:
+    // `Mut<T>` → T* (puntero mutable), `MutRef<T>` → T& (referencia mutable).
+    // `Un<T>` y `Rc<T>` mantienen su envoltorio (tienen semántica de ownership).
     const params = fn.params.map((p, i) => {
-      const baseType = cppType(p.type);
+      const baseType = this.cppParameterType(p.type);
       const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
       return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined);
     }).join(", ");
@@ -554,6 +557,75 @@ export class CppGenerator {
     this.indent--;
     return line;
   }
+  /**
+   * Devuelve el tipo C++ para un parámetro de función, teniendo en cuenta
+   * los modificadores de paso:
+   *
+   * - `Mut<T>` → `T*`    (puntero mutable, no-owning).
+   * - `MutRef<T>` → `T&` (referencia mutable, no-owning).
+   * - Otros tipos → cppType normal.
+   *
+   * `Un<T>` y `Rc<T>` mantienen su envoltorio (`ets::Un<T>`, `ets::Rc<T>`)
+   * porque tienen semántica de ownership distinta (move y refcount).
+   *
+   * El caller detecta estos casos y ajusta el modo de paso (parameter.passing)
+   * para que cppParameterDeclaration emita el puntero/referencia en lugar
+   * de `const T&` automático.
+   */
+  private cppParameterType(type: TypeName): string {
+    if (isGenericType(type)) {
+      const base = genericBase(type);
+      if (base === "Mut" || base === "MutRef") {
+        const inner = genericArguments(type)[0];
+        return cppType(inner);
+      }
+    }
+    return cppType(type);
+  }
+
+  /**
+   * Devuelve true si el argumento `index` de la llamada `call` espera un
+   * parámetro de tipo `Mut<T>`. En ese caso el codegen debe prefijar `&`
+   * al lvalue pasado como argumento.
+   */
+  private argumentExpectsMutPointer(call: { callee: string; args: Expression[] }, index: number, _argument: Expression): boolean {
+    const overloads = this.topLevelFunctions.get(call.callee);
+    if (!overloads || overloads.length === 0) return false;
+    const signature = overloads[0];
+    const parameter = signature.params[index];
+    if (!parameter) return false;
+    if (!isGenericType(parameter.type)) return false;
+    return genericBase(parameter.type) === "Mut";
+  }
+
+  /**
+   * Devuelve true si la expresión es un lvalue (puede tomar su dirección).
+   * En el dialecto: identificadores, member access, index.
+   */
+  private isLvalue(expr: Expression): boolean {
+    return expr.kind === "IdentifierExpression"
+      || expr.kind === "MemberExpression"
+      || expr.kind === "IndexExpression";
+  }
+
+  /**
+   * Devuelve true si el identificador corresponde a un parámetro declarado
+   * como `Mut<T>`. En ese caso el codegen debe usar `->` para acceder a
+   * miembros (porque en C++ es `T*`).
+   */
+  private identifierIsMutPointer(name: string): boolean {
+    // Buscamos en todos los overloads top-level si alguno tiene un parámetro
+    // con ese nombre y tipo `Mut<T>`.
+    for (const overloads of this.topLevelFunctions.values()) {
+      for (const signature of overloads) {
+        for (const parameter of signature.params) {
+          if (parameter.name === name && isGenericType(parameter.type) && genericBase(parameter.type) === "Mut") return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private variableIsConst(node: VariableDeclaration): boolean { return !node.mutable && !(node.initializer.kind === "ArrowFunctionExpression" && node.initializer.mutatesCapturedState); }
 
   /**
@@ -724,7 +796,7 @@ export class CppGenerator {
       case "MatchExpression": return this.emitMatch(node);
       case "SatisfiesExpression": return this.emitExpression(node.operand);
       case "CallExpression": {
-        const args = node.args.map(argument => {
+        const args = node.args.map((argument, index) => {
           let text = this.emitExpression(argument);
           if (this.expressionIsVariadic(argument)) text += "...";
           else {
@@ -735,6 +807,11 @@ export class CppGenerator {
             const underlying = argType && this.enumUnderlying.get(argType);
             if (underlying === "number") text = `static_cast<double>(${text})`;
             else if (underlying === "string") text = `static_cast<std::string>(${text})`;
+          }
+          // `Mut<T>` espera un puntero: si el argumento es un lvalue (identificador,
+          // member access, index), le añadimos `&` para que C++ lo acepte.
+          if (this.argumentExpectsMutPointer(node, index, argument)) {
+            if (this.isLvalue(argument)) text = `&(${text})`;
           }
           return text;
         });
@@ -797,6 +874,11 @@ export class CppGenerator {
         if (node.optional) {
           const obj = this.emitExpression(node.object);
           return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
+        }
+        // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
+        // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
+        if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
+          return `${this.emitExpression(node.object)}->${node.member}`;
         }
         return `${this.emitExpression(node.object)}.${node.member}`;
       }

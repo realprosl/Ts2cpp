@@ -1,9 +1,12 @@
-// mut-demo.ets — `Mut<T>` (puntero mutable no-owning, equivalente a T* const
-// en C++).
+// mut-demo.ets — `Mut<T>` (puntero mutable no-owning).
 //
-// `Mut<T>` es la opción "unsafe" estilo C: puntero crudo que no toma ownership.
-// Por convención del dialecto, el PUNTERO es constante (no se puede reasignar)
-// pero el CONTENIDO apuntado es mutable. Se construye con `mutFrom<T>(lvalue)`.
+// `Mut<T>` se usa como tipo de parámetro para indicar que la función puede
+// mutar el objeto apuntado. El codegen lo traduce a `T*` y obtiene la
+// dirección automáticamente cuando se pasa un lvalue.
+//
+// En C++:
+//   function bump(p: Mut<Counter>): void  →  void bump(Counter* p)
+//   bump(c)                                →  bump(&c)
 
 class Counter {
   value: number;
@@ -11,13 +14,12 @@ class Counter {
 }
 
 function bump(p: Mut<Counter>): void {
-  // `mutValue` devuelve T& (mutable).
-  const local: Counter = mutValue(p);
-  print(numberToString(local.value));
-  // mutIsSome comprueba si el puntero no es nullptr.
-  print(mutIsSome(p) ? "1" : "0");
+  // Como `p: Mut<Counter>` se traduce a `Counter* p`, podemos mutar
+  // directamente a través del puntero.
+  p.value = p.value + 1;
+  print(numberToString(p.value));
 }
 
 const c: Counter = new Counter(7);
-bump(mutFrom<Counter>(c));
-print(numberToString(c.value));  // 7 (no mutamos aquí, solo leemos)
+bump(c);
+print(numberToString(c.value));  // 8 (mutado a través del puntero)

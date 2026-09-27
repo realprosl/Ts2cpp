@@ -117,14 +117,12 @@ const RC_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }>
 // Helpers sobre `MutRef<T>` (referencia mutable) y `Mut<T>` (puntero crudo
 // mutable constante). Solo constructores; el dialecto no tiene métodos sobre
 // estos (la sintaxis `ptr.some()` no funciona para genéricos).
+// NOTA: desde Issue #3-mut-as-modifier, `Mut<T>` y `MutRef<T>` se
+// resuelven directamente a `T*` y `T&` en el codegen (sin envoltorios).
+// Los helpers `mutOf`, `mutFrom`, `mutValue`, `mutIsSome`, `mutRefOf`,
+// `mutRefFrom`, `mutRefValue` ya no existen — el user usa `&x` directamente.
+// Esta tabla queda vacía por compat histórica.
 const REF_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean; returnsRef?: boolean }> = Object.assign(Object.create(null), {
-  mutRefOf: { minParams: 1, returnsGeneric: true },           // (T&) → MutRef<T>
-  mutRefFrom: { minParams: 1, returnsGeneric: true },         // (T&) → MutRef<T>
-  mutRefValue: { minParams: 1, returnsGeneric: false, returnsRef: true },   // (MutRef<T>) → T&
-  mutOf: { minParams: 1, returnsGeneric: true },              // (T*) → Mut<T>
-  mutFrom: { minParams: 1, returnsGeneric: true },            // (T&) → Mut<T>
-  mutValue: { minParams: 1, returnsGeneric: false, returnsRef: true },     // (Mut<T>) → T&
-  mutIsSome: { minParams: 1, returnsGeneric: false },        // (Mut<T>) → boolean
 });
 
 // Helpers sobre `Task<T>[]` (Promise-like arrays). El dialecto expone
@@ -363,7 +361,21 @@ export class TypeChecker {
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
   }
 
-  typeOf(expression: Expression): TypeName | undefined { return this.types.get(expression); }
+  typeOf(expression: Expression): TypeName | undefined {
+    const stored = this.types.get(expression);
+    if (!stored) return undefined;
+    // `Mut<T>` y `MutRef<T>` son modificadores: el tipo "real" para el
+    // codegen y el semantic es el tipo interno T. Devolvemos T en lugar del
+    // envoltorio (que ya no existe).
+    if (isGenericType(stored)) {
+      const base = genericBase(stored);
+      if (base === "Mut" || base === "MutRef") {
+        const inner = genericArguments(stored)[0];
+        if (inner) return inner;
+      }
+    }
+    return stored;
+  }
   isVariadic(expression: Expression): boolean { return this.variadicExpressions.has(expression); }
   typeArgumentsOf(expression: Expression): TypeName[] { return this.inferredCallTypeArguments.get(expression) ?? []; }
 
@@ -637,7 +649,7 @@ export class TypeChecker {
         const actual = this.expression(parameter.defaultValue, local, parameter.type);
         this.require(actual, parameter.type, parameter.defaultValue);
       }
-      local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut", variadic: parameter.variadic });
+      local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), variadic: parameter.variadic });
     }
   }
 
@@ -743,7 +755,7 @@ export class TypeChecker {
       }
       // Issue #3: smart pointers. Aceptan exactamente 1 argumento de tipo,
       // que NO puede ser primitivo (los primitivos van siempre por valor).
-      if (base === "Un" || base === "Rc" || base === "MutRef" || base === "Mut") {
+      if (base === "Unq" || base === "Rc" || base === "MutRef" || base === "Mut") {
         if (arguments_.length !== 1) this.report(node, `'${base}' espera 1 argumento de tipo, recibió ${arguments_.length}`);
         const inner = arguments_[0];
         if (inner && isPrimitive(inner)) this.report(node, `'${base}<${inner}>' no soporta primitivos (los primitivos van por valor)`);
@@ -850,7 +862,7 @@ export class TypeChecker {
             const effectiveType = p.optional
               ? (isGenericType(p.type) && genericBase(p.type) === "Optional" ? p.type : genericType("Optional", [p.type]))
               : p.type;
-            if (!local.define(p.name, { kind: "variable", type: effectiveType, mutable: p.out || p.passing === "mut", variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+            if (!local.define(p.name, { kind: "variable", type: effectiveType, mutable: p.out || p.passing === "mut" || this.parameterIsMutableReference(p.type), variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
           }
           const previousReturn = this.currentReturn; const previousAsync = this.currentAsync;
           this.currentReturn = node.async && isPromiseType(node.returnType) ? promiseResult(node.returnType) : node.returnType;
@@ -950,7 +962,7 @@ export class TypeChecker {
       const local = new Scope(scope);
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       local.define("this", { kind: "variable", type: ownerType, mutable: true });
-      for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+      for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type) })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
       const previous = this.currentReturn; const previousAsync = this.currentAsync; const previousCtor = this.inConstructor;
       this.currentReturn = method.returnType; this.currentAsync = false; this.inConstructor = method.name === "constructor";
       this.statement(method.body, local);
@@ -1229,7 +1241,7 @@ export class TypeChecker {
         // inferir T.
         if (UN_HELPERS[node.callee] || RC_HELPERS[node.callee] || REF_HELPERS[node.callee]) {
           const isMutRef = node.callee === "mutRefOf" || node.callee === "mutRefFrom" || node.callee === "mutRefValue";
-          const smartBase = UN_HELPERS[node.callee] ? "Un" : RC_HELPERS[node.callee] ? "Rc" : isMutRef ? "MutRef" : "Mut";
+          const smartBase = UN_HELPERS[node.callee] ? "Unq" : RC_HELPERS[node.callee] ? "Rc" : isMutRef ? "MutRef" : "Mut";
           // Para constructores (unSome, unNone, rcShare, mutRefOf, etc.) usamos
           // el `expected` contextual. Para inspectors (unIsSome, unValue,
           // rcStrongCount, rcValue) inferimos desde el tipo del primer argumento.
@@ -1243,8 +1255,8 @@ export class TypeChecker {
             expectedElement = expected && isGenericType(expected) && genericBase(expected) === smartBase ? genericArguments(expected)[0] : undefined;
           }
           if (expectedElement) {
-            if (node.callee === "unSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Un", [expectedElement]); }
-            else if (node.callee === "unNone") result = genericType("Un", [expectedElement]);
+            if (node.callee === "unSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Unq", [expectedElement]); }
+            else if (node.callee === "unNone") result = genericType("Unq", [expectedElement]);
             else if (node.callee === "unIsSome") { result = "boolean"; }
             else if (node.callee === "unValue") { result = expectedElement; }
             else if (node.callee === "rcShare" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Rc", [expectedElement]); }
@@ -1558,7 +1570,19 @@ export class TypeChecker {
     if (node.kind === "IndexExpression") return this.mutableTarget(node.object, scope);
     if (node.kind !== "IdentifierExpression") return false;
     const symbol = scope.resolve(node.name);
-    return !!symbol && symbol.kind === "variable" && symbol.mutable;
+    if (!symbol) return false;
+    if (symbol.kind !== "variable") return false;
+    // Parámetro con `Mut<T>` o `MutRef<T>` es mutable (es T* o T& en C++).
+    if (symbol.parameter && (symbol.parameter.passing === "mut" || symbol.parameter.passing === "out")) return true;
+    // Parámetro `Mut<T>` o `MutRef<T>` se detecta también por el tipo genérico.
+    if (symbol.parameter) {
+      const paramType = symbol.parameter.type;
+      if (isGenericType(paramType)) {
+        const base = genericBase(paramType);
+        if (base === "Mut" || base === "MutRef") return true;
+      }
+    }
+    return symbol.mutable;
   }
 
   private markCapturedMutation(node: Expression, scope: Scope): void {
@@ -1713,11 +1737,30 @@ export class TypeChecker {
     return this.satisfiesInterface(actual, pattern);
   }
   private resolveClass(type: TypeName): { owner: ClassDeclaration; substitutions: Map<string, TypeName> } | undefined {
+    // `Mut<T>` y `MutRef<T>` son modificadores: se resuelven al tipo base T.
+    if (isGenericType(type)) {
+      const base = genericBase(type);
+      if (base === "Mut" || base === "MutRef") {
+        const inner = genericArguments(type)[0];
+        if (inner) return this.resolveClass(inner);
+      }
+    }
     const base = isGenericType(type) ? genericBase(type) : type; const owner = this.classes.get(base);
     if (!owner) return undefined;
     const substitutions = new Map<string, TypeName>(); const arguments_ = isGenericType(type) ? genericArguments(type) : [];
     owner.typeParameters.forEach((parameter, index) => { if (arguments_[index]) substitutions.set(parameter.name, arguments_[index]); });
     return { owner, substitutions };
+  }
+
+  /**
+   * Devuelve true si el tipo del parámetro es `Mut<T>` o `MutRef<T>`.
+   * En ese caso el parámetro es una referencia mutable (T* o T& en C++)
+   * y debe permitirse la asignación a sus campos.
+   */
+  private parameterIsMutableReference(type: TypeName): boolean {
+    if (!isGenericType(type)) return false;
+    const base = genericBase(type);
+    return base === "Mut" || base === "MutRef";
   }
   private substituteType(type: TypeName, substitutions: Map<string, TypeName>): TypeName {
     return this.substituteTypeInternal(type, substitutions, new Set());

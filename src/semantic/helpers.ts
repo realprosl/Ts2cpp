@@ -38,14 +38,14 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   rcStrongCount:     { minParams: 1 },
   rcValue:           { minParams: 1, returnsRef: true },     // T&
   // MutRef<T>
-  mutRefOf:          { minParams: 1, returnsGeneric: true },
-  mutRefFrom:        { minParams: 1, returnsGeneric: true },
-  mutRefValue:       { minParams: 1, returnsRef: true },     // T&
+  mutRefOf:          { minParams: 1, returnsGeneric: true },   // DEPRECATED
+  mutRefFrom:        { minParams: 1, returnsGeneric: true },   // DEPRECATED
+  mutRefValue:       { minParams: 1, returnsRef: true },        // DEPRECATED
   // Mut<T>
-  mutOf:             { minParams: 1, returnsGeneric: true },
-  mutFrom:           { minParams: 1, returnsGeneric: true },
-  mutValue:          { minParams: 1, returnsRef: true },     // T&
-  mutIsSome:         { minParams: 1 },
+  mutOf:             { minParams: 1, returnsGeneric: true },    // DEPRECATED
+  mutFrom:           { minParams: 1, returnsGeneric: true },    // DEPRECATED
+  mutValue:          { minParams: 1, returnsRef: true },        // DEPRECATED
+  mutIsSome:         { minParams: 1 },                          // DEPRECATED
   // JSON
   parseJson:         { minParams: 1, returnsGeneric: true },
   // Map<K,V>
