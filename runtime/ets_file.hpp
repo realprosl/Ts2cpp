@@ -135,6 +135,46 @@ inline bool removeFile(const std::string& path, std::string& error) noexcept {
     return true;
 }
 
+// Wrappers primitivos (sin Result<T>) para uso desde el dialecto hasta V1.
+// Nombres con prefijo `etsFs` para evitar colisión con las versiones
+// `Result<T>` de arriba que tienen el mismo nombre base (`readFile`/
+// `writeFile`/etc.). El dialecto expone `fileRead`/`fileWrite`/... y el
+// codegen los traduce a estos `etsFs*` (ver src/codegen/cpp-generator.ts).
+inline std::string etsFsRead(const std::string& path) {
+    std::string contents;
+    std::string error;
+    if (!readFile(path, contents, error)) return std::string();
+    return contents;
+}
+
+inline bool etsFsWrite(const std::string& path, const std::string& contents) {
+    std::string error;
+    return writeFile(path, contents, error);
+}
+
+inline bool etsFsAppend(const std::string& path, const std::string& contents) {
+    std::string error;
+    return appendFile(path, contents, error);
+}
+
+inline bool etsFsCopy(const std::string& source, const std::string& destination) {
+    std::string error;
+    return copyFile(source, destination, error);
+}
+
+inline bool etsFsMove(const std::string& source, const std::string& destination) {
+    std::string error;
+    return moveFile(source, destination, error);
+}
+
+inline bool etsFsRemove(const std::string& path) {
+    std::string error;
+    return removeFile(path, error);
+}
+
+// Issue V1: cuando estén disponibles las tagged unions, los wrappers arriba
+// se reemplazan por versiones que devuelven Result<FileContent, FileError>.
+
 inline ets::Result<std::string> readFile(const std::string& path) {
     std::string contents;
     std::string error;

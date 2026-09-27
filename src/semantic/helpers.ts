@@ -62,4 +62,12 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   // Array
   arrayPush:         { minParams: 2 },
   arrayLength:       { minParams: 1 },
+  // Filesystem (Issue #13)
+  fileRead:          { minParams: 1 },
+  fileWrite:         { minParams: 2 },
+  fileAppend:        { minParams: 2 },
+  fileExists:        { minParams: 1 },
+  fileCopy:          { minParams: 2 },
+  fileMove:          { minParams: 2 },
+  fileRemove:        { minParams: 1 },
 });
