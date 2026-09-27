@@ -34,6 +34,7 @@ import { test } from "node:test";
 import { readFile, writeFile, readdir, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { cpus } from "node:os";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +47,14 @@ const GOLDEN_DIR = join(REPO_ROOT, "test", "golden");
 const SKIP_FILE = join(REPO_ROOT, "test", "skip-network.json");
 const SCRATCH_DIR = join(REPO_ROOT, "test", "scratch");
 const CLI_PATH = join(REPO_ROOT, "src", "cli.ts");
+
+// Concurrency: número de demos que se procesan en paralelo. Por defecto el
+// número de cores - 1 (deja 1 core para el sistema operativo). Se puede
+// sobreescribir con la variable TEST_CONCURRENCY=N (e.g. TEST_CONCURRENCY=1
+// para forzar serie si la paralelización causa flakiness).
+const TEST_CONCURRENCY = process.env.TEST_CONCURRENCY !== undefined
+  ? Math.max(1, Number.parseInt(process.env.TEST_CONCURRENCY, 10) || 1)
+  : Math.max(1, cpus().length - 1);
 
 // Flags equivalentes al smoke test del Bloque A, pero apuntando a test/scratch/
 // y con I=REPO_ROOT para resolver `runtime/ets_*.hpp`.
@@ -86,21 +95,6 @@ async function discoverExamples(): Promise<string[]> {
  * Si el proceso falla al arrancar (no se encuentra binario) lo reporta
  * con `code = -1`.
  */
-function runProcess(command: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise(resolvePromise => {
-    const child = spawn(command, args, { cwd: SCRATCH_DIR });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.once("error", () => { resolvePromise({ code: -1, stdout, stderr }); });
-    child.once("exit", code => { resolvePromise({ code: code ?? -1, stdout, stderr }); });
-  });
-}
-
-/** Devuelve un diff unificado mínimo (estilo diff -u) entre dos strings. */
 function unifiedDiff(expected: string, actual: string, label: string): string {
   const expectedLines = expected.split("\n");
   const actualLines = actual.split("\n");
@@ -126,6 +120,11 @@ function unifiedDiff(expected: string, actual: string, label: string): string {
 // Pipeline por ejemplo
 // -------------------------------------------------------------------------
 
+/**
+ * Pipeline legacy (ya no se usa; reemplazado por processDemo() con worker
+ * pool). Se conserva la interfaz CompileResult por si se reactiva desde un
+ * test individual en el futuro.
+ */
 interface CompileResult {
   ok: boolean;
   cppPath: string;
@@ -134,71 +133,18 @@ interface CompileResult {
   stderr: string;
 }
 
-/**
- * Transpila y compila un ejemplo. NO ejecuta.
- * Devuelve los paths generados y los buffers de stdout/stderr de cada paso.
- *
- * Importante: los buffers de stdout NO se mezclan con el del proceso del
- * harness porque `cli.ts` solo escribe en stdout cosas como "Generado ...".
- * Esos mensajes son ruido aceptable para el test: el harness los agrega
- * al campo `stdout` para que el fallo, si lo hay, los muestre.
- */
+/** Stub legacy: redirige a processDemo() con workerId=0 (compatibilidad). */
 async function transpileAndCompile(name: string): Promise<CompileResult> {
-  const cppPath = join(SCRATCH_DIR, `${name}.cpp`);
-  const binPath = join(SCRATCH_DIR, name);
-  const sourcePath = join(EXAMPLES_DIR, `${name}.ets`);
-
-  // Paso 1: transpilar con `src/cli.ts` en modo unitario (--unity).
-  // Capturamos stdout/stderr pero dejamos que cli.ts imprima en pantalla
-  // para ver progreso. Sin embargo, para no contaminar la salida de
-  // node:test, silenciamos temporalmente stdout/stderr del proceso y los
-  // guardamos por separado para mostrar en caso de fallo.
-  const transpile = await runProcess("node", [
-    "--experimental-strip-types",
-    CLI_PATH,
-    sourcePath,
-    "-o", cppPath,
-    "--unity",
-  ]);
-  if (transpile.code !== 0) {
-    return {
-      ok: false,
-      cppPath,
-      binPath,
-      stdout: transpile.stdout,
-      stderr: transpile.stderr,
-    };
-  }
-
-  // Paso 2: compilar. Detectamos TLS igual que cli.ts.
-  const cppSource = await readFile(cppPath, "utf8");
-  const needsTls = cppSource.includes("runtime/ets_tls.hpp");
-  const compileArgs = [
-    ...GXX_FLAGS,
-    `-I${REPO_ROOT}`,
-    "-o", binPath,
-    ...LINK_FLAGS,
-    cppPath,
-    ...(needsTls ? ["-lssl", "-lcrypto"] : []),
-  ];
-  const compile = await runProcess("g++", compileArgs);
-  if (compile.code !== 0) {
-    return {
-      ok: false,
-      cppPath,
-      binPath,
-      stdout: compile.stdout,
-      stderr: compile.stderr,
-    };
-  }
-
-  return { ok: true, cppPath, binPath, stdout: "", stderr: "" };
+  const workerScratch = join(SCRATCH_DIR, "w0");
+  const cppPath = join(workerScratch, `${name}.cpp`);
+  const binPath = join(workerScratch, name);
+  const result = await processDemo(name, false, 0);
+  return { ok: result.ok, cppPath, binPath, stdout: result.diagnostics.join("\n"), stderr: "" };
 }
 
-/** Ejecuta el binario compilado y devuelve stdout + exit code. */
+/** Stub legacy para executeBinary. */
 async function executeBinary(binPath: string): Promise<{ stdout: string; code: number }> {
-  const result = await runProcess(binPath, []);
-  return { stdout: result.stdout, code: result.code };
+  return { stdout: "", code: 0 };
 }
 
 // -------------------------------------------------------------------------
@@ -225,60 +171,145 @@ test("harness setup", t => {
 });
 
 // -------------------------------------------------------------------------
-// Tests (uno por ejemplo)
+// Worker pool simple
 //
-// Importante: serializados. node:test por defecto ejecuta subtests en serie
-// siempre que estén dentro de un único `test()` contenedor; si los
-// declarásemos como `test()` top-level separados, node:test intentaría
-// paralelizar y como todos escriben en `test/scratch/<name>` se pisarían.
-// Por eso los anidamos con `t.test(name, ...)` dentro de un solo `test()`
-// contenedor: la API de node:test garantiza orden secuencial.
+// Cada demo se procesa en paralelo hasta TEST_CONCURRENCY a la vez. Cada
+// worker escribe en un subdirectorio único de SCRATCH_DIR para que los
+// binarios y `.cpp` no se pisen. El orden de las subtests no se garantiza
+// (la suite ya era dependiente de orden solo por el scratch compartido).
 // -------------------------------------------------------------------------
 
-test("examples", { concurrency: false }, async t => {
-  for (const name of examples) {
-    if (skipList.has(name)) {
-      await t.test(`${name} (compile-only)`, async sub => {
-        sub.diagnostic(`skip-network: solo transpile + compile + link`);
-        const result = await transpileAndCompile(name);
-        if (!result.ok) {
-          if (result.stdout) sub.diagnostic(`stdout:\n${result.stdout}`);
-          if (result.stderr) sub.diagnostic(`stderr:\n${result.stderr}`);
-          throw new Error(`${name}: fallo en transpile/compile (exit != 0)`);
-        }
-        sub.diagnostic(`compiló: ${result.binPath}`);
-      });
-      continue;
-    }
+interface ProcessedDemo { name: string; ok: boolean; error?: string; durationMs: number; diagnostics: string[]; }
 
-    await t.test(name, async sub => {
-      const compiled = await transpileAndCompile(name);
-      if (!compiled.ok) {
-        if (compiled.stdout) sub.diagnostic(`stdout:\n${compiled.stdout}`);
-        if (compiled.stderr) sub.diagnostic(`stderr:\n${compiled.stderr}`);
-        throw new Error(`${name}: fallo en transpile/compile (exit != 0)`);
-      }
-
-      const { stdout, code } = await executeBinary(compiled.binPath);
-      const goldenPath = join(GOLDEN_DIR, `${name}.expected.txt`);
-
-      if (code !== 0) {
-        sub.diagnostic(`stdout capturado:\n${stdout || "(vacío)"}`);
-        throw new Error(`${name}: exit code = ${code} (esperado 0)`);
-      }
-
-      if (!existsSync(goldenPath)) {
-        await mkdir(GOLDEN_DIR, { recursive: true });
-        await writeFile(goldenPath, stdout, "utf8");
-        sub.diagnostic(`INFO: baseline created (golden no existía)`);
-        return;
-      }
-
-      const expected = await readFile(goldenPath, "utf8");
-      if (expected !== stdout) {
-        sub.diagnostic(unifiedDiff(expected, stdout, name));
-        throw new Error(`${name}: stdout no coincide con ${basename(goldenPath)}`);
-      }
+async function processDemo(name: string, isSkipNetwork: boolean, workerId: number): Promise<ProcessedDemo> {
+  const started = Date.now();
+  const diagnostics: string[] = [];
+  const workerScratch = join(SCRATCH_DIR, `w${workerId}`);
+  await mkdir(workerScratch, { recursive: true });
+  const cppPath = join(workerScratch, `${name}.cpp`);
+  const binPath = join(workerScratch, name);
+  const sourcePath = join(EXAMPLES_DIR, `${name}.ets`);
+  const localCli = async (): Promise<{ code: number; stdout: string; stderr: string }> => {
+    return new Promise(resolvePromise => {
+      const child = spawn("node", ["--experimental-strip-types", CLI_PATH, sourcePath, "-o", cppPath, "--unity"], { cwd: workerScratch });
+      let stdout = ""; let stderr = "";
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+      child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+      child.once("error", () => { resolvePromise({ code: -1, stdout, stderr }); });
+      child.once("exit", code => { resolvePromise({ code: code ?? -1, stdout, stderr }); });
     });
+  };
+  const localGxx = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+    return new Promise(resolvePromise => {
+      const child = spawn("g++", args, { cwd: workerScratch });
+      let stdout = ""; let stderr = "";
+      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+      child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+      child.once("error", () => { resolvePromise({ code: -1, stdout, stderr }); });
+      child.once("exit", code => { resolvePromise({ code: code ?? -1, stdout, stderr }); });
+    });
+  };
+
+  // Transpile.
+  const transpile = await localCli();
+  if (transpile.code !== 0) {
+    diagnostics.push(`stdout:\n${transpile.stdout}`);
+    diagnostics.push(`stderr:\n${transpile.stderr}`);
+    return { name, ok: false, error: `fallo en transpile (exit ${transpile.code})`, durationMs: Date.now() - started, diagnostics };
+  }
+
+  // Compile + link.
+  const cppSource = await readFile(cppPath, "utf8");
+  const needsTls = cppSource.includes("runtime/ets_tls.hpp");
+  const compileArgs = [...GXX_FLAGS, `-I${REPO_ROOT}`, "-o", binPath, ...LINK_FLAGS, cppPath, ...(needsTls ? ["-lssl", "-lcrypto"] : [])];
+  const compile = await localGxx(compileArgs);
+  if (compile.code !== 0) {
+    diagnostics.push(`stdout:\n${compile.stdout}`);
+    diagnostics.push(`stderr:\n${compile.stderr}`);
+    return { name, ok: false, error: `fallo en compile/link (exit ${compile.code})`, durationMs: Date.now() - started, diagnostics };
+  }
+
+  if (isSkipNetwork) {
+    diagnostics.push(`skip-network: solo transpile + compile + link (${binPath})`);
+    return { name, ok: true, durationMs: Date.now() - started, diagnostics };
+  }
+
+  // Ejecutar y comparar con golden. El cwd es SCRATCH_DIR raíz (no el
+  // worker subdir) para que demos que llaman process.cwd() / path.resolve
+  // con paths relativos vean el mismo entorno que en serie.
+  const exec = await new Promise<{ stdout: string; code: number }>(resolvePromise => {
+    const child = spawn(binPath, [], { cwd: SCRATCH_DIR });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.once("error", () => { resolvePromise({ stdout, code: -1 }); });
+    child.once("exit", code => { resolvePromise({ stdout, code: code ?? -1 }); });
+  });
+  const goldenPath = join(GOLDEN_DIR, `${name}.expected.txt`);
+  if (exec.code !== 0) {
+    diagnostics.push(`stdout capturado:\n${exec.stdout || "(vacío)"}`);
+    return { name, ok: false, error: `exit code = ${exec.code} (esperado 0)`, durationMs: Date.now() - started, diagnostics };
+  }
+  if (!existsSync(goldenPath)) {
+    await mkdir(GOLDEN_DIR, { recursive: true });
+    await writeFile(goldenPath, exec.stdout, "utf8");
+    diagnostics.push(`INFO: baseline created (golden no existía)`);
+    return { name, ok: true, durationMs: Date.now() - started, diagnostics };
+  }
+  const expected = await readFile(goldenPath, "utf8");
+  if (expected !== exec.stdout) {
+    diagnostics.push(unifiedDiff(expected, exec.stdout, name));
+    return { name, ok: false, error: `stdout no coincide con ${basename(goldenPath)}`, durationMs: Date.now() - started, diagnostics };
+  }
+  return { name, ok: true, durationMs: Date.now() - started, diagnostics };
+}
+
+/** Ejecuta tasks con un pool de N workers. Devuelve resultados en orden
+ *  de entrada (preservando el orden de `tasks`). */
+async function runPool<T>(items: T[], workerCount: number, fn: (item: T, workerId: number) => Promise<ProcessedDemo>): Promise<ProcessedDemo[]> {
+  const results: ProcessedDemo[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker(workerId: number): Promise<void> {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!, workerId);
+    }
+  }
+  const workers = Array.from({ length: Math.min(workerCount, items.length) }, (_, i) => worker(i));
+  await Promise.all(workers);
+  return results;
+}
+
+const concurrency = TEST_CONCURRENCY;
+
+// Cabecera de contexto: una sola vez, antes de los tests.
+test("harness setup", t => {
+  t.diagnostic(`examples=${examples.length} skip=${skipList.size} deterministic=${examples.length - skipList.size} concurrency=${concurrency}`);
+  t.diagnostic(`scratch dir: ${SCRATCH_DIR}`);
+});
+
+test("examples", { concurrency: false }, async t => {
+  t.diagnostic(`procesando ${examples.length} demos con ${concurrency} worker(s)...`);
+  const poolStarted = Date.now();
+  const results = await runPool(examples, concurrency, (name, workerId) => processDemo(name, skipList.has(name), workerId));
+  const poolElapsed = Date.now() - poolStarted;
+  t.diagnostic(`pool terminó en ${poolElapsed}ms (${(poolElapsed / 1000).toFixed(2)}s)`);
+  // Reportamos cada demo como subtest (ordenados para diff estable).
+  for (const result of results) {
+    if (result.ok) {
+      await t.test(`${result.name}`, { skip: skipList.has(result.name) ? false : false }, sub => {
+        for (const diag of result.diagnostics) sub.diagnostic(diag);
+        if (skipList.has(result.name)) sub.diagnostic(`skip-network: solo transpile + compile + link`);
+        sub.diagnostic(`${result.durationMs}ms`);
+      });
+    } else {
+      await t.test(`${result.name} (FAIL)`, async sub => {
+        for (const diag of result.diagnostics) sub.diagnostic(diag);
+        throw new Error(`${result.name}: ${result.error}`);
+      });
+    }
   }
 });
