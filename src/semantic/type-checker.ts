@@ -96,15 +96,6 @@ const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: bool
   optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
 });
 
-// Helpers para `Result<T, E>`. Mismo patrón que OPTIONAL_HELPERS: el user
-// declara el expected contextual y el type-checker propaga T y E.
-const RESULT_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
-  resultOk: { minParams: 1, returnsGeneric: true },            // (T) → Result<T, E>
-  resultErr: { minParams: 1, returnsGeneric: true },           // (E) → Result<T, E>
-  resultIsOk: { minParams: 1, returnsGeneric: false },         // (Result<T, E>) → boolean
-  resultValueOr: { minParams: 2, returnsGeneric: false },      // (Result<T, E>, T) → T
-});
-
 // Helpers sobre `Un<T>` (unique_ptr). Mismo patrón que OPTIONAL_HELPERS:
 // helpers globales para evitar `Un<T>.some(...)` que el dialecto no soporta
 // en genéricos. `unSome` y `unNone` requieren un `expected` contextual para
@@ -735,7 +726,7 @@ export class TypeChecker {
         return type;
       }
       if (base === "Result") {
-        if (arguments_.length !== 2) this.report(node, `'Result' espera 2 argumentos de tipo (T, E), recibió ${arguments_.length}`);
+        if (arguments_.length !== 1) this.report(node, `'Result' espera 1 argumento de tipo, recibió ${arguments_.length}`);
         if (arguments_[0] === "void") this.report(node, "Result<void> no está soportado; usa Result<boolean> o Promise<void>");
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
@@ -1174,52 +1165,30 @@ export class TypeChecker {
           else result = elementType;
           break;
         }
-        if (OPTIONAL_HELPERS[node.callee] || RESULT_HELPERS[node.callee]) {
-          const helper = OPTIONAL_HELPERS[node.callee] || RESULT_HELPERS[node.callee]!;
-          const base = OPTIONAL_HELPERS[node.callee] ? "Optional" : "Result";
+        if (OPTIONAL_HELPERS[node.callee]) {
+          const helper = OPTIONAL_HELPERS[node.callee];
           if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos`);
-          // Para Result<T,E> esperamos 2 argumentos genéricos.
-          const genericArgs = expected && isGenericType(expected) && genericBase(expected) === base ? genericArguments(expected) : [];
-          const expectedT = genericArgs[0];
-          const expectedE = genericArgs[1];
-          if (helper.returnsGeneric && expectedT) {
-            // Helper que devuelve Optional<T> o Result<T,E>: tipamos cada argumento.
-            if (node.callee === "optionalNone") result = genericType("Optional", [expectedT]);
-            else if (node.callee === "optionalSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedT), expectedT, node.args[0]); result = genericType("Optional", [expectedT]); }
-            else if (node.callee === "resultOk" && node.args[0] && expectedE !== undefined) { this.require(this.expression(node.args[0], scope, expectedT), expectedT, node.args[0]); result = genericType("Result", [expectedT, expectedE]); }
-            else if (node.callee === "resultErr" && node.args[0] && expectedE !== undefined) { this.require(this.expression(node.args[0], scope, expectedE), expectedE, node.args[0]); result = genericType("Result", [expectedT, expectedE]); }
+          // Inferimos T a partir del `expected` contextual. Por ejemplo,
+          // `const x: Optional<number> = optionalSome(5)` propaga `number` como
+          // tipo esperado del argumento, lo que hace que `5` se type-checkee
+          // contra `number`.
+          const expectedElement = expected && isGenericType(expected) && genericBase(expected) === "Optional" ? genericArguments(expected)[0] : undefined;
+          if (helper.returnsGeneric && expectedElement) {
+            // Helper que devuelve Optional<T>: tipamos cada argumento con T.
+            if (node.callee === "optionalNone") result = genericType("Optional", [expectedElement]);
+            else if (node.callee === "optionalSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Optional", [expectedElement]); }
             else if (node.callee === "optionalOrElse") {
               node.args.forEach(arg => this.expression(arg, scope));
-              result = genericType("Optional", [expectedT]);
-            }
-            else if (node.callee === "optionalMap") {
-              node.args.forEach(arg => this.expression(arg, scope));
-              result = genericType("Optional", [expectedT]);
-            }
-            else if (node.callee === "optionalAndThen") {
-              node.args.forEach(arg => this.expression(arg, scope));
-              result = genericType("Optional", [expectedT]);
+              result = genericType("Optional", [expectedElement]);
             }
           } else if (!helper.returnsGeneric) {
             // Helpers que devuelven primitivos.
-            const expectedGeneric = expectedT ? genericType(base, expectedE !== undefined ? [expectedT, expectedE] : [expectedT]) : undefined;
             node.args.forEach((arg, index) => {
-              if (index === 0 && expectedGeneric) this.require(this.expression(arg, scope, expectedGeneric), expectedGeneric, arg);
+              if (index === 0 && expectedElement) this.require(this.expression(arg, scope, genericType("Optional", [expectedElement])), genericType("Optional", [expectedElement]), arg);
               else this.expression(arg, scope);
             });
             if (node.callee === "optionalIsPresent") result = "boolean";
-            else if (node.callee === "optionalValueOr") {
-              // Propaga T del primer argumento (Optional<T>) si no hay expected contextual.
-              const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : undefined;
-              const argT = arg0Type && isGenericType(arg0Type) && genericBase(arg0Type) === "Optional" ? genericArguments(arg0Type)[0] : undefined;
-              result = expectedT ?? argT ?? "void";
-            }
-            else if (node.callee === "resultIsOk") result = "boolean";
-            else if (node.callee === "resultValueOr") {
-              const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : undefined;
-              const argT = arg0Type && isGenericType(arg0Type) && genericBase(arg0Type) === "Result" ? genericArguments(arg0Type)[0] : undefined;
-              result = expectedT ?? argT ?? "void";
-            }
+            else if (node.callee === "optionalValueOr") result = expectedElement ?? "void";
           }
           // `optionalMap` y `optionalAndThen` se manejan SIEMPRE (con o sin
           // expected contextual) porque pueden inferir el tipo por sí solos.
