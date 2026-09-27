@@ -4,7 +4,7 @@
 *.o
 *.obj
 
-# Scratch dir del harness de tests (binarios, .cpp generados, outputs)
+# Scratch dir del test runner paralelo (artefactos por worker: w0/, w1/, w2/...)
 test/scratch/
 
 # Artefactos de smoke-tests en la raíz (binarios demo + .cpp generados)

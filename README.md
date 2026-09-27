@@ -750,9 +750,94 @@ Esta sección documenta **explícitamente** features de TypeScript estándar que
 - `for await...of` sobre `Promise<T>[]` (1.8).
 - `using name = expr` con RAII automático (1.9).
 - Match expressions con `when (pattern) => result` (1.10).
-- `export default` y `export { x as y }` (1.15).
+- **`export default` y `export { x as y }`** (1.15).
+- `satisfies` operator con cast implícito (1.11).
+- `Promise.all(tasks)` y `Promise.race(tasks)` sobre `Promise<T>[]` (1.13).
 
 Cualquier PR que intente reintroducir un rechazo irreversible debe reconsiderar primero la decisión de diseño.
+
+## Productividad del compilador (Fase 2)
+
+Más allá del dialecto en sí, el compilador incluye herramientas que mejoran la experiencia de uso:
+
+### Error reporting legible
+
+```bash
+$ etsc src/broken.ets
+error[semantic]: Función no definida 'gret'
+  --> src/broken.ets:4:1
+4 | gret();
+  | ^^^^^^
+  = hint: ¿Quisiste decir 'greet'?
+```
+
+Salida en color cuando stdout es un TTY. Se desactiva con `NO_COLOR=1` y se fuerza en CI con `FORCE_COLOR=1`. Mensajes multi-línea con carets extendidos sobre el span exacto. Sugerencias automáticas cuando hay un identificador similar (Levenshtein ≤ 2).
+
+### Build incremental con `--verbose`
+
+```bash
+$ etsc build --verbose
+Cargando grafo de módulos...
+       1 módulo(s) cargado(s)
+       Calculando digests (runtime + flags)... 0.01s
+       Cache miss: no existe el objeto cacheado
+       Regenerando .cpp (parse + type-check + codegen)... 0.04s
+       Compilando a objeto (g++)... 0.38s
+       Enlazando binario (g++)... 5.62s
+       Binario: /tmp/inc-build/build/app (28,000 bytes)
+Build incremental (miss): 1 módulo(s) compilado(s), 0 reutilizado(s), re-enlazado, 6305ms
+```
+
+Cache hit ~40ms vs build cold ~6s (150x speedup). El flag `--verbose`/`-v` imprime tiempos por fase y diagnóstico claro del motivo del cache miss.
+
+### Página web de demos auto-generada
+
+```bash
+$ npm run demos
+Generando docs/demos.html (50 ejemplos, 13 categorías)...
+Listo.
+```
+
+[`docs/demos.html`](./docs/demos.html) muestra todos los ejemplos con su código fuente y salida esperada, organizados por categoría y con búsqueda visual. Se regenera desde `examples/` y `test/golden/` en cada ejecución.
+
+## Productividad del desarrollo (Fase 3)
+
+### Watch mode
+
+```bash
+$ npm run watch
+watch: vigilando /mi-proyecto
+cambio: src/main.ets
+→ re-compilando
+Build incremental (hit): 0 módulo(s) compilado(s), 2 reutilizado(s), 45ms
+✓ ok en 0.39s
+```
+
+Debounce 100ms para agrupar cambios rápidos. Filtra `.ets`/`.ts`. Spawn del CLI en subproceso para aislar el watcher del build.
+
+### Tests en paralelo con worker pool
+
+```bash
+$ npm test
+✔ examples (50/50)
+✔ checker (78/78)
+ℹ tests 128
+ℹ pass 128
+ℹ duration_ms 88042
+```
+
+El runner usa un pool de workers (default = `cpus().length`) configurable con `TEST_CONCURRENCY=N`. Cada worker tiene su scratch dir (`test/scratch/wN/`) para evitar colisiones. Speedup medido: **2.85x** (5:00 → 1:44 sobre la suite completa).
+
+Para CI sin acceso a red:
+
+```bash
+$ SKIP_NETWORK=1 npm test
+ℹ skip-network: solo transpile + compile + link
+ℹ tests 128
+ℹ pass 128
+```
+
+Los ejemplos marcados como `network` en `test/skip-network.json` se compilan pero no se ejecutan.
 
 ## Ejemplos disponibles
 
