@@ -16,15 +16,20 @@ export function cppType(type: TypeName): string {
   if (isFunctionType(type)) return `std::function<${cppType(functionResult(type))}(${functionParameters(type).map(parameter => cppInputType(parameter, cppType(parameter))).join(", ")})>`;
   if (isGenericType(type)) {
     const sourceBase = genericBase(type);
+    // `Mut<T>` y `MutRef<T>` son modificadores, no tipos envoltorio.
+    // Se resuelven al tipo base (T). El cppParameterDeclaration se encarga
+    // de emitir T* o T& cuando se usan como parámetro.
+    if (sourceBase === "Mut" || sourceBase === "MutRef") {
+      const inner = genericArguments(type)[0];
+      return inner ? cppType(inner) : "void";
+    }
     const base = sourceBase === "Promise" ? "ets::Task"
       : sourceBase === "Result" ? "ets::Result"
       : sourceBase === "Map" ? "ets::Map"
       : sourceBase === "Set" ? "ets::Set"
       : sourceBase === "Optional" ? "ets::Optional"
-      : sourceBase === "Un" ? "ets::Un"
+      : sourceBase === "Unq" ? "ets::Unq"
       : sourceBase === "Rc" ? "ets::Rc"
-      : sourceBase === "MutRef" ? "ets::MutRef"
-      : sourceBase === "Mut" ? "ets::Mut"
       : sourceBase;
     return `${base}<${genericArguments(type).map(cppType).join(", ")}>`;
   }

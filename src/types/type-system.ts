@@ -69,6 +69,22 @@ export function unionMembers(type: TypeName): TypeName[] {
 // unions, `actual` debe ser uno de los miembros. Un union acepta union si los
 // miembros del actual están todos cubiertos.
 export function typeMatches(actual: TypeName, expected: TypeName): boolean {
+  // `Mut<T>` y `MutRef<T>` son modificadores: si el expected es uno de ellos
+  // y el actual es T (o viceversa), aceptamos el match.
+  if (isGenericType(expected)) {
+    const base = genericBase(expected);
+    if (base === "Mut" || base === "MutRef") {
+      const inner = genericArguments(expected)[0];
+      if (inner && typeMatches(actual, inner)) return true;
+    }
+  }
+  if (isGenericType(actual)) {
+    const base = genericBase(actual);
+    if (base === "Mut" || base === "MutRef") {
+      const inner = genericArguments(actual)[0];
+      if (inner && typeMatches(inner, expected)) return true;
+    }
+  }
   if (expected === actual) return true;
   if (!isUnionType(expected)) return false;
   if (isUnionType(actual)) return unionMembers(actual).every(member => unionMembers(expected).includes(member));

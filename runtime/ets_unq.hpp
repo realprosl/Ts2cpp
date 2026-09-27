@@ -1,13 +1,13 @@
-// `ets::Un<T>` — envoltura de `std::unique_ptr<T>` para ownership único.
+// `ets::Unq<T>` — envoltura de `std::unique_ptr<T>` para ownership único.
 //
-// El dialecto modela "ownership único" con `Un<T>` (siguiendo la nomenclatura
+// El dialecto modela "ownership único" con `Unq<T>` (siguiendo la nomenclatura
 // de smart pointers de C++). Es move-only: no se puede copiar. Al salir del
 // scope, el destructor libera automáticamente el recurso (RAII del dialecto).
 //
 // Por diseño del dialecto:
-// - `Un<T>` solo aplica a objetos (T no es primitivo). Los primitivos van
+// - `Unq<T>` solo aplica a objetos (T no es primitivo). Los primitivos van
 //   siempre por valor.
-// - `Un<T>` no expone nullptr al usuario; o tiene valor o se construye con
+// - `Unq<T>` no expone nullptr al usuario; o tiene valor o se construye con
 //   `Un.none<T>()`.
 //
 // API:
@@ -20,15 +20,15 @@
 //   reset(newPtr)    → reemplaza el recurso (libera el viejo)
 //
 // Construcción:
-//   ets::Un<T>::some(value)        — std::unique_ptr<T>(new T(value))
-//   ets::Un<T>::none()            — std::unique_ptr<T>(nullptr)
+//   ets::Unq<T>::some(value)        — std::unique_ptr<T>(new T(value))
+//   ets::Unq<T>::none()            — std::unique_ptr<T>(nullptr)
 //
 // Helpers globales (siguen el patrón de `optionalSome`):
-//   unSome<T>(value)              → Un<T>
-//   unNone<T>()                   → Un<T>
+//   unSome<T>(value)              → Unq<T>
+//   unNone<T>()                   → Unq<T>
 //
 // Diferencias con `MutRef<T>` (alias mutable) y `Mut<T>` (puntero crudo):
-//   Un<T>     = std::unique_ptr<T>  (owning, move-only)
+//   Unq<T>     = std::unique_ptr<T>  (owning, move-only)
 //   MutRef<T> = T&                   (alias, mismo lifetime)
 //   Mut<T>    = T* const             (puntero crudo no-owning, no reasignable)
 //   Rc<T>     = std::shared_ptr<T>  (owning, ref-counted)
@@ -41,30 +41,30 @@
 namespace ets {
 
 template <typename T>
-class Un {
+class Unq {
 public:
     // Construcción desde puntero (toma ownership).
-    explicit Un(T* ptr) : storage_(ptr) {}
+    explicit Unq(T* ptr) : storage_(ptr) {}
 
     // Move constructor.
-    Un(Un&& other) noexcept : storage_(std::move(other.storage_)) {}
+    Unq(Unq&& other) noexcept : storage_(std::move(other.storage_)) {}
 
     // Sin copy constructor (move-only, como std::unique_ptr).
-    Un(const Un&) = delete;
-    Un& operator=(const Un&) = delete;
+    Unq(const Unq&) = delete;
+    Unq& operator=(const Unq&) = delete;
 
     // Move assignment.
-    Un& operator=(Un&& other) noexcept {
+    Unq& operator=(Unq&& other) noexcept {
         storage_ = std::move(other.storage_);
         return *this;
     }
 
     // Fábricas estáticas.
-    static Un some(T value) {
-        return Un(new T(std::move(value)));
+    static Unq some(T value) {
+        return Unq(new T(std::move(value)));
     }
-    static Un none() {
-        return Un(static_cast<T*>(nullptr));
+    static Unq none() {
+        return Unq(static_cast<T*>(nullptr));
     }
 
     // Predicados.
@@ -93,21 +93,21 @@ private:
 
 // Helpers globales estilo "optionalSome" / "optionalNone".
 template <typename T>
-inline ets::Un<T> unSome(T value) {
-    return ets::Un<T>::some(std::move(value));
+inline ets::Unq<T> unSome(T value) {
+    return ets::Unq<T>::some(std::move(value));
 }
 
 template <typename T>
-inline ets::Un<T> unNone() {
-    return ets::Un<T>::none();
+inline ets::Unq<T> unNone() {
+    return ets::Unq<T>::none();
 }
 
 template <typename T>
-inline bool unIsSome(const ets::Un<T>& u) {
+inline bool unIsSome(const ets::Unq<T>& u) {
     return u.isSome();
 }
 
 template <typename T>
-inline const T& unValue(const ets::Un<T>& u) {
+inline const T& unValue(const ets::Unq<T>& u) {
     return u.value();
 }
