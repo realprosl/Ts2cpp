@@ -157,7 +157,22 @@
   Build incremental (hit): 0 módulo(s) compilado(s), 2 reutilizado(s), 32ms
   ✓ ok en 0.38s
   ```
-- **Próxima fase**: Fase 3 — piezas pendientes (pre-compiled headers del runtime, PGO del compilador mismo, worker pool).
+## Última fase cerrada: Fase 3.3 — worker pool paralelo · commit 680e3f7
+
+- **Tests**: 131/131 PASS en 1:44 (vs 4:42 en serie) → **2.85x speedup total**
+- **Cambios**:
+  - `test/runner.ts`: worker pool con `Promise` + índice compartido. Concurrency por defecto = `cpus().length - 1`. Configurable con `TEST_CONCURRENCY=N`.
+  - Cada worker escribe en `test/scratch/wN/` (subdirectorios aislados).
+  - `processDemo(name, isSkipNetwork, workerId)` ejecuta pipeline completo (transpile + compile + run + diff golden).
+  - `runPool(items, workerCount, fn)` reparte items round-robin preservando orden de entrada.
+  - Cwd de exec = SCRATCH_DIR raíz para que `process.cwd()`/`path.resolve('.')` vean el mismo entorno que en serie.
+- **Speedup medido**:
+  | Concurrencia | Tiempo demo (50) | Speedup |
+  |---|---|---|
+  | 1 (serie) | 282s (4:42) | 1x |
+  | 4 (auto) | 76s (1:16) | **3.7x** |
+  | 8 (over) | 85s | (más workers no ayuda con 4 cores) |
+- **Próxima fase**: Consolidación — todas las piezas activas de Fase 3 cerradas.
 
 ## Plan en cola
 
@@ -193,7 +208,7 @@
 ### Fase 3 — Compilación incremental
 
 - [x] ~~Caché de tokens/AST entre invocaciones~~ → integrado con el incremental-builder (Fase Bloque A)
-- [ ] Worker pool para compilación paralela
+- [x] Worker pool para compilación paralela → `npm test` con auto-detect (commit 680e3f7)
 - [x] Incremental watch mode que invalide solo módulos con hash cambiado → `npm run watch` (commit 1cafb31)
 - [x] Skip tests de red en CI (`SKIP_NETWORK=1`) → commit 1cafb31
 - [ ] Pre-compiled headers del runtime
