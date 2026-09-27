@@ -758,6 +758,12 @@ Cualquier PR que intente reintroducir un rechazo irreversible debe reconsiderar 
 
 El directorio `examples/` contiene 50 ejemplos cubriendo todas las features del dialecto. Cada uno tiene su golden file en `test/golden/`.
 
+**Página web auto-generada**: [`docs/demos.html`](./docs/demos.html) muestra todos los ejemplos con su código fuente y salida esperada, organizados por categoría y con búsqueda visual. Para regenerarla después de añadir ejemplos:
+
+```bash
+npm run demos
+```
+
 | Categoría | Ejemplos |
 |---|---|
 | **Hello world** | `hello.ets` |
