@@ -117,13 +117,13 @@ const RC_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }>
 // Helpers sobre `MutRef<T>` (referencia mutable) y `Mut<T>` (puntero crudo
 // mutable constante). Solo constructores; el dialecto no tiene métodos sobre
 // estos (la sintaxis `ptr.some()` no funciona para genéricos).
-const REF_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
+const REF_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean; returnsRef?: boolean }> = Object.assign(Object.create(null), {
   mutRefOf: { minParams: 1, returnsGeneric: true },           // (T&) → MutRef<T>
   mutRefFrom: { minParams: 1, returnsGeneric: true },         // (T&) → MutRef<T>
-  mutRefValue: { minParams: 1, returnsGeneric: false },       // (MutRef<T>) → T
+  mutRefValue: { minParams: 1, returnsGeneric: false, returnsRef: true },   // (MutRef<T>) → T&
   mutOf: { minParams: 1, returnsGeneric: true },              // (T*) → Mut<T>
   mutFrom: { minParams: 1, returnsGeneric: true },            // (T&) → Mut<T>
-  mutValue: { minParams: 1, returnsGeneric: false },          // (Mut<T>) → T
+  mutValue: { minParams: 1, returnsGeneric: false, returnsRef: true },     // (Mut<T>) → T&
   mutIsSome: { minParams: 1, returnsGeneric: false },        // (Mut<T>) → boolean
 });
 
