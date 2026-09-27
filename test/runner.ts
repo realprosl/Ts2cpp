@@ -59,10 +59,16 @@ const LINK_FLAGS = ["-Wl,--gc-sections", "-Wl,--as-needed", "-s"];
 // Utilidades
 // -------------------------------------------------------------------------
 
-/** Lee `skip-network.json` y devuelve el conjunto de nombres a saltar. */
+/** Lee `skip-network.json` y devuelve el conjunto de nombres a saltar.
+ *  Si la variable de entorno `SKIP_NETWORK=1` está activa, devuelve un
+ *  conjunto con TODOS los ejemplos para forzar compile-only (útil en CI). */
 async function loadSkipList(): Promise<Set<string>> {
   const raw = await readFile(SKIP_FILE, "utf8");
   const parsed = JSON.parse(raw) as { skip: string[] };
+  if (process.env.SKIP_NETWORK === "1") {
+    const allExamples = await discoverExamples();
+    return new Set(allExamples);
+  }
   return new Set(parsed.skip);
 }
 
