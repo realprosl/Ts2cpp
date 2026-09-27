@@ -96,7 +96,32 @@
     - Enlace prominente a `LIMITATIONS.md` al inicio.
     - Sección 'Limitaciones conocidas' reescrita: solo rechazos irreversibles; las features reabiertas en Fase 1 se mencionan con referencia al commit.
     - Nueva sección 'Ejemplos disponibles' con tabla categorizada de los 50 ejemplos y comandos para ejecutarlos.
-- **Próxima fase**: Fase 2.3 — compilación incremental pulida (verbose, errores claros).
+## Última fase cerrada: Fase 2.3 — build incremental pulido · commit 4e84dc0
+
+- **Tests**: 130/130 PASS en 4:32 (sin regresiones)
+- **Cambios**:
+  - `BuildProgress` class: reporter de progreso estilo cargo, mide tiempo por fase.
+  - `IncrementalBuildOptions { verbose?: boolean }`.
+  - `IncrementalBuildResult`: campos nuevos `durationMs` y `cacheResult: "hit" | "miss"`.
+  - Diagnóstico de cache miss: distingue entre huella-cambió / no-existe-objeto / no-existe-binario.
+  - Errores nativos envueltos con contexto: la excepción de g++/ld incluye la fase que falló y sugiere revisar flags/linkFlags en estatic.config.ts.
+  - Resumen final: tamaño del binario.
+  - `--verbose` / `-v` flag en el CLI.
+- **Output ejemplo (verbose)**:
+  ```
+  Cargando grafo de módulos...
+         1 módulo(s) cargado(s)
+         Calculando digests (runtime + flags)... 0.01s
+         runtime digest: 8acfe58deaebaf88, global digest: 5d206feb7ea8ce7a
+         Cache miss: no existe el objeto cacheado
+         Regenerando .cpp (parse + type-check + codegen)... 0.04s
+         Compilando a objeto (g++)... 0.38s
+         Enlazando binario (g++)... 5.62s
+         Binario: /tmp/inc-build/build/app (28,000 bytes)
+  Build incremental (miss): 1 módulo(s) compilado(s), 0 reutilizado(s), re-enlazado, 6305ms
+  ```
+- **Output ejemplo (cache hit, verbose)**: `Cache hit: huella coincide, reutilizando .../app.o` + `Build incremental (hit): ... 42ms` (150x más rápido).
+- **Próxima fase**: Fase 2.4 — página web de demos.
 
 ## Plan en cola
 
@@ -126,8 +151,8 @@
 |---|---|---|
 | 2.1 | Error reporting legible (colores, multi-line, did you mean) | ✅ commit 270050c |
 | 2.2 | Documentación completa (README, LIMITATIONS, ejemplos) | ✅ commit 89c4883 |
-| 2.3 | Compilación incremental pulida (verbose, errores claros) | ⏳ **siguiente** |
-| 2.4 | Página web de demos | ⏸️ pospuesto |
+| 2.3 | Compilación incremental pulida (verbose, errores claros) | ✅ commit 4e84dc0 |
+| 2.4 | Página web de demos | ⏳ **siguiente** |
 
 ### Fase 3 — Compilación incremental
 
