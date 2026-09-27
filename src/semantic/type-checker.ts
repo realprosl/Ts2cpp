@@ -82,6 +82,36 @@ const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }>
   jsonObjectGet: { params: ["JsonValue", "string"], returnType: "JsonValue" },
 });
 
+// Helpers para filesystem (Issue #13). Exponen runtime/ets_file.hpp como
+// funciones globales del dialecto. Sin tipos ricos (Result<FileContent,
+// FileError>) — eso llega en V1 (tagged unions). Por ahora devuelven
+// primitivos: string/boolean.
+const FILE_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  fileRead:    { minParams: 1, paramTypes: ["string"],         returnType: "string"  },  // (path) -> string
+  fileWrite:   { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },  // (path, content) -> boolean
+  fileAppend:  { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },
+  fileExists:  { minParams: 1, paramTypes: ["string"],         returnType: "boolean" },
+  fileCopy:    { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },
+  fileMove:    { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },
+  fileRemove:  { minParams: 1, paramTypes: ["string"],         returnType: "boolean" },
+});
+
+// Helpers para networking (Issue #14). Wrappers síncronos sobre POSIX sockets
+// (runtime/ets_net_sync.hpp). Devuelven fd numéricos o string vacío en error.
+// V1 (tagged unions) reemplazará estos por `Result<TcpConn, NetError>`.
+const NET_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  tcpListen:        { minParams: 2, paramTypes: ["string", "number"], returnType: "number"  },  // (host, port) -> fd
+  tcpAccept:        { minParams: 1, paramTypes: ["number"],          returnType: "number"  },  // (listenerFd) -> clientFd
+  tcpConnect:       { minParams: 2, paramTypes: ["string", "number"], returnType: "number"  },  // (host, port) -> fd
+  tcpRead:          { minParams: 2, paramTypes: ["number", "number"], returnType: "string"  },  // (fd, maxBytes) -> data
+  tcpWrite:         { minParams: 2, paramTypes: ["number", "string"], returnType: "boolean" },  // (fd, data) -> ok
+  tcpClose:         { minParams: 1, paramTypes: ["number"],          returnType: "void"    },  // (fd)
+  // Helper de alto nivel: server en background + cliente en foreground.
+  // Usado por los tests E2E hasta que V1 introduzca tagged unions.
+  etsNetSyncEcho:   { minParams: 4, paramTypes: ["string", "number", "string", "number"], returnType: "string" },  // (host, port, request, maxBytes) -> response
+  etsNetSyncLarge:  { minParams: 3, paramTypes: ["string", "number", "number"], returnType: "string" },  // (host, port, payloadBytes) -> response
+});
+
 // Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
 // tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
 // funciones libres. Cada helper preserva el tipo genérico a través
@@ -1163,6 +1193,20 @@ export class TypeChecker {
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
           node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
           result = signature.returnType; break;
+        }
+        if (FILE_HELPERS[node.callee]) {
+          const helper = FILE_HELPERS[node.callee];
+          if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos, recibió ${node.args.length}`);
+          if (helper.paramTypes) node.args.forEach((arg, index) => { if (helper.paramTypes![index]) this.require(this.expression(arg, scope, helper.paramTypes![index]), helper.paramTypes![index], arg); });
+          else node.args.forEach(arg => this.expression(arg, scope));
+          result = helper.returnType; break;
+        }
+        if (NET_HELPERS[node.callee]) {
+          const helper = NET_HELPERS[node.callee];
+          if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos, recibió ${node.args.length}`);
+          if (helper.paramTypes) node.args.forEach((arg, index) => { if (helper.paramTypes![index]) this.require(this.expression(arg, scope, helper.paramTypes![index]), helper.paramTypes![index], arg); });
+          else node.args.forEach(arg => this.expression(arg, scope));
+          result = helper.returnType; break;
         }
         if (ASYNC_HELPERS[node.callee]) {
           const helper = ASYNC_HELPERS[node.callee];
