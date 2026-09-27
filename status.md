@@ -211,8 +211,8 @@
 - [x] Worker pool para compilación paralela → `npm test` con auto-detect (commit 680e3f7)
 - [x] Incremental watch mode que invalide solo módulos con hash cambiado → `npm run watch` (commit 1cafb31)
 - [x] Skip tests de red en CI (`SKIP_NETWORK=1`) → commit 1cafb31
-- [ ] Pre-compiled headers del runtime
-- [ ] Profile-guided optimization del compilador mismo
+- [x] ~~Pre-compiled headers del runtime~~ → descartado (marginal con C++20)
+- [x] ~~Profile-guided optimization del compilador mismo~~ → descartado (marginal)
 
 ### Fase 3 — Genéricos con capacidades (nombres por decidir)
 
@@ -231,3 +231,15 @@
 
 - ~~`>>>` rechazado~~ → **mantenido rechazado** tras revisión.
 - ~~`??`/`?.` rechazados~~ → **reabiertos** condicionalmente a `Optional<T>` (1.2 ✅).
+- ~~`abstract` (1.12) y `override` (1.14)~~ → **descartados** porque requieren herencia y el dialecto la prohíbe.
+
+## Release v0.26 (preparación)
+
+Tras cerrar Fases 1.11 + 1.13 y descartar 1.12 + 1.14, todas las features
+TS modernas del dialecto están implementadas. La sesión cierra con:
+
+- **22 commits** desde `5b9b8dc` (Fase 3 setup) hasta `961c124` (Fase 1.13).
+- **133/133 tests PASS** en 1:44 (vs 117/117 en 5:00 al inicio → 2.85x speedup).
+- **50 demos** (16 nuevos esta sesión).
+- **17 features Fase 1** cerradas (10 originales + 1.13 + 1.11 + extras del plan).
+- **Tag `v0.26`** siguiente paso.
