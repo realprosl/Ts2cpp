@@ -1,0 +1,7 @@
+hello (anon) (alice)
+hello bobby (bob)
+hi (anon) carl
+hi D dora
+api.example.com:80
+api.example.com:443
+api.example.com:443/tls

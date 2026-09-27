@@ -1,0 +1,6 @@
+hello
+42
+10
+30
+inside
+after-block
