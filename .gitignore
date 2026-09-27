@@ -1,8 +1,11 @@
-# Salidas del transpilador y del compilador nativo
-build/
+# Salidas del transpilador y del compilador nativo (solo raíz del proyecto)
+/build/
 *.bin
 *.o
 *.obj
+
+# Scratch dir del harness de tests (binarios, .cpp generados, outputs)
+test/scratch/
 
 # Artefactos de smoke-tests en la raíz (binarios demo + .cpp generados)
 /closures.cpp

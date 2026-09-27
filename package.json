@@ -1,6 +1,6 @@
 {
   "name": "estatic-ts-cpp",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": true,
   "type": "module",
   "description": "Transpilador modular de un subconjunto estático de TypeScript a C++20",
@@ -15,7 +15,10 @@
   },
   "scripts": {
     "start": "node --experimental-strip-types src/cli.ts",
-    "init": "node --experimental-strip-types src/cli.ts init"
+    "init": "node --experimental-strip-types src/cli.ts init",
+    "demos": "node --experimental-strip-types scripts/build-demo-page.ts",
+    "watch": "node --experimental-strip-types scripts/watch.ts",
+    "test": "node --experimental-strip-types --test test/unit/lexer.test.ts test/unit/parser.test.ts test/unit/type-checker.test.ts test/unit/codegen.test.ts test/runner.ts"
   },
   "engines": { "node": ">=22.6" }
 }
