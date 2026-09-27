@@ -1,7 +1,8 @@
-import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, TypeParameter } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
 import { cppType } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
 import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
+import { HELPER_METADATA } from "../semantic/helpers.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
 // `Concept1<P> && Concept2<P>`). Las restricciones concept siempre se aplican al
@@ -374,7 +375,12 @@ export class CppGenerator {
           }
           return lines.join("\n");
         }
-        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
+        // Si el initializer es una llamada a un helper que retorna por
+        // referencia (MutRef<T>, Un<T>, Rc<T>, Mut<T>), emitimos `T& x = ...`
+        // para evitar la copia. El type-checker garantiza que el tipo
+        // declarado coincide con el tipo del valor retornado.
+        const typeRef = this.expressionReturnsRef(node.initializer) ? "&" : "";
+        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) + typeRef : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
       }
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
@@ -549,6 +555,25 @@ export class CppGenerator {
     return line;
   }
   private variableIsConst(node: VariableDeclaration): boolean { return !node.mutable && !(node.initializer.kind === "ArrowFunctionExpression" && node.initializer.mutatesCapturedState); }
+
+  /**
+   * Devuelve true si el initializer es una llamada a un helper que retorna
+   * por referencia (`returnsRef: true` en HELPER_METADATA). En ese caso el
+   * codegen emite `T& x = ...` en lugar de `T x = ...` para evitar la copia.
+   *
+   * Ejemplos:
+   *   let holder: Counter = mutRefValue(ref);     // holder es Counter&
+   *   let inner: T = unValue(u);                  // inner es T&
+   *   let x: Counter = counter;                   // x es Counter (copia)
+   */
+  private expressionReturnsRef(node: Expression): boolean {
+    if (node.kind === "CallExpression") {
+      const call = node as CallExpression;
+      const meta = HELPER_METADATA[call.callee];
+      return !!(meta && meta.returnsRef);
+    }
+    return false;
+  }
   private statementBody(node: Statement): string { if (node.kind === "BlockStatement") return this.emitBlock(node); this.indent++; const body = `{\n${this.emitStatement(node)}\n`; this.indent--; return body + this.pad() + "}"; }
   private emitBlock(node: BlockStatement, appendCoReturn = false): string { const lines = ["{"]; this.indent++; for (const s of node.statements) lines.push(this.emitStatement(s)); if (appendCoReturn) lines.push(this.pad() + "co_return;"); this.indent--; lines.push(this.pad() + "}"); return lines.join("\n"); }
   private emitExpression(node: Expression): string {
