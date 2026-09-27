@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -362,8 +362,27 @@ export class TypeChecker {
   }
 
   typeOf(expression: Expression): TypeName | undefined {
+    // V0.1: si el nodo tiene `resolvedType` adjuntado, lo usamos directamente
+    // y lo convertimos a `TypeName` para mantener la API existente.
+    if (expression.resolvedType) {
+      const resolvedAsString = resolvedTypeToTypeName(expression.resolvedType);
+      if (resolvedAsString) return this.unwrapMutLike(resolvedAsString);
+    }
     const stored = this.types.get(expression);
     if (!stored) return undefined;
+    return this.unwrapMutLike(stored);
+  }
+
+  /**
+   * Devuelve el `ResolvedType` de una expresión, sin convertir a string.
+   * Usado por el codegen cuando quiere inspeccionar estructura (genéricos,
+   * argumentos, etc.) sin parsear.
+   */
+  resolvedTypeOf(expression: Expression): import("../types/type-system.ts").ResolvedType | undefined {
+    return expression.resolvedType ?? toResolvedType(this.types.get(expression));
+  }
+
+  private unwrapMutLike(stored: TypeName): TypeName {
     // `Mut<T>` y `MutRef<T>` son modificadores: el tipo "real" para el
     // codegen y el semantic es el tipo interno T. Devolvemos T en lugar del
     // envoltorio (que ya no existe).
@@ -1540,6 +1559,11 @@ export class TypeChecker {
         break;
       }
     }
+    // V0.1: anotar `resolvedType` directamente sobre el nodo además de
+    // (durante la transición) mantener el mapa paralelo. Las llamadas a
+    // `typeOf` consultan primero `resolvedType` para que la transición sea
+    // transparente.
+    node.resolvedType = toResolvedType(result);
     this.types.set(node, result); return result;
   }
 
