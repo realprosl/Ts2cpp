@@ -121,7 +121,15 @@
   Build incremental (miss): 1 módulo(s) compilado(s), 0 reutilizado(s), re-enlazado, 6305ms
   ```
 - **Output ejemplo (cache hit, verbose)**: `Cache hit: huella coincide, reutilizando .../app.o` + `Build incremental (hit): ... 42ms` (150x más rápido).
-- **Próxima fase**: Fase 2.4 — página web de demos.
+## Última fase cerrada: Fase 2.4 — página web de demos · commit 0481f17
+
+- **Tests**: 130/130 PASS (sin cambios en código)
+- **Cambios**:
+  - `scripts/build-demo-page.ts` (nuevo, ~340 LOC): generador que escanea `examples/*.ets` y `test/golden/*.expected.txt` y produce `docs/demos.html`. Sin deps npm.
+  - `docs/demos.html` (nuevo, 2587 líneas): 50 demos en 13 categorías con CSS embebido (tema oscuro Catppuccin-inspired). Cada card colapsable con código fuente (cerrado por defecto) y salida golden (abierta por defecto). TOC con anchors. Badges `✓ output` / `⚠ sin golden`.
+  - `package.json`: script `demos` añadido.
+  - `README.md`: enlace prominente a `docs/demos.html` con comando `npm run demos`.
+- **Próxima fase**: Consolidación — todas las fases del plan original están cerradas.
 
 ## Plan en cola
 
@@ -152,7 +160,7 @@
 | 2.1 | Error reporting legible (colores, multi-line, did you mean) | ✅ commit 270050c |
 | 2.2 | Documentación completa (README, LIMITATIONS, ejemplos) | ✅ commit 89c4883 |
 | 2.3 | Compilación incremental pulida (verbose, errores claros) | ✅ commit 4e84dc0 |
-| 2.4 | Página web de demos | ⏳ **siguiente** |
+| 2.4 | Página web de demos | ✅ commit 0481f17 |
 
 ### Fase 3 — Compilación incremental
 
