@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, TypeParameter } from "../ast/nodes.ts";
 import { cppType } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
-import { functionResult, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult } from "../types/type-system.ts";
+import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
 // `Concept1<P> && Concept2<P>`). Las restricciones concept siempre se aplican al
@@ -18,29 +18,63 @@ export class CppGenerator {
   private readonly aliasNames: Set<string> = new Set();
   private readonly enumNames: Set<string> = new Set();
   private readonly enumUnderlying = new Map<string, "number" | "string">();
+  // Mapa de funciones top-level indexadas por nombre, usado para rellenar
+  // argumentos opcionales omitidos en call sites con `optionalNone<T>()`.
+  private readonly topLevelFunctions = new Map<string, FunctionDeclaration[]>();
   private readonly expressionType: (node: Expression) => TypeName | undefined;
   private readonly expressionIsVariadic: (node: Expression) => boolean;
   private readonly callTypeArguments: (node: Expression) => TypeName[];
   private inClassMethod = false;
   private inStaticInit = false;
   private inAsyncFunction = false;
+  // Renombrados de variables que colisionan con singletons globales del runtime
+  // (`console`, `fs`, `path`, `process`, `JSON`). Se prefijan con `ets_local_`
+  // en C++ para evitar la colisión con `inline ets_path path{}` etc. Las
+  // referencias en el código generado se reescriben al pasar por `cppName`.
+  private readonly runtimeGlobals = new Set(["console", "fs", "path", "process", "JSON"]);
+  private readonly localRenames = new Map<string, string>();
+  // Map de alias introducidos por `export { x as y }` para que el codegen
+  // resuelva `y` al símbolo original `x`. Se rellena desde type-checker.
+  private readonly exportAliases = new Map<string, string>();
+  private destructuringCounter = 0;
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
   }
+  // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
+  // por colisión con un global del runtime, devuelve el nombre prefijado.
+  private resolveAlias(name: string): string { return this.exportAliases.get(name) ?? name; }
+  private cppName(name: string): string {
+    return this.localRenames.get(name) ?? name;
+  }
   private prepare(program: Program): void {
-    const interfaces = program.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
-    const classes = program.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
+    // `export default` envuelve una declaración; el dialecto es single-
+    // translation-unit, así que la declaración se procesa como si fuera
+    // top-level directa. Unwrap para que `prepare` la vea igual que las demás.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrapped = program.statements.map(unwrap);
+    const interfaces = unwrapped.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
+    const classes = unwrapped.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
     this.interfaceNames.clear(); interfaces.forEach(contract => this.interfaceNames.add(contract.name));
     this.classNames.clear(); classes.forEach(node => this.classNames.add(node.name));
     this.aliasNames.clear();
     this.enumNames.clear();
     this.enumUnderlying.clear();
-    for (const stmt of program.statements) {
+    this.topLevelFunctions.clear();
+    for (const stmt of unwrapped) {
       if (stmt.kind === "TypeAliasDeclaration") this.aliasNames.add(stmt.name);
       if (stmt.kind === "EnumDeclaration") { this.enumNames.add(stmt.name); this.enumUnderlying.set(stmt.name, stmt.underlying); }
+      if (stmt.kind === "FunctionDeclaration") {
+        const list = this.topLevelFunctions.get(stmt.name) ?? [];
+        list.push(stmt);
+        this.topLevelFunctions.set(stmt.name, list);
+      }
     }
     this.indent = 0;
+    // Escaneamos el programa para detectar alias de export (`export { x as y }`)
+    // y registrarlos en `exportAliases` para que el codegen los resuelva.
+    this.exportAliases.clear();
+    for (const stmt of unwrapped) if (stmt.kind === "ExportNamedDeclaration") for (const spec of stmt.specifiers) if (spec.alias) this.exportAliases.set(spec.alias, spec.name);
   }
   private usesTls(program: Program): boolean { return /\b(?:TlsContext|TlsConnection|createTlsServer|acceptTls|readTls|writeTls|closeTls)\b/.test(JSON.stringify(program)); }
   private usesCompilerAst(program: Program): boolean { return /\b(?:validateSyntax|syntaxTreeJson|syntaxTreeRecords|estaticAstRecords|estaticTypedAstJson|estaticTypedAstRecords)\b/.test(JSON.stringify(program)); }
@@ -48,16 +82,21 @@ export class CppGenerator {
     return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : [])];
   }
   generate(program: Program): string {
-    const functions = program.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
-    const interfaces = program.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
-    const classes = program.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
-    const enums = program.statements.filter((s): s is EnumDeclaration => s.kind === "EnumDeclaration");
-    this.prepare(program);
-    const topLevelVariables = program.statements.filter((s): s is VariableDeclaration => s.kind === "VariableDeclaration");
-    const topLevelOther = program.statements.filter(s =>
+    // `export default` envuelve una declaración; hacemos unwrap para que el
+    // dialecto (single-translation-unit) las procese como top-level directas.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrapped = { ...program, statements: program.statements.map(unwrap) };
+    const functions = unwrapped.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
+    const interfaces = unwrapped.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
+    const classes = unwrapped.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
+    const enums = unwrapped.statements.filter((s): s is EnumDeclaration => s.kind === "EnumDeclaration");
+    this.prepare(unwrapped);
+    const topLevelVariables = unwrapped.statements.filter((s): s is VariableDeclaration => s.kind === "VariableDeclaration");
+    const topLevelOther = unwrapped.statements.filter(s =>
       s.kind !== "FunctionDeclaration" && s.kind !== "InterfaceDeclaration" &&
       s.kind !== "ClassDeclaration" && s.kind !== "VariableDeclaration" &&
-      s.kind !== "TypeAliasDeclaration" && s.kind !== "EnumDeclaration"
+      s.kind !== "TypeAliasDeclaration" && s.kind !== "EnumDeclaration" &&
+      s.kind !== "ExportNamedDeclaration"
     );
     const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
@@ -69,18 +108,29 @@ export class CppGenerator {
     // que cualquier función declarada después pueda verlas. La inicialización ocurre en
     // la fase de static init, así que tipos sin constructor por defecto (Result, etc.)
     // siguen funcionando porque la inicialización forma parte de la declaración.
-    for (const variable of topLevelVariables) {
+    // Separamos las top-level: las que tienen destructuring se emiten en main()
+// (no son static-init válidas), el resto va al bloque de static init.
+    const simpleTopLevel = topLevelVariables.filter(variable => !variable.arrayBindings || variable.arrayBindings.length === 0);
+    const destructuringTopLevel = topLevelVariables.filter(variable => !!variable.arrayBindings && variable.arrayBindings.length > 0);
+    for (const variable of simpleTopLevel) {
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
       const initializer = this.emitExpression(variable.initializer);
       this.inStaticInit = previous;
-      lines.push(`static ${cppType(type)} ${variable.name} = ${initializer};`);
+      // Si el nombre colisiona con un singleton global del runtime, lo
+      // renombramos en C++ y registramos el rename para que las referencias
+      // posteriores se emitan con el nombre canónico.
+      const cppName = this.runtimeGlobals.has(variable.name)
+        ? (this.localRenames.set(variable.name, `ets_local_${variable.name}`), `ets_local_${variable.name}`)
+        : variable.name;
+      lines.push(`static ${cppType(type)} ${cppName} = ${initializer};`);
     }
-    if (topLevelVariables.length) lines.push("");
+    if (simpleTopLevel.length) lines.push("");
     for (const fn of functions) lines.push(this.function(fn), "");
     lines.push("int main(int argc, char** argv) {"); this.indent++;
     lines.push(this.pad() + "ets_argc = argc;");
     lines.push(this.pad() + "ets_argv = argv;");
+    for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevelOther) lines.push(this.emitStatement(statement));
     lines.push(this.pad() + "return 0;"); this.indent--; lines.push("}", "");
     return lines.join("\n");
@@ -106,14 +156,19 @@ export class CppGenerator {
     return lines.join("\n");
   }
   generateModule(program: Program, combinedProgram: Program, headerName: string, initializer: string, entryInitializers?: string[]): string {
+    // `export default` envuelve una declaración; el dialecto es single-
+    // translation-unit, así que la declaración se procesa como si fuera
+    // top-level directa. Unwrap antes del flujo principal.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    const unwrappedProgram = { ...program, statements: program.statements.map(unwrap) };
     this.prepare(combinedProgram);
-    const allFunctions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
+    const allFunctions = unwrappedProgram.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
     const functions = allFunctions.filter(statement => statement.typeParameters.length === 0);
     const privateFunctions = allFunctions.filter(statement => !statement.exported);
-    const privateInterfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
-    const privateClasses = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
-    const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration");
-    const topLevel = program.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration");
+    const privateInterfaces = unwrappedProgram.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
+    const privateClasses = unwrappedProgram.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
+    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration");
+    const topLevel = unwrappedProgram.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration" && statement.kind !== "ExportNamedDeclaration");
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of privateClasses) lines.push(this.classForward(node));
@@ -151,7 +206,13 @@ export class CppGenerator {
     const requires = requiresClauses.length ? `${requiresClauses.join("\n")}\n` : "";
     // C++ no permite defaults en la definición si ya están en la declaración;
     // pasamos `false` al emitir el cuerpo.
-    const params = fn.params.map((p, i) => cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : cppType(p.type), fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined)).join(", ");
+    // `p?: T` se traduce a `Optional<T>` en C++. Si el user ya escribió
+    // `Optional<T>` no duplicamos el envoltorio.
+    const params = fn.params.map((p, i) => {
+      const baseType = cppType(p.type);
+      const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
+      return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined);
+    }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
   }
   private classDeclaration(node: ClassDeclaration): string {
@@ -162,7 +223,13 @@ export class CppGenerator {
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     const header = `${templatePart}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name} {`;
     const lines = [header]; this.indent++;
-    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)} ${field.name};`);
+    // C++ no permite reasignar campos `const` en el cuerpo del constructor.
+    // Si la clase declara un constructor, los `readonly` se emiten SIN `const`
+    // y el semantic checker rechaza asignaciones fuera del constructor. Si no
+    // hay constructor, los `readonly` se emiten como `const` (solo se pueden
+    // inicializar aggregate-style).
+    const hasConstructor = node.methods.some(method => method.name === "constructor");
+    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
     if (node.fields.length && node.methods.length) lines.push("");
     for (const method of node.methods) lines.push(this.pad() + this.classMethod(method), "");
     if (lines.at(-1) === "") lines.pop();
@@ -180,8 +247,37 @@ export class CppGenerator {
   private classMethod(method: ClassMethod): string {
     const declaration: FunctionDeclaration = { kind: "FunctionDeclaration", name: method.name, async: false, typeParameters: method.typeParameters ?? [], variadicTypeParameters: [], params: method.params, returnType: method.returnType, body: method.body, span: method.span };
     const previous = this.inClassMethod; this.inClassMethod = true;
-    const result = `${this.signature(declaration)}${this.methodMutates(method) ? "" : " const"} ${this.emitBlock(method.body)}`;
+    const body = this.emitBlock(method.body);
+    const deprecated = this.decoratorWarning(method.decorators, method.name);
+    // `deprecated` se inyecta inmediatamente después de `{` del cuerpo, no entre
+    // la firma y el `{`. Para eso, troceamos el bloque en dos.
+    let bodyWithWarning = body;
+    if (deprecated) {
+      const openBrace = body.indexOf("{");
+      const afterBrace = body.indexOf("\n", openBrace) + 1;
+      bodyWithWarning = body.slice(0, afterBrace) + deprecated + body.slice(afterBrace);
+    }
+    const result = `${this.signature(declaration)}${this.methodMutates(method) ? "" : " const"} ${bodyWithWarning}`;
     this.inClassMethod = previous; return result;
+  }
+
+  /**
+   * Si la lista de decoradores contiene `@deprecated("msg")` o `@deprecated()`,
+   * devuelve un statement C++ que imprime el warning a stderr. En caso
+   * contrario devuelve una cadena vacía. Solo se aplica a decoradores de
+   * métodos (la advertencia se emite al principio del cuerpo).
+   */
+  private decoratorWarning(decorators: { name: string; args: Expression[] }[] | undefined, memberName: string): string {
+    if (!decorators) return "";
+    const deprecated = decorators.find(decorator => decorator.name === "deprecated");
+    if (!deprecated) return "";
+    let message = "deprecated";
+    if (deprecated.args.length) {
+      const first = deprecated.args[0];
+      if (first.kind === "LiteralExpression" && typeof first.value === "string") message = first.value;
+    }
+    // Emitimos `std::cerr << "WARN: ...\n";` al principio del cuerpo.
+    return `std::cerr << "WARN: '${memberName}' is deprecated: ${message}\\n"; `;
   }
   private methodMutates(method: ClassMethod): boolean { return method.body.statements.some(statement => this.statementMutatesThis(statement)); }
   private statementMutatesThis(node: Statement): boolean {
@@ -206,7 +302,7 @@ export class CppGenerator {
     if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand);
     if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand);
     if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg));
-    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => this.expressionMutatesThis(item));
+    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression) : this.expressionMutatesThis(item));
     if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement)) : this.expressionMutatesThis(node.body);
     if (node.kind === "MemberCallExpression") return this.expressionMutatesThis(node.object) || node.args.some(arg => this.expressionMutatesThis(arg));
     if (node.kind === "MemberExpression") return this.expressionMutatesThis(node.object);
@@ -253,7 +349,33 @@ export class CppGenerator {
   }
   private emitStatement(node: Statement): string {
     switch (node.kind) {
-      case "VariableDeclaration": return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${node.name} = ${this.emitExpression(node.initializer)};`;
+      case "VariableDeclaration": {
+        // Array destructuring: `const [a, b, c] = expr;` se desazucara a una
+        // variable temporal oculta + N declaraciones `const T x = tmp[i];`.
+        // El tipo declarado (si lo hay) se aplica a los bindings que no tengan
+        // tipo propio; el del temporal es el del initializer (lo deduce `auto`).
+        if (node.arrayBindings && node.arrayBindings.length > 0) {
+          const counter = ++this.destructuringCounter;
+          const tmpName = `__ets_destructure_${counter}`;
+          const tmpType = node.declaredType ? cppType(node.declaredType) : "auto";
+          const initType = this.expressionType(node.initializer);
+          const initIsArray = initType && isArrayType(initType);
+          const lines: string[] = [];
+          lines.push(`${this.pad()}${this.variableIsConst(node) ? "const " : ""}${tmpType} ${tmpName} = ${this.emitExpression(node.initializer)};`);
+          for (let index = 0; index < node.arrayBindings.length; ++index) {
+            const binding = node.arrayBindings[index];
+            const type = binding.declaredType ? cppType(binding.declaredType) : "auto";
+            const mutable = node.mutable ? "" : "const ";
+            const access = `${tmpName}[${index}]`;
+            const value = (binding.defaultValue && initIsArray)
+              ? `(${tmpName}.size() > ${index} ? ${access} : (${this.emitExpression(binding.defaultValue)}))`
+              : access;
+            lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${value};`);
+          }
+          return lines.join("\n");
+        }
+        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
+      }
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
       case "ClassDeclaration": return "";
@@ -273,7 +395,7 @@ export class CppGenerator {
       case "WhileStatement": return `${this.pad()}while (${this.emitExpression(node.condition)}) ${this.statementBody(node.body)}`;
       case "ForStatement": {
         let initializer = "";
-        if (node.initializer?.kind === "VariableDeclaration") initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${node.initializer.name} = ${this.emitExpression(node.initializer.initializer)}`;
+        if (node.initializer?.kind === "VariableDeclaration") initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${this.cppName(node.initializer.name)} = ${this.emitExpression(node.initializer.initializer)}`;
         else if (node.initializer?.kind === "ExpressionStatement") initializer = this.emitExpression(node.initializer.expression);
         return `${this.pad()}for (${initializer}; ${node.condition ? this.emitExpression(node.condition) : ""}; ${node.increment ? this.emitExpression(node.increment) : ""}) ${this.statementBody(node.body)}`;
       }
@@ -301,17 +423,69 @@ export class CppGenerator {
       }
       case "ForOfStatement": return this.emitForOf(node);
       case "ForInStatement": return this.emitForIn(node);
+      case "UsingDeclaration": {
+        // `using name = expr` se desazucara a `T name = expr` con RAII
+        // automático: el destructor C++ del tipo se invoca al salir del
+        // bloque contenedor. Por ahora dejamos que C++ haga RAII solo;
+        // cuando se definan clases con `dispose()`, el codegen lo invocará.
+        const declaredType = node.declaredType ? cppType(node.declaredType) : "auto";
+        return `${this.pad()}${declaredType} ${node.name} = ${this.emitExpression(node.initializer)};`;
+      }
+      case "ExportDefaultDeclaration": {
+        // Marcador en C++ + emite la declaración subyacente. El dialecto es
+        // single-translation-unit, así que `export default` no genera
+        // dispatch runtime; solo registramos la intención para tooling.
+        return `// export default: ${node.declaration.kind}\n` + this.emitStatement(node.declaration as Statement);
+      }
+      case "ExportNamedDeclaration": {
+        // `export { x as y }` no genera código nuevo (las declaraciones ya
+        // están emitidas). Solo añadimos un marcador para tooling.
+        const names = node.specifiers.map(s => s.alias ? `${s.name} as ${s.alias}` : s.name).join(", ");
+        return `// export { ${names}${node.source ? ` } from "${node.source}"` : "}"}`;
+      }
     }
+  }
+
+  // Emite `match (subject) { when (pattern) => result; ... }` como una cadena
+  // de ternarios. Cada arm es `(subject == pattern ? result : ...)`. El último
+  // arm actúa como default (no se compara). Si el pattern es `_` (wildcard),
+  // se ignora también la comparación y siempre se evalúa el resultado.
+  private emitMatch(node: { subject: Expression; arms: { pattern: Expression; result: Expression }[] }): string {
+    const subject = this.emitExpression(node.subject);
+    if (node.arms.length === 0) return "/* empty match */";
+    const last = node.arms[node.arms.length - 1];
+    let result = this.emitExpression(last.result);
+    for (let index = node.arms.length - 2; index >= 0; index--) {
+      const arm = node.arms[index];
+      const patternText = this.emitExpression(arm.pattern);
+      // Wildcard `_`: si el pattern es solo un identifier "_", no comparamos.
+      const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
+      if (isWildcard) result = this.emitExpression(arm.result);
+      else result = `(${subject} == ${patternText} ? ${this.emitExpression(arm.result)} : ${result})`;
+    }
+    return result;
   }
 
   // Emite `for (const auto& name : iterable)` para arrays y strings, envuelve
   // tuplas en un bloque con una única iteración, y proyecta pares de Map<K,V>
   // en tuplas `[K,V]` para mantener la semántica de indexación.
-  private emitForOf(node: { binding: { name: string; mutable: boolean }; iterable: Expression; body: Statement; span: import("../core/span.ts").Span }): string {
+  private emitForOf(node: { binding: { name: string; mutable: boolean }; iterable: Expression; await?: boolean; body: Statement; span: import("../core/span.ts").Span }): string {
     const iterableType = this.expressionType(node.iterable);
     const name = node.binding.name;
     const iter = this.emitExpression(node.iterable);
     const bodyStr = this.bodyInBlock(node.body);
+    // `for await (const x of arr)`: el iterable es `Promise<T>[]` y cada
+    // elemento se desempaqueta con `co_await` (o `ets::syncWait` si no estamos
+    // en una función async). La variable de iteración queda como `T`.
+    if (node.await && iterableType && isArrayType(iterableType) && isGenericType(arrayElement(iterableType)) && genericBase(arrayElement(iterableType)) === "Promise") {
+      const awaiter = this.inAsyncFunction ? "co_await" : "ets::syncWait";
+      const itName = `${name}_iter`;
+      const awaitedName = `${name}_awaited`;
+      const unpack = `${this.pad()}auto ${awaitedName} = ${awaiter}(${itName});`;
+      const innerBind = `${this.pad()}auto ${name} = ${awaitedName};`;
+      const header = `${this.pad()}for (const auto& ${itName} : ${iter}) {\n${unpack}\n${innerBind}`;
+      return `${header}\n${bodyStr}\n${this.pad()}}`;
+    }
     if (iterableType && isArrayType(iterableType)) {
       return `${this.pad()}for (${node.binding.mutable ? "auto& " : "const auto& "}${name} : ${iter}) {\n${bodyStr}\n${this.pad()}}`;
     }
@@ -379,7 +553,29 @@ export class CppGenerator {
   private emitBlock(node: BlockStatement, appendCoReturn = false): string { const lines = ["{"]; this.indent++; for (const s of node.statements) lines.push(this.emitStatement(s)); if (appendCoReturn) lines.push(this.pad() + "co_return;"); this.indent--; lines.push(this.pad() + "}"); return lines.join("\n"); }
   private emitExpression(node: Expression): string {
     switch (node.kind) {
-      case "LiteralExpression": return typeof node.value === "string" ? `std::string(${JSON.stringify(node.value)})` : typeof node.value === "boolean" ? String(node.value) : Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
+      case "LiteralExpression": {
+        if (typeof node.value === "string") return `std::string(${JSON.stringify(node.value)})`;
+        if (typeof node.value === "boolean") return String(node.value);
+        // Para números: si el parser guardó el lexema original con un prefijo
+        // no decimal (`0x`/`0o`/`0b` de TS), lo emitimos tal cual (limpiando
+        // los `_` separadores) para preservar la forma legible. C++ acepta
+        // los mismos prefijos que TS, así que la traducción es directa.
+        // Para números: si el parser guardó el lexema original con un prefijo no
+        // decimal, lo emitimos como literal C++ válido.
+        //   - `0x`/`0X` (hex): se preserva porque C++ lo soporta nativamente.
+        //     Para forzar el tipo `double` (el dialecto modela `number` como
+        //     `double`), añadimos `p0` que es el exponente binario C++.
+        //   - `0o`/`0O` (octal) y `0b`/`0B` (binario): C++ NO los soporta como
+        //     literales estándar, así que los convertimos a decimal. El
+        //     resultado es funcionalmente equivalente y evita requerir
+        //     `-fext-numeric-literals` (extensión GCC).
+        if (node.raw && /^0[xXoObB]/.test(node.raw)) {
+          const cleaned = node.raw.replace(/_/g, "");
+          if (/^0[xX]/.test(cleaned)) return `${cleaned}.0p0`;
+          return `${node.value}.0`;
+        }
+        return Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
+      }
       case "TemplateLiteralExpression": {
         // Emitimos cada parte como literal y cada expresión tal cual; `ets::concat`
         // usa `operator<<` para que cualquier tipo (number, boolean, string, etc.)
@@ -391,11 +587,52 @@ export class CppGenerator {
         }
         return parts.length ? `ets::concat(${parts.join(", ")})` : `std::string("")`;
       }
-      case "IdentifierExpression": return node.name === "this" ? "(*this)" : node.name;
+      case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(this.resolveAlias(node.name));
       case "ArrayLiteralExpression": {
         const type = this.expressionType(node);
-        const values = node.elements.map(item => this.emitExpression(item)).join(", ");
-        return type && isTupleType(type) ? `std::make_tuple(${values})` : `${cppType(type ?? "void[]")}{${values}}`;
+        if (type && isTupleType(type)) {
+          const values = node.elements.map(item => this.emitExpression(item));
+          return `std::make_tuple(${values.join(", ")})`;
+        }
+        // Envoltorio en `std::move(...)` para que el initializer_list acepte
+        // tipos move-only (Task<T>, Optional<T>, Result<T>). Para tipos copiables
+        // es equivalente (mover es una opción, copiar es la otra).
+        const moveValues = (items: string[]) => items.map(item => `std::move(${item})`).join(", ");
+        if (node.elements.some(item => item.kind === "SpreadElement")) {
+          // Spread en array literal: generamos un lambda inmediato que toma
+          // el vector destino por valor (RVO al final) y va `push_back` para
+          // cada elemento y `insert(end, src.begin(), src.end())` para cada
+          // spread. La sintaxis `[](auto dst) -> decltype(dst) { ... return dst; }(T{})`
+          // deja el resultado como una expresión de tipo T (copy elision).
+          const cpp = cppType(type ?? "void[]");
+          const items: string[] = [];
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") {
+              items.push(`dst.insert(dst.end(), (${this.emitExpression(item.expression)}).begin(), (${this.emitExpression(item.expression)}).end());`);
+            } else {
+              items.push(`dst.push_back(${this.emitExpression(item)});`);
+            }
+          }
+          return `([](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; })(${cpp}{})`;
+        }
+        // Para arrays con tipos move-only (Task<T>, Optional<T>, Result<T>), el
+        // initializer_list de std::vector siempre copia, así que generamos un
+        // lambda que hace push_back por movimiento. Para tipos copiables,
+        // `std::vector<T>{...}` funciona directamente.
+        const valueType = cppType(type ?? "void[]");
+        const values = node.elements.map(item => this.emitExpression(item as import("../ast/nodes.ts").Expression));
+        if (node.elements.some(item => item.kind === "SpreadElement")) {
+          // (spread path) - ver bloque arriba
+        }
+        if (values.length === 0) return `${valueType}()`;
+        // Detectar tipos move-only por inspección del nombre del tipo (heurística
+        // simple). Para esos tipos, generar una lambda constructora con push_back.
+        const isMoveOnlyType = /ets::Task<|ets::Optional<|ets::Result</.test(valueType);
+        if (isMoveOnlyType) {
+          const pushes = values.map(value => `dst.push_back(std::move(${value}));`).join(" ");
+          return `([](${valueType} dst) -> ${valueType} { ${pushes} return dst; })(${valueType}())`;
+        }
+        return `${valueType}{${moveValues(values)}}`;
       }
       case "ArrowFunctionExpression": {
         const type = this.expressionType(node); const result = type && isFunctionType(type) ? functionResult(type) : (node.returnType ?? "void");
@@ -441,9 +678,26 @@ export class CppGenerator {
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
         if (node.operator === "+" && this.expressionType(node) === "string") return `ets::concat(${this.stringConcatParts(node).map(part => this.emitExpression(part)).join(", ")})`;
+        // Operadores bitwise: el dialecto modela `number` como `double`, pero
+        // C++ rechaza `|`/`&`/`^`/etc. entre doubles. Hacemos cast explícito
+        // a `std::int64_t` para la operación y devolvemos `double`.
+        if (["|", "&", "^", "<<", ">>"].includes(node.operator)) {
+          return `(static_cast<std::int64_t>(${this.emitExpression(node.left)}) ${node.operator} static_cast<std::int64_t>(${this.emitExpression(node.right)}))`;
+        }
+        // `??` (nullish coalescing) está rechazado semánticamente por el type-checker;
+        // dejamos una rama aquí por si en el futuro se re-introduce con una
+        // representación de "ausente" mejor (p.ej. `std::optional`).
+        if (node.operator === "??") {
+          // `??` se desazucara a `optionalValueOr(lhs, default)`. El type-checker
+          // garantiza que lhs es `Optional<T>` y default es `T`.
+          return `optionalValueOr(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})`;
+        }
         return node.operator === "%" ? `std::fmod(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})` : `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
       }
       case "AssignmentExpression": return `(${this.emitExpression(node.target)} = ${this.emitExpression(node.value)})`;
+      case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
+      case "MatchExpression": return this.emitMatch(node);
+      case "SatisfiesExpression": return this.emitExpression(node.operand);
       case "CallExpression": {
         const args = node.args.map(argument => {
           let text = this.emitExpression(argument);
@@ -459,8 +713,26 @@ export class CppGenerator {
           }
           return text;
         });
+        // Si la función tiene exactamente una sobrecarga y el call site omitió
+        // argumentos opcionales, los rellenamos con `optionalNone<T>()` para
+        // mantener la firma C++ consistente.
+        if (node.callee) {
+          const overloads = this.topLevelFunctions.get(node.callee);
+          if (overloads && overloads.length === 1) {
+            const params = overloads[0].params;
+            for (let index = args.length; index < params.length; index++) {
+              const parameter = params[index];
+              if (!parameter.optional) break;
+              const innerType = parameter.type;
+              // Si el user ya escribió `Optional<T>`, no envolver.
+              if (isGenericType(innerType) && genericBase(innerType) === "Optional") args.push(`ets::Optional<${cppType(genericArguments(innerType)[0] ?? "void")}>::none()`);
+              else args.push(`ets::Optional<${cppType(innerType)}>::none()`);
+            }
+          }
+        }
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);
-        return node.callee === "print" ? `print(${args.join(", ")})` : `${node.callee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        const callee = this.resolveAlias(node.callee);
+        return callee === "print" ? `print(${args.join(", ")})` : `${callee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);
@@ -469,6 +741,25 @@ export class CppGenerator {
         const objectType = this.expressionType(node.object);
         const isContainer = objectType && isGenericType(objectType) && (genericBase(objectType) === "Map" || genericBase(objectType) === "Set");
         const method = isContainer && node.method === "delete" ? "removeKey" : node.method;
+        // `JSON.parse` (legacy) devuelve `std::string`. La versión que el dialecto
+        // expone como `parse: string → JsonValue` se mapea a `parseValue` en C++.
+        // También distinguimos `stringify(string/number/bool/JsonValue)` por el tipo
+        // del argumento para que el overload correcto del runtime se elija.
+        const isJsonGlobal = node.object.kind === "IdentifierExpression" && node.object.name === "JSON";
+        if (isJsonGlobal) {
+          // `JSON.parse` (legacy, retorna string) y `JSON.parseValue` (nuevo,
+          // retorna JsonValue) coexisten. El dialecto decide cuál emitir por el
+          // nombre del método en el AST; el type-checker valida el tipo de
+          // retorno esperado por el llamador.
+          if (method === "parse") return `JSON.parse(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          if (method === "parseValue") return `JSON.parseValue(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          if (method === "stringify") {
+            const argType = node.args[0] ? this.expressionType(node.args[0]) : undefined;
+            // El overload de C++ se elige por el tipo del argumento; los nombres
+            // de método en el dialecto son los mismos (`stringify`) en todos los casos.
+            return `JSON.stringify(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          }
+        }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {
@@ -476,6 +767,12 @@ export class CppGenerator {
         // porque los enums numéricos se emiten como `enum class` y los de cadena como struct
         // con miembros estáticos, ninguno de los cuales admite el operador `.` desde fuera.
         if (node.object.kind === "IdentifierExpression" && this.enumNames.has(node.object.name)) return `${node.object.name}::${node.member}`;
+        // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
+        // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
+        if (node.optional) {
+          const obj = this.emitExpression(node.object);
+          return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
+        }
         return `${this.emitExpression(node.object)}.${node.member}`;
       }
       case "IndexExpression": {

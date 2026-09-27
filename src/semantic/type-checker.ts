@@ -1,6 +1,6 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
-import { Scope, type FunctionSignature, type FunctionSymbol } from "./symbols.ts";
+import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
@@ -45,10 +45,93 @@ const PROCESS_METHODS: Record<string, { params: TypeName[]; returnType: TypeName
   exit: { params: ["number"], returnType: "void" },
 };
 
-// Tabla de métodos del built-in `JSON`. Solo `stringify` por ahora; `parse`
-// requiere union types (`string | number | boolean`).
+// Tabla de métodos del built-in `JSON`. `parse` (legacy) devuelve `string`
+// y solo maneja escalares JSON. `parseValue` (nuevo) devuelve `JsonValue`,
+// un tipo opaco (variant) que el usuario manipula con helpers globales
+// (jsonIsString, jsonAsString, jsonArrayGet, etc.). Ambos coexisten para
+// mantener compatibilidad: código existente con `JSON.parse(s): string`
+// sigue funcionando.
 const JSON_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
   stringify: { params: ["string"], returnType: "string" },
+  stringifyNumber: { params: ["number"], returnType: "string" },
+  stringifyBool: { params: ["boolean"], returnType: "string" },
+  stringifyValue: { params: ["JsonValue"], returnType: "string" },
+  // `parse` legacy: devuelve `std::string` con la representación textual
+  // canónica del escalar JSON. Para datos estructurados, usar `parseValue`.
+  parse: { params: ["string"], returnType: "string" },
+  // `parseValue` nuevo: devuelve el árbol completo (recursivo).
+  parseValue: { params: ["string"], returnType: "JsonValue" },
+};
+
+// Funciones helper globales para manipular JsonValue. El dialecto no tiene
+// `Object`/`any`/`unknown`, así que se accede a campos vía funciones libres.
+// Todas devuelven tipos primitivos (string/number/boolean) excepto las que
+// devuelven JsonValue (array/object get).
+const JSON_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  jsonIsString: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsNumber: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsBool: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsArray: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsObject: { params: ["JsonValue"], returnType: "boolean" },
+  jsonIsNull: { params: ["JsonValue"], returnType: "boolean" },
+  jsonAsString: { params: ["JsonValue"], returnType: "string" },
+  jsonAsNumber: { params: ["JsonValue"], returnType: "number" },
+  jsonAsBool: { params: ["JsonValue"], returnType: "boolean" },
+  jsonArrayLength: { params: ["JsonValue"], returnType: "number" },
+  jsonArrayGet: { params: ["JsonValue", "number"], returnType: "JsonValue" },
+  jsonObjectGet: { params: ["JsonValue", "string"], returnType: "JsonValue" },
+});
+
+// Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
+// tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
+// funciones libres. Cada helper preserva el tipo genérico a través de
+// la firma del type-checker (que infiere del contexto).
+const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: boolean }> = Object.assign(Object.create(null), {
+  optionalSome: { minParams: 1, returnsGeneric: true },        // (T) → Optional<T>
+  optionalNone: { minParams: 0, returnsGeneric: true },        // <T>() → Optional<T>
+  optionalIsPresent: { minParams: 1, returnsGeneric: false },  // (Optional<T>) → boolean
+  optionalValueOr: { minParams: 2, returnsGeneric: false },    // (Optional<T>, T) → T
+  optionalMap: { minParams: 2, returnsGeneric: true },         // (Optional<T>, T→U) → Optional<U>
+  optionalAndThen: { minParams: 2, returnsGeneric: true },     // (Optional<T>, T→Optional<U>) → Optional<U>
+  optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
+});
+
+// Helpers sobre `Task<T>[]` (Promise-like arrays). El dialecto expone
+// `all(tasks)` y `race(tasks)` que devuelven el T del array (o `T[]` para
+// `all`). Se modelan con un tipo contextual: el user declara `const x: T =
+// race([delay(1), delay(2)])` y el helper propaga `T` desde el array.
+const ASYNC_HELPERS: Record<string, { returnsElement: boolean; returnsArray: boolean }> = Object.assign(Object.create(null), {
+  all: { returnsElement: false, returnsArray: true },
+  race: { returnsElement: true, returnsArray: false },
+});
+
+// `sleep` y `spawn` ya están registradas en runtime como funciones top-level.
+const ASYNC_PRIMITIVE_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  sleep: { params: ["number"], returnType: "Promise<void>" },
+  spawn: { params: ["Promise<void>"], returnType: "void" },
+});
+
+// Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
+// (mapeado a `double` en C++). Las funciones que en JavaScript aceptan
+// número variable de argumentos (`Math.max(...args)`) se limitan a dos
+// argumentos aquí por la restricción del dialecto (variadics no uniformes).
+const MATH_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+  floor: { params: ["number"], returnType: "number" },
+  ceil:  { params: ["number"], returnType: "number" },
+  round: { params: ["number"], returnType: "number" },
+  abs:   { params: ["number"], returnType: "number" },
+  sqrt:  { params: ["number"], returnType: "number" },
+  pow:   { params: ["number", "number"], returnType: "number" },
+  min:   { params: ["number", "number"], returnType: "number" },
+  max:   { params: ["number", "number"], returnType: "number" },
+};
+
+// Bloque E: tabla de métodos de `Date`. La API es mínima: solo timestamps.
+// Fechas estructuradas (year/month/day getters, formatos) requieren tipos
+// compuestos que este dialecto evita por ahora.
+const DATE_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }> = {
+  now: { params: [], returnType: "number" },
+  utc: { params: ["number", "number", "number"], returnType: "number" },
 };
 
 // Tabla de métodos de `Map<K, V>`. Las firmas son plantillas que se materializan
@@ -76,11 +159,33 @@ const SET_METHODS: Record<string, { params: (typeArgs: TypeName[]) => TypeName[]
   forEach: { params: ([T]) => [`(${T})=>void`],                             returnType: () => "void" },
 };
 
+/** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
+ *  borrados o sustituciones para convertir `a` en `b`). Implementación
+ *  iterativa con matriz 2D; O(|a|·|b|) tiempo, O(min(|a|,|b|)) espacio. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const previous: number[] = new Array(b.length + 1).fill(0);
+  const current: number[] = new Array(b.length + 1).fill(0);
+  for (let j = 0; j <= b.length; j++) previous[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) previous[j] = current[j];
+  }
+  return previous[b.length];
+}
+
 export class TypeChecker {
   private readonly diagnostics: Diagnostic[] = [];
   private readonly types = new WeakMap<Expression, TypeName>();
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
+  private inConstructor = false;
   private readonly interfaces = new Map<string, InterfaceDeclaration>();
   private readonly classes = new Map<string, ClassDeclaration>();
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
@@ -218,8 +323,11 @@ export class TypeChecker {
     // nombre de alias (o a su instanciación genérica) por su forma canónica.
     // Así codegen ve directamente `number[]` en vez de `NumberArray`.
     this.expandAliasesInProgram(program);
+    // `export default` envuelve una declaración; hacemos unwrap para que las
+    // declaraciones internas se declaren igual que las top-level.
+    const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
     for (const statement of program.statements) if (statement.kind === "ClassDeclaration") this.validateClass(statement, global);
-    for (const statement of program.statements) if (statement.kind === "FunctionDeclaration") this.declareFunction(statement, global);
+    for (const statement of program.statements) if (unwrap(statement).kind === "FunctionDeclaration") this.declareFunction(unwrap(statement) as FunctionDeclaration, global);
     for (const statement of program.statements) this.statement(statement, global);
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
   }
@@ -267,7 +375,7 @@ export class TypeChecker {
         variadicTypeParameters: [],
         typeConstraints: TypeChecker.constraintsOf(method.typeParameters ?? []),
         defaults: TypeChecker.defaultsOf(method.typeParameters ?? []),
-        params: method.params.map(parameter => ({ type: parameter.type, out: parameter.out, mutableReference: parameter.passing === "mut", variadic: parameter.variadic, defaultValue: parameter.defaultValue })),
+        params: method.params.map(parameter => ({ type: parameter.type, out: parameter.out, mutableReference: parameter.passing === "mut", variadic: parameter.variadic, defaultValue: parameter.defaultValue, optional: parameter.optional })),
         returnType: method.returnType
       };
       const match = this.matchOverload(signature, argumentTypes, node.typeArguments, expected);
@@ -313,7 +421,7 @@ export class TypeChecker {
       variadicTypeParameters: node.variadicTypeParameters,
       typeConstraints: TypeChecker.constraintsOf(node.typeParameters),
       defaults: TypeChecker.defaultsOf(node.typeParameters),
-      params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue })),
+      params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue, optional: p.optional })),
       returnType: node.returnType
     };
     const existing = scope.resolveLocal(node.name);
@@ -597,6 +705,11 @@ export class TypeChecker {
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
+      if (base === "Optional") {
+        if (arguments_.length !== 1) this.report(node, `'Optional' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        this.validateType(arguments_[0], node, false, primitiveOnly, scope);
+        return type;
+      }
       if (base === "Set") {
         if (arguments_.length !== 1) this.report(node, `'Set' espera 1 argumento de tipo, recibió ${arguments_.length}`);
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
@@ -612,9 +725,13 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
-    if (!primitive && (primitiveOnly || (!concrete && !contract))) this.report(node, `Tipo no definido o no permitido '${type}'`);
+    // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
+    // `Optional<T>` se aceptan siempre (son tipos del runtime).
+    const genericBaseName = type.includes("<") ? type.slice(0, type.indexOf("<")) : "";
+    const genericConcrete = ["Promise", "Result", "Map", "Set", "Optional"].includes(genericBaseName);
+    if (!primitive && (primitiveOnly || (!concrete && !contract && !genericConcrete))) this.report(node, `Tipo no definido o no permitido '${type}'`);
   }
 
   private statement(node: Statement, scope: Scope): void {
@@ -632,13 +749,69 @@ export class TypeChecker {
         }
         if (expected === "void") this.report(node, "Una variable no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
-        if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        if (node.arrayBindings && node.arrayBindings.length > 0) {
+          // Destructuring de arrays: cada binding hereda el tipo del elemento
+          // del initializer (no del array completo). Si el initializer es
+          // `string[]`, los bindings son `string`. Si el binding declara su
+          // propio tipo, lo respetamos.
+          const elementType = (actual && actual.endsWith("[]")) ? actual.slice(0, -2) : actual;
+          for (const binding of node.arrayBindings) {
+            const bindingType = binding.declaredType ? this.expandType(binding.declaredType, scope) : elementType;
+            // Default value: si lo hay, su tipo debe ser compatible con el binding.
+            // Si el initializer tiene menos elementos que bindings, los que tengan
+            // default obtienen ese default; el resto produce error en runtime.
+            if (binding.defaultValue) {
+              const defaultType = this.expression(binding.defaultValue, scope, bindingType);
+              if (!typeMatches(defaultType, bindingType)) this.report(binding.defaultValue, `Default value de '${binding.name}': se esperaba ${bindingType}, se obtuvo ${defaultType}`);
+            }
+            if (!scope.define(binding.name, { kind: "variable", type: bindingType, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${binding.name}'`);
+          }
+        } else if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        break;
+      }
+      case "UsingDeclaration": {
+        // `using name = expr;` se type-checkea igual que `let name = expr`,
+        // con el matiz de que el binding es siempre inmutable (los recursos
+        // RAII no se reasignan) y se permite cualquier tipo Disposable o con
+        // destructor C++. Por ahora aceptamos cualquier tipo.
+        const expandedDeclared = node.declaredType ? this.expandType(node.declaredType, scope) : undefined;
+        const actual = this.expression(node.initializer, scope, expandedDeclared);
+        const expected = expandedDeclared ?? actual;
+        if (expandedDeclared) this.validateType(expandedDeclared, node, true, false, scope);
+        if (expected === "void") this.report(node, "Un recurso 'using' no puede ser de tipo void");
+        if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+        if (!scope.define(node.name, { kind: "variable", type: expected, mutable: false })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        break;
+      }
+      case "ExportDefaultDeclaration": {
+        // `export default <decl-or-expr>` parsea una declaración completa
+        // (class/function/let/const) o una expresión. Se type-checkea
+        // normalmente; el codegen emite un marcador pero compila igual.
+        this.statement(node.declaration as Statement, scope);
+        break;
+      }
+      case "ExportNamedDeclaration": {
+        // `export { name1, name2 as alias2 }` re-exporta bindings ya
+        // declarados arriba. Verificamos que existan; el alias es opcional
+        // y se registra en el scope para que pueda usarse como nombre local.
+        for (const spec of node.specifiers) {
+          const original = scope.resolve(spec.name);
+          if (!original) { this.report(spec, `Símbolo no definido '${spec.name}'`); continue; }
+          if (spec.alias) scope.define(spec.alias, { ...original, name: spec.alias } as unknown as SymbolInfo);
+        }
         break;
       }
       case "FunctionDeclaration": {
         this.withTypeParameters(node.typeParameters, () => {
           const local = new Scope(scope);
-          for (const p of node.params) if (!local.define(p.name, { kind: "variable", type: p.type, mutable: p.out || p.passing === "mut", variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+          for (const p of node.params) {
+            // `p?: T` se modela como `Optional<T>` en el scope. Si el user
+            // ya escribió `Optional<T>` no duplicamos el envoltorio.
+            const effectiveType = p.optional
+              ? (isGenericType(p.type) && genericBase(p.type) === "Optional" ? p.type : genericType("Optional", [p.type]))
+              : p.type;
+            if (!local.define(p.name, { kind: "variable", type: effectiveType, mutable: p.out || p.passing === "mut", variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+          }
           const previousReturn = this.currentReturn; const previousAsync = this.currentAsync;
           this.currentReturn = node.async && isPromiseType(node.returnType) ? promiseResult(node.returnType) : node.returnType;
           this.currentAsync = node.async;
@@ -680,6 +853,13 @@ export class TypeChecker {
         else if (isMapType(iterableType)) elementType = tupleType(genericArguments(iterableType));
         else if (isSetType(iterableType)) elementType = genericArguments(iterableType)[0] ?? "void";
         else { this.report(node.iterable, `El tipo '${iterableType}' no es iterable en for..of`); elementType = "void"; }
+        // `for await (const x of arr)`: el elemento debe ser Promise<T> y el
+        // binding tiene tipo T. Es la inversa de `Promise.all`-like pero
+        // secuencial: `await` cada elemento.
+        if (node.await) {
+          if (!isPromiseType(elementType)) { this.report(node.iterable, `'for await' requiere un iterable de Promise<T>, no '${elementType}'`); }
+          else elementType = promiseResult(elementType);
+        }
         const local = new Scope(scope);
         if (!local.define(node.binding.name, { kind: "variable", type: elementType, mutable: node.binding.mutable })) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
         this.loopDepth++; this.statement(node.body, local); this.loopDepth--; break;
@@ -731,9 +911,10 @@ export class TypeChecker {
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       local.define("this", { kind: "variable", type: ownerType, mutable: true });
       for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
-      const previous = this.currentReturn; const previousAsync = this.currentAsync; this.currentReturn = method.returnType; this.currentAsync = false;
+      const previous = this.currentReturn; const previousAsync = this.currentAsync; const previousCtor = this.inConstructor;
+      this.currentReturn = method.returnType; this.currentAsync = false; this.inConstructor = method.name === "constructor";
       this.statement(method.body, local);
-      this.currentReturn = previous; this.currentAsync = previousAsync;
+      this.currentReturn = previous; this.currentAsync = previousAsync; this.inConstructor = previousCtor;
     });
   }
 
@@ -749,21 +930,59 @@ export class TypeChecker {
         result = "string";
         break;
       }
+      case "MatchExpression": {
+        // `match (subject) { when (pattern) => result; ... }` requiere que todos
+        // los resultados sean del mismo tipo. El subject y los patterns se
+        // evalúan para propagar tipos; el type-check de pattern == subject se
+        // hace en codegen (runtime), no aquí. El wildcard `_` no se evalúa.
+        const subjectType = this.expression(node.subject, scope);
+        let resultType: TypeName | undefined;
+        for (const arm of node.arms) {
+          const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
+          if (!isWildcard) this.expression(arm.pattern, scope, subjectType);
+          const armResultType = this.expression(arm.result, scope, expected);
+          if (!resultType) resultType = armResultType;
+          else if (!typeMatches(armResultType, resultType)) this.report(arm.result, `El arm devuelve '${armResultType}', se esperaba '${resultType}'`);
+        }
+        result = resultType ?? "void";
+        break;
+      }
+      case "SatisfiesExpression": {
+        // `expr satisfies T`: type-check que expr sea asignable a T. Pasamos
+        // el tipo declarado como `expected` para que `optionalSome(value)` y
+        // helpers similares puedan propagar T desde el contexto.
+        const operandType = this.expression(node.operand, scope, node.declaredType);
+        if (!typeMatches(operandType, node.declaredType)) this.report(node, `Tipo '${operandType}' no satisface '${node.declaredType}'`);
+        result = node.declaredType;
+        break;
+      }
       case "ArrayLiteralExpression": {
         if (expected && isArrayType(expected)) {
           const element = arrayElement(expected);
-          node.elements.forEach(item => this.require(this.expression(item, scope, element), element, item));
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") {
+              // Para un spread, el tipo del operando debe ser compatible con el
+              // `element` (otro vector del mismo tipo, una tupla del mismo tipo, o el propio `element`).
+              const actual = this.expression(item.expression, scope);
+              if (actual === element || actual === `${element}[]` || isTupleType(actual)) {
+                // ok
+              } else this.report(item, `Spread: se esperaba vector de ${element}, se obtuvo ${actual}`);
+            } else this.require(this.expression(item, scope, element), element, item);
+          }
           result = expected;
         } else if (expected && isTupleType(expected)) {
           const items = tupleElements(expected);
           if (items.length !== node.elements.length) this.report(node, `La tupla espera ${items.length} elementos, recibió ${node.elements.length}`);
           node.elements.forEach((item, index) => {
-            const itemType = items[index]; const actual = this.expression(item, scope, itemType);
-            if (itemType) this.require(actual, itemType, item);
+            if (item.kind === "SpreadElement") this.report(item, "Spread no se admite en tuplas (tamaño fijo)");
+            else { const itemType = items[index]; const actual = this.expression(item, scope, itemType); if (itemType) this.require(actual, itemType, item); }
           });
           result = expected;
         } else {
-          const items = node.elements.map(item => this.expression(item, scope));
+          const items = node.elements.map(item => {
+            if (item.kind === "SpreadElement") return this.expression(item.expression, scope);
+            return this.expression(item, scope);
+          });
           if (!items.length) { this.report(node, "Un array vacío necesita una anotación de tipo"); result = "void[]"; }
           else result = items.every(item => item === items[0]) ? arrayType(items[0]) : tupleType(items);
         }
@@ -801,18 +1020,30 @@ export class TypeChecker {
         break;
       }
       case "IdentifierExpression": {
+        // Los enums se referencian por nombre (`Color.Green`); permitimos el identificador
+        // desnudo como valor y devolvemos el nombre del enum como tipo de la expresión.
+        // Comprobamos esto ANTES del scope porque `Color` está registrado como
+        // TypeSymbol (no como variable), y sin este atajo el type-checker diría
+        // que `Color` no es un valor.
+        if (this.enums.has(node.name)) { result = node.name; break; }
+        // Luego buscamos en el scope: una declaración local (variable,
+        // parámetro) debe ganar sobre el tipo builtin del mismo nombre. Esto
+        // permite `const path: string = argument(1); path + ".ext"` sin que
+        // el type-checker reclame "Path" donde se espera "string".
+        const symbol = scope.resolve(node.name);
+        if (symbol) {
+          if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
+          else { result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node); }
+          break;
+        }
         if (node.name === "console") { result = "Console"; break; }
         if (node.name === "fs") { result = "Filesystem"; break; }
         if (node.name === "path") { result = "Path"; break; }
         if (node.name === "process") { result = "Process"; break; }
         if (node.name === "JSON") { result = "Json"; break; }
-        // Los enums se referencian por nombre (`Color.Green`); permitimos el identificador
-        // desnudo como valor y devolvemos el nombre del enum como tipo de la expresión.
-        if (this.enums.has(node.name)) { result = node.name; break; }
-        const symbol = scope.resolve(node.name);
-        if (!symbol) this.report(node, `Símbolo no definido '${node.name}'`);
-        else if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
-        else { result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node); }
+        if (node.name === "Math") { result = "Math"; break; }
+        if (node.name === "Date") { result = "Date"; break; }
+        this.report(node, `Símbolo no definido '${node.name}'`, this.suggestSimilar(node.name, scope.names()));
         break;
       }
       case "UnaryExpression": {
@@ -855,15 +1086,111 @@ export class TypeChecker {
         }
         const right = this.expression(node.right, scope);
         if (node.operator === "+" && left === "string" && right === "string") result = "string";
+        else if (node.operator === "??") {
+          // `??` (nullish coalescing) sobre `Optional<T>`. El operando izquierdo
+          // debe ser `Optional<T>` y el derecho debe ser de tipo `T` (el
+          // default). Resultado: `T`.
+          if (!isGenericType(left) || genericBase(left) !== "Optional") {
+            this.report(node.left, `El operador '??' requiere un Optional<T> a la izquierda, se obtuvo '${left}'`);
+          } else {
+            const element = genericArguments(left)[0] ?? "void";
+            this.require(right, element, node.right);
+            result = element;
+          }
+        }
         else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
+        else if (["|", "&", "^", "<<", ">>"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
         else if (["<", "<=", ">", ">="].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "boolean"; }
         else if (["==", "!="].includes(node.operator)) { if (left !== right) this.report(node, "Los operandos comparados deben tener el mismo tipo"); result = "boolean"; }
         else { this.require(left, "boolean", node.left); this.require(right, "boolean", node.right); result = "boolean"; }
         break;
       }
       case "CallExpression": {
+        if (ASYNC_PRIMITIVE_HELPERS[node.callee]) {
+          const signature = ASYNC_PRIMITIVE_HELPERS[node.callee];
+          if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
+          node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
+          result = signature.returnType; break;
+        }
+        if (ASYNC_HELPERS[node.callee]) {
+          const helper = ASYNC_HELPERS[node.callee];
+          if (node.args.length !== 1) this.report(node, `'${node.callee}' espera 1 argumento, recibió ${node.args.length}`);
+          const argType = node.args[0] ? this.expression(node.args[0], scope) : "void";
+          if (!isArrayType(argType) || !isGenericType(arrayElement(argType)) || genericBase(arrayElement(argType)) !== "Promise") {
+            this.report(node.args[0] ?? node, `'${node.callee}' requiere un array de Promise<T> (Task<T>[])`);
+            result = "void"; break;
+          }
+          const elementType = genericArguments(arrayElement(argType))[0] ?? "unknown";
+          if (helper.returnsArray) result = arrayType(elementType);
+          else result = elementType;
+          break;
+        }
+        if (OPTIONAL_HELPERS[node.callee]) {
+          const helper = OPTIONAL_HELPERS[node.callee];
+          if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos`);
+          // Inferimos T a partir del `expected` contextual. Por ejemplo,
+          // `const x: Optional<number> = optionalSome(5)` propaga `number` como
+          // tipo esperado del argumento, lo que hace que `5` se type-checkee
+          // contra `number`.
+          const expectedElement = expected && isGenericType(expected) && genericBase(expected) === "Optional" ? genericArguments(expected)[0] : undefined;
+          if (helper.returnsGeneric && expectedElement) {
+            // Helper que devuelve Optional<T>: tipamos cada argumento con T.
+            if (node.callee === "optionalNone") result = genericType("Optional", [expectedElement]);
+            else if (node.callee === "optionalSome" && node.args[0]) { this.require(this.expression(node.args[0], scope, expectedElement), expectedElement, node.args[0]); result = genericType("Optional", [expectedElement]); }
+            else if (node.callee === "optionalOrElse") {
+              node.args.forEach(arg => this.expression(arg, scope));
+              result = genericType("Optional", [expectedElement]);
+            }
+          } else if (!helper.returnsGeneric) {
+            // Helpers que devuelven primitivos.
+            node.args.forEach((arg, index) => {
+              if (index === 0 && expectedElement) this.require(this.expression(arg, scope, genericType("Optional", [expectedElement])), genericType("Optional", [expectedElement]), arg);
+              else this.expression(arg, scope);
+            });
+            if (node.callee === "optionalIsPresent") result = "boolean";
+            else if (node.callee === "optionalValueOr") result = expectedElement ?? "void";
+          }
+          // `optionalMap` y `optionalAndThen` se manejan SIEMPRE (con o sin
+          // expected contextual) porque pueden inferir el tipo por sí solos.
+          if (node.callee === "optionalMap") {
+            const arg0Type = node.args[0] ? this.expression(node.args[0], scope) : "void";
+            const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+            if (!isGenericType(arg0Type) || genericBase(arg0Type) !== "Optional") {
+              this.report(node.args[0], `optionalMap: primer argumento debe ser Optional<T>, se obtuvo '${arg0Type}'`);
+              result = "void";
+            } else if (!isFunctionType(arg1Type)) {
+              this.report(node.args[1], `optionalMap: segundo argumento debe ser una función T → U`);
+              result = "void";
+            } else {
+              result = genericType("Optional", [functionResult(arg1Type)]);
+            }
+            break;
+          }
+          if (node.callee === "optionalAndThen") {
+            const arg1Type = node.args[1] ? this.expression(node.args[1], scope) : "void";
+            if (isFunctionType(arg1Type)) {
+              const lambdaReturn = functionResult(arg1Type);
+              if (node.args[0]) this.expression(node.args[0], scope, lambdaReturn);
+              result = lambdaReturn;
+            } else {
+              if (node.args[0]) this.expression(node.args[0], scope);
+              this.report(node.args[1], `optionalAndThen: segundo argumento debe ser una función T → Optional<U>`);
+              result = "void";
+            }
+            break;
+          }
+          if (result === undefined) { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
+          break;
+        }
+        if (JSON_HELPERS[node.callee]) {
+          const signature = JSON_HELPERS[node.callee];
+          if (!signature || !signature.params) { result = "void"; node.args.forEach(a => this.expression(a, scope)); break; }
+          if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
+          node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
+          result = signature.returnType; break;
+        }
         const symbol = scope.resolve(node.callee);
-        if (!symbol) { this.report(node, `Función no definida '${node.callee}'`); node.args.forEach(a => this.expression(a, scope)); break; }
+        if (!symbol) { this.report(node, `Función no definida '${node.callee}'`, this.suggestSimilar(node.callee, scope.names())); node.args.forEach(a => this.expression(a, scope)); break; }
         if (symbol.kind === "variable" && isFunctionType(symbol.type)) {
           const parameters = functionParameters(symbol.type);
           if (node.args.length !== parameters.length) this.report(node, `'${node.callee}' espera ${parameters.length} argumentos, recibió ${node.args.length}`);
@@ -924,6 +1251,14 @@ export class TypeChecker {
           result = this.dispatchBuiltin("process", PROCESS_METHODS, node, scope);
           break;
         }
+        if (objectType === "Math") {
+          result = this.dispatchBuiltin("Math", MATH_METHODS, node, scope);
+          break;
+        }
+        if (objectType === "Date") {
+          result = this.dispatchBuiltin("Date", DATE_METHODS, node, scope);
+          break;
+        }
         if (objectType === "Json") {
           result = this.dispatchBuiltin("JSON", JSON_METHODS, node, scope);
           break;
@@ -978,7 +1313,7 @@ export class TypeChecker {
         const matches = methods.map(method => {
           const signature: FunctionSignature = {
             typeParameters: TypeChecker.namesOf(method.typeParameters ?? []), variadicTypeParameters: [], typeConstraints: TypeChecker.constraintsOf(method.typeParameters ?? []), defaults: TypeChecker.defaultsOf(method.typeParameters ?? []),
-            params: method.params.map(parameter => ({ type: this.substituteType(parameter.type, classSubstitutions), out: parameter.out, mutableReference: parameter.passing === "mut", defaultValue: parameter.defaultValue })),
+            params: method.params.map(parameter => ({ type: this.substituteType(parameter.type, classSubstitutions), out: parameter.out, mutableReference: parameter.passing === "mut", defaultValue: parameter.defaultValue, optional: parameter.optional })),
             returnType: this.substituteType(method.returnType, classSubstitutions)
           };
           const match = this.matchOverload(signature, argumentTypes, node.typeArguments, expected);
@@ -1016,6 +1351,32 @@ export class TypeChecker {
           const member = enumNode.members.find(candidate => candidate.name === node.member);
           if (!member) this.report(node, `El enum '${node.object.name}' no declara el miembro '${node.member}'`);
           result = node.object.name;
+          break;
+        }
+        if (node.optional) {
+          // `?.`: el operando debe ser `Optional<T>`; el resultado es
+          // `Optional<field_type>`. Se valida contra el nombre del campo en
+          // la clase T.
+          if (!isGenericType(objectType) || genericBase(objectType) !== "Optional") {
+            this.report(node.object, `Optional chaining '?.': el operando debe ser Optional<T>, se obtuvo '${objectType}'`);
+            result = "void";
+            break;
+          }
+          const element = genericArguments(objectType)[0] ?? "void";
+          const resolvedInner = this.resolveClass(element); const ownerInner = resolvedInner?.owner;
+          if (!ownerInner) {
+            this.report(node.object, `Optional chaining '?.': '${element}' no es una clase concreta`);
+            result = "void";
+            break;
+          }
+          const fieldInner = ownerInner.fields.find(candidate => candidate.name === node.member);
+          if (!fieldInner) {
+            this.report(node, `La clase '${element}' no declara el campo '${node.member}'`);
+            result = "void";
+            break;
+          }
+          const fieldInnerType = this.substituteType(fieldInner.type, resolvedInner?.substitutions ?? new Map());
+          result = genericType("Optional", [fieldInnerType]);
           break;
         }
         const resolved = this.resolveClass(objectType); const owner = resolved?.owner;
@@ -1060,12 +1421,54 @@ export class TypeChecker {
       case "AssignmentExpression": {
         const targetType = this.expression(node.target, scope); const value = this.expression(node.value, scope, targetType);
         if (!this.mutableTarget(node.target, scope)) this.report(node, "No se puede modificar una constante ni uno de sus campos");
-        else this.markCapturedMutation(node.target, scope);
+        else {
+          // Rechaza asignaciones a campos `readonly` fuera del constructor:
+          // el dialecto exige que se inicialicen una sola vez en el cuerpo
+          // del constructor. Esto se modela como "mutable solo dentro del
+          // método `constructor` de la misma clase".
+          if (!this.inConstructor) {
+            const readonlyField = this.findReadonlyFieldAccess(node.target);
+            if (readonlyField) this.report(node, `El campo readonly '${readonlyField}' solo puede asignarse dentro del constructor`);
+          }
+          this.markCapturedMutation(node.target, scope);
+        }
         this.require(value, targetType, node.value); result = targetType;
+        break;
+      }
+      case "TernaryExpression": {
+        // `cond ? then : else`. La condición debe ser booleana; las dos
+        // ramas deben producir tipos compatibles (uno asignable al otro).
+        this.require(this.expression(node.condition, scope, "boolean"), "boolean", node.condition);
+        const thenType = this.expression(node.thenBranch, scope);
+        const elseType = this.expression(node.elseBranch, scope, thenType);
+        if (!typeMatches(elseType, thenType) && !typeMatches(thenType, elseType)) this.report(node, "Las ramas del ternario deben tener tipos compatibles");
+        result = thenType;
         break;
       }
     }
     this.types.set(node, result); return result;
+  }
+
+  private findReadonlyFieldAccess(node: Expression): string | undefined {
+    // Devuelve el nombre del campo si `node` es un acceso a un campo
+    // `readonly` de la clase actualmente en checkeo (`this.field = ...`).
+    // Devuelve `undefined` si no aplica.
+    if (node.kind !== "MemberExpression") return undefined;
+    const object = node.object;
+    if (object.kind !== "IdentifierExpression" || object.name !== "this") return undefined;
+    const ownerType = this.currentReturn; // pista: el currentReturn de un método no es el de this; usamos una búsqueda explícita
+    // Buscamos en todas las clases registradas si alguna tiene un campo con
+    // ese nombre y es readonly. Es una simplificación: no comprobamos que la
+    // clase del `this` actual sea la misma, pero como el dialecto no tiene
+    // herencia, cada `this.field` solo puede referirse a la clase del método
+    // envolvente. El constructor del flujo correcto garantiza que el campo
+    // existe; si la asignación es a un campo que no es readonly, devuelve
+    // undefined y se permite.
+    for (const cls of this.classes.values()) {
+      const field = cls.fields.find(f => f.name === node.member && f.readonly);
+      if (field) return field.name;
+    }
+    return undefined;
   }
 
   private mutableTarget(node: Expression, scope: Scope): boolean {
@@ -1099,7 +1502,7 @@ export class TypeChecker {
       if (expression.kind === "MemberCallExpression") return expressionMutates(expression.object) || expression.args.some(expressionMutates);
       if (expression.kind === "MemberExpression") return expressionMutates(expression.object);
       if (expression.kind === "IndexExpression") return expressionMutates(expression.object) || expressionMutates(expression.index);
-      if (expression.kind === "ArrayLiteralExpression") return expression.elements.some(expressionMutates);
+      if (expression.kind === "ArrayLiteralExpression") return expression.elements.some(item => item.kind === "SpreadElement" ? expressionMutates(item.expression) : expressionMutates(item));
       return false;
     };
     const statementMutates = (statement: Statement): boolean => {
@@ -1156,7 +1559,7 @@ export class TypeChecker {
     const fixedCount = signature.params.length - (rest ? 1 : 0);
     // Cuenta de parámetros obligatorios (sin `defaultValue`); los parámetros con
     // valor por defecto pueden omitirse en la llamada.
-    const requiredCount = signature.params.filter(parameter => !parameter.defaultValue && !parameter.variadic).length;
+    const requiredCount = signature.params.filter(parameter => !parameter.defaultValue && !parameter.variadic && !parameter.optional).length;
     if ((!rest && (actuals.length < requiredCount || actuals.length > signature.params.length)) || (rest && actuals.length < fixedCount)) return undefined;
     const normalTypeParameters = signature.typeParameters.filter(parameter => !signature.variadicTypeParameters.includes(parameter));
     if (explicit.length) {
@@ -1325,5 +1728,23 @@ export class TypeChecker {
     action();
     this.activeTypeParameters = previous; this.activeTypeConstraints = previousConstraints; this.activeTypeDefaults = previousDefaults;
   }
-  private report(node: { span: import("../core/span.ts").Span }, message: string): void { this.diagnostics.push({ phase: "semantic", message, span: node.span }); }
+  private report(node: { span: import("../core/span.ts").Span }, message: string): void;
+  private report(node: { span: import("../core/span.ts").Span }, message: string, hint?: string, notes?: string[]): void;
+  private report(node: { span: import("../core/span.ts").Span }, message: string, hint?: string, notes?: string[]): void {
+    const diagnostic: import("../core/diagnostic.ts").Diagnostic = { phase: "semantic", message, span: node.span };
+    if (hint) diagnostic.hint = hint;
+    if (notes) diagnostic.notes = notes;
+    this.diagnostics.push(diagnostic);
+  }
+  /** Sugiere un nombre cercano (distancia Levenshtein ≤ 2) para errores tipo
+   *  "Símbolo no definido 'X'". Devuelve el mensaje de hint o undefined si
+   *  no encuentra candidato razonable. */
+  private suggestSimilar(name: string, candidates: Iterable<string>): string | undefined {
+    let best: { candidate: string; distance: number } | undefined;
+    for (const candidate of candidates) {
+      const distance = levenshtein(name, candidate);
+      if (distance <= 2 && (!best || distance < best.distance)) best = { candidate, distance };
+    }
+    return best ? `¿Quisiste decir '${best.candidate}'?` : undefined;
+  }
 }

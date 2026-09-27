@@ -2,10 +2,14 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cctype>
+#include <chrono>
 #include <functional>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -17,6 +21,7 @@
 #include "runtime/ets_async.hpp"
 #include "runtime/ets_file.hpp"
 #include "runtime/ets_net.hpp"
+#include "runtime/ets_optional.hpp"
 #include "runtime/ets_process.hpp"
 #include "runtime/ets_string.hpp"
 
@@ -281,10 +286,174 @@ struct ets_process {
 
 inline ets_process process{};
 
-// API estilo Node (`JSON.stringify`). `JSON.parse` requiere union types en el
-// lenguaje (su retorno natural es `string | number | boolean`) y se difiere
-// hasta que esa feature esté disponible.
+// API estilo Node (`JSON.stringify`, `JSON.parse`). `JSON.parse` devuelve
+// un valor opaco (`ets_json_value`) que el dialecto expone como
+// `JsonValue`. El usuario no puede acceder a campos dinámicamente; debe
+// usar las funciones helper `ets_json::asString(v)`, `ets_json::asNumber(v)`,
+// `ets_json::asArray(v)`, `ets_json::asObject(v)`, `ets_json::get(v, key)`.
+// El dialecto no tiene `Object`/`any`/`unknown`, así que este es el camino
+// estático para tratar datos JSON dinámicos.
+class ets_json_value {
+public:
+    using Array = std::vector<ets_json_value>;
+    using Object = std::map<std::string, ets_json_value>;
+    using Storage = std::variant<std::monostate, std::string, double, bool, Array, Object>;
+    Storage storage;
+    ets_json_value() : storage(std::monostate{}) {}
+    ets_json_value(std::string value) : storage(std::move(value)) {}
+    ets_json_value(double value) : storage(value) {}
+    ets_json_value(bool value) : storage(value) {}
+    ets_json_value(Array value) : storage(std::move(value)) {}
+    ets_json_value(Object value) : storage(std::move(value)) {}
+    bool isNull() const { return std::holds_alternative<std::monostate>(storage); }
+    bool isString() const { return std::holds_alternative<std::string>(storage); }
+    bool isNumber() const { return std::holds_alternative<double>(storage); }
+    bool isBool() const { return std::holds_alternative<bool>(storage); }
+    bool isArray() const { return std::holds_alternative<Array>(storage); }
+    bool isObject() const { return std::holds_alternative<Object>(storage); }
+};
+
+class ets_json_value;
+
+struct ets_json_parser {
+    std::size_t pos;
+    std::string input;
+    std::string error;
+    explicit ets_json_parser(const std::string& src) : pos(0), input(src) {}
+    static ets_json_value parseValue(const std::string& src) {
+        ets_json_parser parser(src);
+        ets_json_value value = parser.parseAny();
+        if (!parser.error.empty()) return ets_json_value();
+        return value;
+    }
+private:
+    void skipWhitespace() {
+        while (pos < input.size() && (input[pos] == ' ' || input[pos] == '\t' || input[pos] == '\n' || input[pos] == '\r')) ++pos;
+    }
+    bool consume(char c) {
+        skipWhitespace();
+        if (pos < input.size() && input[pos] == c) { ++pos; return true; }
+        error = std::string("expected '") + c + "'";
+        return false;
+    }
+    ets_json_value parseAny() {
+        skipWhitespace();
+        if (pos >= input.size()) { error = "unexpected end of input"; return ets_json_value(); }
+        char c = input[pos];
+        if (c == '{') return parseObject();
+        if (c == '[') return parseArray();
+        if (c == '"') return parseString();
+        if (c == 't' || c == 'f') return parseBool();
+        if (c == 'n') return parseNull();
+        return parseNumber();
+    }
+    ets_json_value parseObject() {
+        ets_json_value::Object object;
+        if (!consume('{')) return ets_json_value();
+        skipWhitespace();
+        if (pos < input.size() && input[pos] == '}') { ++pos; return ets_json_value(std::move(object)); }
+        while (true) {
+            skipWhitespace();
+            ets_json_value key = parseString();
+            if (!key.isString()) return ets_json_value();
+            skipWhitespace();
+            if (!consume(':')) return ets_json_value();
+            ets_json_value value = parseAny();
+            if (!error.empty()) return ets_json_value();
+            object.emplace(std::get<std::string>(key.storage), std::move(value));
+            skipWhitespace();
+            if (pos < input.size() && input[pos] == ',') { ++pos; continue; }
+            if (consume('}')) break;
+            return ets_json_value();
+        }
+        return ets_json_value(std::move(object));
+    }
+    ets_json_value parseArray() {
+        ets_json_value::Array array;
+        if (!consume('[')) return ets_json_value();
+        skipWhitespace();
+        if (pos < input.size() && input[pos] == ']') { ++pos; return ets_json_value(std::move(array)); }
+        while (true) {
+            ets_json_value item = parseAny();
+            if (!error.empty()) return ets_json_value();
+            array.push_back(std::move(item));
+            skipWhitespace();
+            if (pos < input.size() && input[pos] == ',') { ++pos; continue; }
+            if (consume(']')) break;
+            return ets_json_value();
+        }
+        return ets_json_value(std::move(array));
+    }
+    ets_json_value parseString() {
+        if (!consume('"')) return ets_json_value();
+        std::string out;
+        while (pos < input.size() && input[pos] != '"') {
+            if (input[pos] == '\\' && pos + 1 < input.size()) {
+                char esc = input[pos + 1];
+                switch (esc) {
+                    case '"': out.push_back('"'); break;
+                    case '\\': out.push_back('\\'); break;
+                    case '/': out.push_back('/'); break;
+                    case 'b': out.push_back('\b'); break;
+                    case 'f': out.push_back('\f'); break;
+                    case 'n': out.push_back('\n'); break;
+                    case 'r': out.push_back('\r'); break;
+                    case 't': out.push_back('\t'); break;
+                    case 'u': out.push_back('?'); pos += 4; break; // simplificado
+                    default: error = "invalid escape"; return ets_json_value();
+                }
+                pos += 2;
+            } else { out.push_back(input[pos]); ++pos; }
+        }
+        if (!consume('"')) return ets_json_value();
+        return ets_json_value(std::move(out));
+    }
+    ets_json_value parseNumber() {
+        std::size_t start = pos;
+        if (pos < input.size() && (input[pos] == '-' || input[pos] == '+')) ++pos;
+        while (pos < input.size() && (std::isdigit(static_cast<unsigned char>(input[pos])) || input[pos] == '.' || input[pos] == 'e' || input[pos] == 'E' || input[pos] == '-' || input[pos] == '+')) ++pos;
+        if (start == pos) { error = "expected number"; return ets_json_value(); }
+        return ets_json_value(std::stod(input.substr(start, pos - start)));
+    }
+    ets_json_value parseBool() {
+        if (input.compare(pos, 4, "true") == 0) { pos += 4; return ets_json_value(true); }
+        if (input.compare(pos, 5, "false") == 0) { pos += 5; return ets_json_value(false); }
+        error = "expected boolean";
+        return ets_json_value();
+    }
+    ets_json_value parseNull() {
+        if (input.compare(pos, 4, "null") == 0) { pos += 4; return ets_json_value(); }
+        error = "expected null";
+        return ets_json_value();
+    }
+};
+
 struct ets_json {
+    using Value = ets_json_value;
+    using Array = ets_json_value::Array;
+    using Object = ets_json_value::Object;
+    // API legacy: `parse(input)` devuelve string para JSON escalar.
+    static std::string parse(const std::string& input) noexcept {
+        ets_json_value value = ets_json_parser::parseValue(input);
+        if (value.isString()) return std::get<std::string>(value.storage);
+        if (value.isNumber()) {
+            std::ostringstream out; out << std::get<double>(value.storage); return out.str();
+        }
+        if (value.isBool()) return std::get<bool>(value.storage) ? "true" : "false";
+        if (value.isNull()) return "null";
+        return std::string();
+    }
+    // API nueva: `parseValue(input)` devuelve el árbol completo.
+    static Value parseValue(const std::string& input) noexcept {
+        return ets_json_parser::parseValue(input);
+    }
+    // Stringify recursivo.
+    static std::string stringify(const Value& value) {
+        return stringifyValue(value.storage);
+    }
+    // Overloads para tipos primitivos: `JSON.stringify(value)` donde value
+    // es string/number/bool/null. Se usan también en el dialecto para los
+    // argumentos no-Value de JSON.stringify.
     static std::string stringify(const std::string& value) {
         std::string output; output.reserve(value.size() + 2);
         output.push_back('"');
@@ -309,9 +478,140 @@ struct ets_json {
         output.push_back('"');
         return output;
     }
+    static std::string stringify(const double value) { std::ostringstream out; out << value; return out.str(); }
+    static std::string stringify(const bool value) { return value ? "true" : "false"; }
+private:
+    static std::string stringifyValue(const ets_json_value::Storage& storage) {
+        return std::visit([](auto&& arg) -> std::string {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, std::monostate>) return "null";
+            else if constexpr (std::is_same_v<T, std::string>) {
+                std::string output; output.reserve(arg.size() + 2);
+                output.push_back('"');
+                for (const unsigned char c : arg) {
+                    switch (c) {
+                        case '"': output += "\\\""; break;
+                        case '\\': output += "\\\\"; break;
+                        case '\b': output += "\\b"; break;
+                        case '\f': output += "\\f"; break;
+                        case '\n': output += "\\n"; break;
+                        case '\r': output += "\\r"; break;
+                        case '\t': output += "\\t"; break;
+                        default:
+                            if (c < 0x20) {
+                                constexpr char hex[] = "0123456789abcdef";
+                                output += "\\u00"; output += hex[(c >> 4) & 0x0f]; output += hex[c & 0x0f];
+                            } else output += static_cast<char>(c);
+                    }
+                }
+                output.push_back('"');
+                return output;
+            }
+            else if constexpr (std::is_same_v<T, double>) {
+                std::ostringstream out; out << arg; return out.str();
+            }
+            else if constexpr (std::is_same_v<T, bool>) return arg ? "true" : "false";
+            else if constexpr (std::is_same_v<T, ets_json_value::Array>) {
+                std::string out = "[";
+                bool first = true;
+                for (const auto& item : arg) { if (!first) out += ","; out += stringifyValue(item.storage); first = false; }
+                out += "]";
+                return out;
+            }
+            else if constexpr (std::is_same_v<T, ets_json_value::Object>) {
+                std::string out = "{";
+                bool first = true;
+                for (const auto& [k, v] : arg) { if (!first) out += ","; out += "\"" + k + "\":" + stringifyValue(v.storage); first = false; }
+                out += "}";
+                return out;
+            }
+            else return "null";
+        }, storage);
+    }
 };
 
+// Helpers globales expuestas al dialecto. Todas reciben `ets_json_value`
+// por valor (es trivialmente copiable) y devuelven el tipo primitivo
+// correspondiente. Si el tipo no coincide, se devuelve el valor por defecto.
+inline bool jsonIsString(const ets_json_value& v) { return v.isString(); }
+inline bool jsonIsNumber(const ets_json_value& v) { return v.isNumber(); }
+inline bool jsonIsBool(const ets_json_value& v) { return v.isBool(); }
+inline bool jsonIsArray(const ets_json_value& v) { return v.isArray(); }
+inline bool jsonIsObject(const ets_json_value& v) { return v.isObject(); }
+inline bool jsonIsNull(const ets_json_value& v) { return v.isNull(); }
+inline std::string jsonAsString(const ets_json_value& v) { return v.isString() ? std::get<std::string>(v.storage) : std::string(); }
+inline double jsonAsNumber(const ets_json_value& v) { return v.isNumber() ? std::get<double>(v.storage) : 0.0; }
+inline bool jsonAsBool(const ets_json_value& v) { return v.isBool() ? std::get<bool>(v.storage) : false; }
+inline std::size_t jsonArrayLength(const ets_json_value& v) { return v.isArray() ? std::get<ets_json_value::Array>(v.storage).size() : 0; }
+inline ets_json_value jsonArrayGet(const ets_json_value& v, std::size_t index) {
+    if (!v.isArray() || index >= std::get<ets_json_value::Array>(v.storage).size()) return ets_json_value();
+    return std::get<ets_json_value::Array>(v.storage)[index];
+}
+inline ets_json_value jsonObjectGet(const ets_json_value& v, const std::string& key) {
+    if (!v.isObject()) return ets_json_value();
+    const auto& object = std::get<ets_json_value::Object>(v.storage);
+    auto it = object.find(key);
+    return it != object.end() ? it->second : ets_json_value();
+}
+inline std::vector<std::string> jsonObjectKeys(const ets_json_value& v) {
+    std::vector<std::string> keys;
+    if (!v.isObject()) return keys;
+    for (const auto& [k, _] : std::get<ets_json_value::Object>(v.storage)) keys.push_back(k);
+    return keys;
+}
+
 inline ets_json JSON{};
+
+// `Math` (Bloque E): operaciones numéricas básicas sobre `double` que
+// envuelven `<cmath>` con una API ergonómica estilo TypeScript. Todas las
+// funciones son estáticas (`ets_math::floor(x)`) y se exponen como globales
+// `Math.floor(x)` en el lenguaje fuente. No hay funciones que dependan de
+// `Object`/`any` (p.ej. `Math.max` con número variable de argumentos solo
+// soporta 2 argumentos por la restricción de variadics del dialecto).
+struct ets_math {
+    static double floor(const double value) noexcept { return std::floor(value); }
+    static double ceil(const double value) noexcept { return std::ceil(value); }
+    static double round(const double value) noexcept { return std::round(value); }
+    static double abs(const double value) noexcept { return std::fabs(value); }
+    static double sqrt(const double value) noexcept { return std::sqrt(value); }
+    static double pow(const double base, const double exponent) noexcept { return std::pow(base, exponent); }
+    static double min(const double left, const double right) noexcept { return left < right ? left : right; }
+    static double max(const double left, const double right) noexcept { return left > right ? left : right; }
+};
+
+inline ets_math Math{};
+
+// `Date` (Bloque E): API mínima estilo JavaScript para tiempo. El dialecto
+// no tiene zona horaria dinámica ni objetos fecha mutables (eso requeriría
+// `Object`). Solo se exponen constructores y accesores que devuelven números
+// primitivos (`number` en etsc).
+struct ets_date {
+    static double now() noexcept {
+        return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    }
+    // `Date.UTC(year, month, day, ...)` devuelve el timestamp UTC en ms. Se
+    // toman 3 argumentos posicionales (no se admiten tuplas): año, mes 0-11,
+    // día 1-31. Coherente con la API estándar.
+    static double utc(const double year, const double month, const double day) noexcept {
+        std::tm time{};
+        time.tm_year = static_cast<int>(year) - 1900;
+        time.tm_mon = static_cast<int>(month);
+        time.tm_mday = static_cast<int>(day);
+        time.tm_isdst = 0;
+        return static_cast<double>(static_cast<std::int64_t>(timegm(&time)) * 1000);
+    }
+};
+
+inline ets_date Date{};
+
+inline bool ensureParentDirectory(const std::string& path, std::string& error) noexcept {
+    std::error_code status;
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent, status);
+    if (status) { error = "No se puede crear el directorio de salida: " + status.message(); return false; }
+    return true;
+}
 
 inline bool fail(const std::string& message, std::string& error) noexcept {
     error = message;
@@ -387,12 +687,4 @@ inline std::string pathDirectory(const std::string& path) {
 inline std::string resolveProjectPath(const std::string& configFile, const std::string& value) {
     const std::filesystem::path requested(value);
     return normalizePath((requested.is_absolute() ? requested : std::filesystem::path(configFile).parent_path() / requested).string());
-}
-
-inline bool ensureParentDirectory(const std::string& path, std::string& error) noexcept {
-    std::error_code status;
-    const auto parent = std::filesystem::path(path).parent_path();
-    if (!parent.empty()) std::filesystem::create_directories(parent, status);
-    if (status) { error = "No se puede crear el directorio de salida: " + status.message(); return false; }
-    return true;
 }

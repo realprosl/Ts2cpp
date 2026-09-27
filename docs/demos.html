@@ -1,0 +1,2587 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estatic · Demos</title>
+<style>
+:root {
+  --bg: #1e1e2e;
+  --bg-elev: #28283a;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --accent: #89b4fa;
+  --ok: #a6e3a1;
+  --warn: #f9e2af;
+  --err: #f38ba8;
+  --border: #45475a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}
+header.banner {
+  padding: 2rem 1.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+header.banner h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.8rem;
+  color: var(--accent);
+}
+header.banner p {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 0.95rem;
+}
+header.banner code {
+  background: var(--bg);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+  border: 1px solid var(--border);
+}
+nav.toc {
+  padding: 1rem 1.5rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+nav.toc a {
+  color: var(--accent);
+  text-decoration: none;
+}
+nav.toc a:hover { text-decoration: underline; }
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+section.category {
+  margin-bottom: 2.5rem;
+  scroll-margin-top: 1rem;
+}
+section.category h2 {
+  font-size: 1.3rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+section.category h2 .icon { font-size: 1.2rem; }
+section.category h2 .count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+  background: var(--bg-elev);
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+article.demo {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+article.demo header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+article.demo h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", monospace;
+  color: var(--accent);
+}
+.badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.badge.ok { background: rgba(166, 227, 161, 0.15); color: var(--ok); border: 1px solid rgba(166, 227, 161, 0.3); }
+.badge.warn { background: rgba(249, 226, 175, 0.15); color: var(--warn); border: 1px solid rgba(249, 226, 175, 0.3); }
+details {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+details summary {
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+  user-select: none;
+}
+details summary:hover { color: var(--fg); }
+details[open] summary { color: var(--accent); border-bottom: 1px solid var(--border); }
+pre {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+pre.source { color: var(--fg); }
+pre.output { color: var(--ok); background: rgba(166, 227, 161, 0.05); }
+.no-output {
+  margin: 0;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--warn);
+  font-style: italic;
+}
+footer {
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header class="banner">
+  <h1>Estatic TS → C++ · Demos</h1>
+  <p>50 ejemplos del dialecto, organizados por categoría. Cada demo incluye el código fuente (en <code>.ets</code>) y la salida esperada (golden file). Los demos marcados con <code>⚠ sin golden</code> abren puertos de red o tienen salida no determinista; verifica manualmente.</p>
+</header>
+<nav class="toc">
+  <a href="#cat-hola-mundo-y-b-sicos">👋 Hola mundo y básicos</a>
+  <a href="#cat-constructores-y-clases">🏛️ Constructores y clases</a>
+  <a href="#cat-gen-ricos-y-tipos">🧬 Genéricos y tipos</a>
+  <a href="#cat-colecciones-y-arrays">📚 Colecciones y arrays</a>
+  <a href="#cat-async-y-promesas">⚡ Async y promesas</a>
+  <a href="#cat-closures-y-funciones">🔁 Closures y funciones</a>
+  <a href="#cat-stdlib-runtime">🔧 Stdlib runtime</a>
+  <a href="#cat-json-y-strings">📝 JSON y strings</a>
+  <a href="#cat-tipos-nullish-fase-1-">❓ Tipos nullish (Fase 1)</a>
+  <a href="#cat-decoradores-fase-1-">🎨 Decoradores (Fase 1)</a>
+  <a href="#cat-m-dulos-fase-1-">📦 Módulos (Fase 1)</a>
+  <a href="#cat-i-o-nativo">💾 I/O nativo</a>
+  <a href="#cat-red-y-tls">🌐 Red y TLS</a>
+</nav>
+<main>
+<section class="category" id="cat-hola-mundo-y-b-sicos">
+  <h2><span class="icon">👋</span> Hola mundo y básicos <span class="count">1/1</span></h2>
+  <article class="demo">
+  <header>
+    <h3>hello</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">function factorial(n: number): number {
+  let result: number = 1;
+  let i: number = 2;
+  while (i &lt;= n) {
+    result = result * i;
+    i = i + 1;
+  }
+  return result;
+}
+
+const name: string = &quot;mundo&quot;;
+const value = factorial(5);
+print(&quot;Hola, &quot; + name);
+print(value);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Hola, mundo
+120
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-constructores-y-clases">
+  <h2><span class="icon">🏛️</span> Constructores y clases <span class="count">6/6</span></h2>
+  <article class="demo">
+  <header>
+    <h3>constructor-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// constructor-demo.ets — Bloque 1: constructores en clases.
+//
+// Sintaxis: dentro de una clase, `constructor(params) { cuerpo }` define un
+// constructor. No lleva tipo de retorno explícito (siempre es void). El
+// cuerpo puede asignar a campos, incluyendo los declarados `readonly`.
+//
+// Reglas:
+//   - Una clase puede tener un solo constructor (no hay overloading).
+//   - Los campos `readonly` se pueden asignar SOLO dentro del constructor.
+//     Fuera de él, el semantic checker rechaza la asignación con un
+//     diagnóstico claro.
+//   - Si la clase NO tiene constructor, los campos `readonly` se inicializan
+//     aggregate-style: `T{valor}` en el call site `new T(...)`.
+
+// Constructor simple: asigna campos mutables y readonly.
+class Point {
+  readonly x: number;
+  readonly y: number;
+  label: string;
+  constructor(x: number, y: number, label: string) {
+    this.x = x;
+    this.y = y;
+    this.label = label;
+  }
+  sum(): number { return this.x + this.y; }
+}
+
+let p: Point = new Point(3, 4, &quot;origin&quot;);
+print(p.sum());          // 7
+print(p.label);          // origin
+print(p.x);              // 3
+print(p.y);              // 4
+
+// Campos mutables se pueden modificar fuera del constructor.
+p.label = &quot;moved&quot;;
+print(p.label);          // moved
+
+// Sin constructor: aggregate init con `T{args}`.
+class Pair {
+  first: number;
+  second: number;
+}
+const pair: Pair = new Pair(10, 20);
+print(pair.first);       // 10
+print(pair.second);      // 20
+
+// Constructor con un solo parámetro, métodos de lectura y mutación externa.
+class Counter {
+  value: number;
+  constructor(initial: number) { this.value = initial; }
+  current(): number { return this.value; }
+}
+
+function increment(mut counter: Counter): void {
+  counter.value = counter.value + 1;
+}
+
+let c: Counter = new Counter(100);
+increment(c);
+increment(c);
+increment(c);
+print(c.current());      // 103
+
+// Constructor vacío.
+class Empty {}
+const e: Empty = new Empty();
+print(&quot;ok&quot;);             // smoke: el constructor vacío no rompe nada
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">7
+origin
+3
+4
+moved
+10
+20
+103
+ok
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>complete-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">interface Describable {
+  description(): string;
+}
+
+class Motor {
+  power: number;
+
+  description(): string {
+    return &quot;Motor de &quot; + numberToString(this.power) + &quot; CV&quot;;
+  }
+}
+
+class Car {
+  motor: Motor;
+  model: string;
+
+  description(): string {
+    return this.model + &quot; con &quot; + this.motor.description();
+  }
+}
+
+function show(value: Describable): void {
+  print(value.description());
+}
+
+let motor: Motor = new Motor(150);
+let car: Car = new Car(motor, &quot;Coupe&quot;);
+
+show(motor);
+show(car);
+print(&quot;Potencia leída por composición: &quot;, car.motor.power, &quot; CV&quot;);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Motor de 150 CV
+Coupe con Motor de 150 CV
+Potencia leída por composición: 150 CV
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>composition</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">class Motor {
+  power: number;
+
+  label(): string {
+    return &quot;motor&quot;;
+  }
+}
+
+class Car {
+  motor: Motor;
+  name: string;
+
+  description(): string {
+    return this.name + &quot; con &quot; + this.motor.label();
+  }
+}
+
+let motor: Motor = new Motor(120);
+let car: Car = new Car(motor, &quot;Coupe&quot;);
+print(car.description());
+print(car.motor.power);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Coupe con motor
+120
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>interface</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">interface Named {
+  name(): string;
+}
+
+class User {
+  label: string;
+
+  name(): string {
+    return this.label;
+  }
+}
+
+function show(value: Named): void {
+  print(value.name());
+}
+
+let user: User = new User(&quot;Ada&quot;);
+show(user);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Ada
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>mutable-borrows</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">class Counter {
+  value: number;
+}
+
+function inspect(counter: Counter): number {
+  return counter.value;
+}
+
+function increment(mut counter: Counter): void {
+  counter.value = counter.value + 1;
+}
+
+let counter: Counter = new Counter(41);
+increment(counter);
+print(inspect(counter));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">42
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>default-args-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de argumentos con valor por defecto: la sintaxis `function f(x: T = expr)`
+// permite omitir el argumento en la llamada; el codegen lo emite como parámetro
+// con default de C++ en la declaración y el type-checker lo valida con un scope
+// que contiene los parámetros anteriores.
+
+function greet(name: string, greeting: string = &quot;Hola&quot;): string {
+  return greeting + &quot;, &quot; + name + &quot;!&quot;;
+}
+
+function scale(value: number, factor: number = 2, offset: number = 100): number {
+  return value * factor + offset;
+}
+
+function demo(): void {
+  console.log(greet(&quot;Mundo&quot;));
+  console.log(greet(&quot;Ana&quot;, &quot;Adiós&quot;));
+  console.log(&quot;scale 5:&quot; + numberToString(scale(5)));
+  console.log(&quot;scale 5,3:&quot; + numberToString(scale(5, 3)));
+  console.log(&quot;scale 5,3,1:&quot; + numberToString(scale(5, 3, 1)));
+}
+
+demo();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Hola, Mundo!
+Adiós, Ana!
+scale 5:110
+scale 5,3:115
+scale 5,3,1:16
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-gen-ricos-y-tipos">
+  <h2><span class="icon">🧬</span> Genéricos y tipos <span class="count">9/9</span></h2>
+  <article class="demo">
+  <header>
+    <h3>generics</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">function identity&lt;T&gt;(value: T): T {
+  return value;
+}
+
+function first&lt;T&gt;(values: T[]): T {
+  return values[0];
+}
+
+class Box&lt;T&gt; {
+  value: T;
+
+  get(): T {
+    return this.value;
+  }
+}
+
+const numberBox: Box&lt;number&gt; = new Box&lt;number&gt;(42);
+const textBox: Box&lt;string&gt; = new Box&lt;string&gt;(&quot;generic&quot;);
+const values: number[] = [10, 20, 30];
+
+print(&quot;Identidad: &quot;, identity(&quot;hola&quot;));
+print(&quot;Explícito: &quot;, identity&lt;number&gt;(7));
+print(&quot;Primero: &quot;, first(values));
+print(&quot;Caja number: &quot;, numberBox.get());
+print(&quot;Caja string: &quot;, textBox.get());
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Identidad: hola
+Explícito: 7
+Primero: 10
+Caja number: 42
+Caja string: generic
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>overloads-variadics</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">function describe(value: number): string {
+  return &quot;number=&quot; + numberToString(value);
+}
+
+function describe(value: string): string {
+  return &quot;string=&quot; + value;
+}
+
+function describe&lt;T&gt;(value: T): string {
+  return &quot;generic&quot;;
+}
+
+function logAll&lt;...T&gt;(...values: T): void {
+  print(values);
+}
+
+print(describe(42.0));
+print(describe(&quot;hello&quot;));
+print(describe(true));
+logAll(&quot;mixed: &quot;, 10, &quot;, &quot;, true);
+logAll&lt;number, string&gt;(7, &quot; explicit&quot;);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">number=42
+string=hello
+generic
+mixed: 10, 1
+7 explicit
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>union-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de union types: una variable puede ser uno de varios tipos.
+// Limitaciones (sin narrowing por flujo de control):
+//   - El operador `+` no soporta unions (no sabe si es concat o suma).
+//   - `bool` y `number` no deben ir juntos en el mismo union porque
+//     `std::variant&lt;bool, double&gt;` resuelve la asignación ambigua hacia double.
+
+function describe(value: string | number): string {
+  if (true) return &quot;string&quot;;
+  return &quot;number&quot;;
+}
+
+console.log(describe(&quot;hola&quot;));
+console.log(describe(42));
+
+let a: string | number = &quot;texto&quot;;
+console.log(&quot;a =&quot;, a);
+a = 100;
+console.log(&quot;a =&quot;, a);
+
+let b: string | boolean = &quot;abc&quot;;
+console.log(&quot;b =&quot;, b);
+b = true;
+console.log(&quot;b =&quot;, b);
+
+let c: string | number = &quot;ok&quot;;
+console.log(&quot;c =&quot;, c);
+c = 3.14;
+console.log(&quot;c =&quot;, c);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">string
+string
+a =texto
+a =100
+b =abc
+b =1
+c =ok
+c =3.14
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>intersection-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de intersection types: el parámetro genérico debe satisfacer
+// múltiples interfaces simultáneamente (`T extends Named &amp; Aged`).
+
+interface Named {
+  name(): string;
+}
+
+interface Aged {
+  age(): number;
+}
+
+class Person {
+  name(): string { return &quot;Alice&quot;; }
+  age(): number { return 30; }
+}
+
+class Robot {
+  name(): string { return &quot;R2D2&quot;; }
+  age(): number { return 5; }
+}
+
+function describe&lt;T extends Named &amp; Aged&gt;(value: T): string {
+  return value.name() + &quot; (&quot; + numberToString(value.age()) + &quot;)&quot;;
+}
+
+console.log(describe(new Person()));
+console.log(describe(new Robot()));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Alice (30)
+R2D2 (5)
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>type-aliases</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Type aliases: `type X = ...`. El alias es transparente — el compilador
+// expande `NumberArray` a `number[]` antes de llegar a codegen, así que no
+// aparece ningún `using` en el C++ generado.
+type NumberArray = number[];
+type Maybe = string | number;
+type Pair&lt;A, B&gt; = [A, B];
+interface Named { name(): string; }
+interface Aged { age(): number; }
+type Person&lt;T extends Named = Named&gt; = T;
+let ns: NumberArray = [1, 2, 3];
+let m: Maybe = &quot;hello&quot;;
+let p: Pair&lt;string, number&gt; = [&quot;a&quot;, 1];
+print(numberToString(length(ns)));
+print(m);
+print(p[0]);</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">3
+hello
+a
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>default-type-params</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">class Box&lt;T = number&gt; {
+  value: T;
+}
+
+function makeNum&lt;T = number&gt;(v: T): T { return v; }
+
+let b = new Box&lt;number&gt;(7);
+print(numberToString(b.value));
+
+print(numberToString(makeNum&lt;number&gt;(42)));
+print(numberToString(makeNum(99)));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">7
+42
+99
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>typeof-type</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">let x: number = 42;
+let y: typeof x = 7;
+let z: typeof x = 99;
+print(numberToString(y));
+print(numberToString(z));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">7
+99
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>typeof-value</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de `typeof` como valor: devuelve el nombre canónico del tipo del
+// operando. El resultado siempre es un `string` literal en C++.
+let x: number = 42;
+print(typeof x);             // number
+print(typeof &quot;hi&quot;);          // string
+print(typeof true);          // boolean
+print(typeof [1, 2]);        // object
+print(typeof print(&quot;yo&quot;));   // undefined
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">number
+string
+boolean
+object
+undefined
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>function-type-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de function types explícitos: la anotación `(name: type) =&gt; result` puede
+// declararse en variables y en parámetros. Aquí se verifica que la asignación
+// de una closure coincidente con la firma pasa el type-checker y se traduce
+// correctamente a `std::function&lt;...&gt;` en C++.
+
+export let toUpper: (input: string) =&gt; string = (input: string) =&gt; {
+  return input;
+};
+
+export function twice(action: (value: number) =&gt; string, base: number): string {
+  return action(base) + &quot;|&quot; + action(base + 1);
+}
+
+export function demo(): void {
+  console.log(toUpper(&quot;hola&quot;));
+  console.log(twice((value: number) =&gt; {
+    return numberToString(value);
+  }, 10));
+}
+
+demo();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">hola
+10|11
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-colecciones-y-arrays">
+  <h2><span class="icon">📚</span> Colecciones y arrays <span class="count">5/5</span></h2>
+  <article class="demo">
+  <header>
+    <h3>collections</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">class Inventory {
+  quantities: number[];
+  metadata: [string, boolean];
+
+  first(): number {
+    return this.quantities[0];
+  }
+}
+
+let values: number[] = [10, 20, 30];
+values[1] = 25;
+
+const metadata: [string, boolean] = [&quot;active&quot;, true];
+let inventory: Inventory = new Inventory(values, metadata);
+
+print(&quot;Elementos: &quot;, length(values));
+print(&quot;Segundo: &quot;, values[1]);
+print(&quot;Etiqueta: &quot;, metadata[0]);
+print(&quot;Primer inventario: &quot;, inventory.first());
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Elementos: 3
+Segundo: 25
+Etiqueta: active
+Primer inventario: 10
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>map-set-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de Map&lt;K, V&gt; y Set&lt;T&gt;: ejercita la API estilo JavaScript sobre los
+// wrappers `ets::Map` y `ets::Set` (basados en std::unordered_map/unordered_set).
+
+function demo(): void {
+  let scores: Map&lt;string, number&gt; = new Map&lt;string, number&gt;();
+  scores.set(&quot;alice&quot;, 10);
+  scores.set(&quot;bob&quot;, 20);
+  scores.set(&quot;carol&quot;, 30);
+  console.log(&quot;tamaño:&quot; + numberToString(scores.size()));
+  let bobTxt: string = &quot;no&quot;;
+  if (scores.has(&quot;bob&quot;)) { bobTxt = &quot;sí&quot;; }
+  console.log(&quot;tiene bob:&quot; + bobTxt);
+  let delTxt: string = &quot;no&quot;;
+  if (scores.delete(&quot;carol&quot;)) { delTxt = &quot;sí&quot;; }
+  console.log(&quot;borrar carol:&quot; + delTxt);
+  console.log(&quot;tras borrar:&quot; + numberToString(scores.size()));
+
+  // forEach itera como (value, key). Aquí solo contamos para verificar que
+  // se invoca el callback por cada entrada restante.
+  let pairsCount: number = 0;
+  scores.forEach((value: number, key: string) =&gt; {
+    pairsCount = pairsCount + 1;
+  });
+  console.log(&quot;pares contados:&quot; + numberToString(pairsCount));
+
+  let seen: Set&lt;string&gt; = new Set&lt;string&gt;();
+  seen.add(&quot;rojo&quot;);
+  seen.add(&quot;verde&quot;);
+  seen.add(&quot;rojo&quot;);
+  console.log(&quot;set size:&quot; + numberToString(seen.size()));
+  let verdeTxt: string = &quot;no&quot;;
+  if (seen.has(&quot;verde&quot;)) { verdeTxt = &quot;sí&quot;; }
+  console.log(&quot;set tiene verde:&quot; + verdeTxt);
+  seen.delete(&quot;rojo&quot;);
+  console.log(&quot;set tras delete:&quot; + numberToString(seen.size()));
+
+  // Set.forEach itera como (value). Mismo patrón: contar invocaciones.
+  let tagsCount: number = 0;
+  seen.forEach((value: string) =&gt; {
+    tagsCount = tagsCount + 1;
+  });
+  console.log(&quot;set forEach total:&quot; + numberToString(tagsCount));
+
+  scores.clear();
+  seen.clear();
+  console.log(&quot;vacío map:&quot; + numberToString(scores.size()));
+  console.log(&quot;vacío set:&quot; + numberToString(seen.size()));
+}
+
+demo();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">tamaño:3
+tiene bob:sí
+borrar carol:sí
+tras borrar:2
+pares contados:2
+set size:2
+set tiene verde:sí
+set tras delete:1
+set forEach total:1
+vacío map:0
+vacío set:0
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>spread-array-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// spread-array-demo.ets — Bloque 4: spread operator en array literals.
+//
+// El operador `...` &quot;expande&quot; los elementos de un vector (o tupla) dentro
+// del nuevo literal. Solo se admite en arrays (`T[]`), no en tuplas de
+// tamaño fijo.
+//
+// Restricciones del dialecto:
+//   - El operando del spread debe ser del mismo tipo (vector o tupla).
+//   - No hay soporte para nested spreads (`[...a, ...[1,2,3]]`).
+
+const a: number[] = [1, 2, 3];
+const b: number[] = [4, 5, 6];
+
+// Concatenar dos arrays.
+const combined: number[] = [...a, ...b];
+print(length(combined));  // 6
+print(combined[0]);       // 1
+print(combined[5]);       // 6
+
+// Spread al principio y en el medio.
+const prefix: number[] = [0, ...a, 99];
+print(length(prefix));    // 5
+print(prefix[0]);         // 0
+print(prefix[1]);         // 1
+print(prefix[3]);         // 3
+print(prefix[4]);         // 99
+
+// Mezcla con valores literales.
+const mixed: number[] = [10, ...a, 20, ...b, 30];
+print(length(mixed));     // 9
+print(mixed[0]);          // 10
+print(mixed[1]);          // 1
+print(mixed[4]);          // 20
+print(mixed[8]);          // 30
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">6
+1
+6
+5
+0
+1
+3
+99
+9
+10
+1
+20
+30
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>destructuring-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// destructuring-demo.ets — Bloque D: array destructuring y `readonly` en campos.
+//
+// Destructuring de arrays: `const [a, b, c] = expr;` se desazucara a una
+// variable temporal + N bindings indexados. Cada binding hereda el tipo del
+// elemento del initializer (no del array completo). El bloque solo cubre
+// destructuring de arrays: el de objetos `{x, y} = ...` no aplica en este
+// dialecto porque no hay literales de objeto (sin `Object`/`any`).
+//
+// Readonly: un campo declarado `readonly x: T` se emite como `T const x` en
+// C++. El compilador rechaza reasignaciones posteriores vía `this.x = ...`.
+// NOTA: este dialecto todavía no soporta constructores en clases (el parser
+// de class body no acepta `constructor`), así que el ejemplo usa inicializadores
+// en línea para los campos.
+
+// Destructuring básico
+const nums: number[] = [1, 2, 3];
+const [first, second, third] = nums;
+print(first);          // 1
+print(second);         // 2
+print(third);          // 3
+
+// Destructuring con tipo declarado por binding
+const [x, y]: number[] = [10, 20];
+print(x);              // 10
+print(y);              // 20
+
+// Destructuring mutable (con `let`)
+let [name, surname]: string[] = [&quot;Ana&quot;, &quot;López&quot;];
+print(name);           // Ana
+print(surname);        // López
+surname = &quot;García&quot;;    // OK: `let` permite reasignar
+print(surname);        // García
+
+// Uso en una función: destructuring de un parámetro
+function head(arr: string[]): string {
+  return arr[0];
+}
+const [a, b, c]: string[] = [&quot;alpha&quot;, &quot;beta&quot;, &quot;gamma&quot;];
+print(head([a, b, c])); // alpha
+
+// Inicializador con expresión, no literal
+const source: number[] = [100, 200, 300, 400];
+const [p, q, r]: number[] = source;
+print(p + q + r);       // 600
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">1
+2
+3
+10
+20
+Ana
+López
+García
+alpha
+600
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>destructuring-default</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// destructuring-default.ets — Bloque 5: default values en array destructuring.
+//
+// Sintaxis: `const [a = expr] = arr` toma `expr` cuando el binding no tiene
+// un elemento correspondiente en el initializer (porque arr es más corto).
+//
+// Restricciones:
+//   - El initializer debe ser un array (`T[]`). Para tuplas de tamaño fijo
+//     no tiene sentido (el tamaño es siempre N).
+//   - El tipo del default debe coincidir con el del binding.
+//   - Solo se aplica al final: si arr tiene N elementos y se piden N+K
+//     bindings, los últimos K obtienen sus defaults. Los primeros N
+//     bindings acceden normalmente a arr[0..N).
+
+// Caso 1: array corto, todos los bindings obtienen default.
+const empty: number[] = [];
+const [x = 1, y = 2, z = 3] = empty;
+print(x);  // 1
+print(y);  // 2
+print(z);  // 3
+
+// Caso 2: array más corto, defaults al final.
+const two: number[] = [10, 20];
+const [a = 1, b = 2, c = 3] = two;
+print(a);  // 10
+print(b);  // 20
+print(c);  // 3 (default)
+
+// Caso 3: array exactamente del tamaño, no se usan defaults.
+const three: number[] = [100, 200, 300];
+const [p = 1, q = 2, r = 3] = three;
+print(p);  // 100
+print(q);  // 200
+print(r);  // 300
+
+// Caso 4: defaults con strings.
+const tags: string[] = [&quot;alpha&quot;];
+const [t1 = &quot;default&quot;, t2 = &quot;fallback&quot;] = tags;
+print(t1);  // alpha
+print(t2);  // fallback
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">1
+2
+3
+10
+20
+3
+100
+200
+300
+alpha
+fallback
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-async-y-promesas">
+  <h2><span class="icon">⚡</span> Async y promesas <span class="count">2/4</span></h2>
+  <article class="demo">
+  <header>
+    <h3>async-await</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">async function loadValue(): Promise&lt;number&gt; {
+  return 21;
+}
+
+async function calculate(): Promise&lt;number&gt; {
+  const value: number = await loadValue();
+  return value * 2;
+}
+
+async function notify(message: string): Promise&lt;void&gt; {
+  print(message);
+  return;
+}
+
+const result: number = await calculate();
+await notify(&quot;async complete&quot;);
+print(result);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">async complete
+42
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>async-files</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">async function processFile(path: string): Promise&lt;void&gt; {
+  const copy: string = path + &quot;.copy&quot;;
+
+  const written: Result&lt;boolean&gt; = await writeFileAsync(path, &quot;hello&quot;);
+  if (written.isOk() == false) { printError(written.error()); }
+
+  const appended: Result&lt;boolean&gt; = await appendFileAsync(path, &quot; async files&quot;);
+  if (appended.isOk() == false) { printError(appended.error()); }
+
+  const contents: Result&lt;string&gt; = await readFileAsync(path);
+  if (contents.isOk()) { print(contents.value()); }
+  else { printError(contents.error()); }
+
+  const copied: Result&lt;boolean&gt; = await copyFileAsync(path, copy);
+  if (copied.isOk() == false) { printError(copied.error()); }
+
+  const exists: Result&lt;boolean&gt; = await fileExistsAsync(copy);
+  if (exists.isOk()) { print(&quot;copy exists=&quot;, exists.value()); }
+
+  const removedPath: Result&lt;boolean&gt; = await removeFileAsync(path);
+  const removedCopy: Result&lt;boolean&gt; = await removeFileAsync(copy);
+  if (removedPath.isOk() == false) { printError(removedPath.error()); }
+  if (removedCopy.isOk() == false) { printError(removedCopy.error()); }
+  return;
+}
+
+await processFile(argument(1));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>cancellation</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">async function cancelSoon(source: CancellationSource): Promise&lt;void&gt; {
+  await sleep(20);
+  cancel(source);
+  return;
+}
+
+async function cancellationDemo(port: number): Promise&lt;void&gt; {
+  const source: CancellationSource = createCancellation();
+  const token: CancellationToken = cancellationToken(source);
+  const opened: Result&lt;TcpListener&gt; = listenTcp(&quot;127.0.0.1&quot;, port);
+  if (opened.isOk() == false) { printError(opened.error()); return; }
+  const listener: TcpListener = opened.value();
+  spawn(cancelSoon(source));
+  const accepted: Result&lt;TcpConnection&gt; = await acceptTcpUntil(listener, 5000, token);
+  if (accepted.isOk() == false) { print(accepted.error()); }
+  closeTcp(listener);
+  return;
+}
+
+await cancellationDemo(34567);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>for-await-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// for-await-demo.ets — Fase 1.8: `for await (const x of iterable)`.
+//
+// `for await` permite iterar secuencialmente sobre un array de promesas y
+// desempaquetar cada elemento con `await`. Es syntactic sugar sobre
+// `for (const __p of arr) { const x = await __p; ... }`.
+//
+// Restricción actual: el iterable debe ser `Promise&lt;T&gt;[]`. La variable de
+// iteración queda como `T`. Se ejecuta en orden secuencial (cada elemento
+// espera al anterior).
+
+async function delay(ms: number, value: number): Promise&lt;number&gt; {
+  await sleep(ms);
+  return value;
+}
+
+// Función que demuestra `for await` sobre un array de promesas.
+async function collectInOrder(): Promise&lt;string&gt; {
+  const promises: Promise&lt;number&gt;[] = [delay(5, 100), delay(5, 200), delay(5, 300)];
+  let acc: string = &quot;&quot;;
+  for await (const v of promises) {
+    acc = acc + numberToString(v) + &quot; &quot;;
+  }
+  return acc;
+}
+
+// Función que demuestra la semántica secuencial: cada `await` espera al anterior.
+async function sumInOrder(): Promise&lt;number&gt; {
+  const promises: Promise&lt;number&gt;[] = [delay(10, 1), delay(10, 2), delay(10, 3)];
+  let acc: number = 0;
+  for await (const v of promises) {
+    acc = acc + v;
+  }
+  return acc;
+}
+
+// Caso iterable vacío: el cuerpo no se ejecuta.
+async function empty(): Promise&lt;string&gt; {
+  const promises: Promise&lt;number&gt;[] = [];
+  let acc: string = &quot;done&quot;;
+  for await (const v of promises) {
+    acc = numberToString(v);
+  }
+  return acc;
+}
+
+print(await collectInOrder());  // 100 200 300
+print(numberToString(await sumInOrder()));  // 6
+print(await empty());  // done
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">100 200 300 
+6
+done
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-closures-y-funciones">
+  <h2><span class="icon">🔁</span> Closures y funciones <span class="count">5/5</span></h2>
+  <article class="demo">
+  <header>
+    <h3>closures</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">function makeAdder(amount: number): (value: number) =&gt; number {
+  return (value: number): number =&gt; value + amount;
+}
+
+function makeCounter(start: number): () =&gt; number {
+  let count: number = start;
+  return (): number =&gt; {
+    count = count + 1;
+    return count;
+  };
+}
+
+const timesTwo: (value: number) =&gt; number = (value: number): number =&gt; value * 2;
+const addTen: (value: number) =&gt; number = makeAdder(10);
+const counter: () =&gt; number = makeCounter(100);
+
+print(&quot;Doble: &quot;, timesTwo(6));
+print(&quot;Suma capturada: &quot;, addTen(5));
+print(&quot;Contador: &quot;, counter());
+print(&quot;Contador: &quot;, counter());
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Doble: 12
+Suma capturada: 15
+Contador: 1
+Contador: 2
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>for-of-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de `for..of`: itera sobre los elementos de un iterable (array, string,
+// tupla, Map&lt;K,V&gt; o Set&lt;T&gt;). El tipo de la variable ligada se infiere a partir
+// del iterable y se registra en el ámbito del cuerpo.
+
+let xs: number[] = [1, 2, 3];
+for (const x of xs) print(numberToString(x));
+
+for (const c of &quot;ab&quot;) print(c);
+
+let m: Map&lt;string, number&gt; = new Map&lt;string, number&gt;();
+m.set(&quot;a&quot;, 1);
+m.set(&quot;b&quot;, 2);
+for (const pair of m) print(pair[0] + &quot;=&quot; + numberToString(pair[1]));
+
+let s: Set&lt;string&gt; = new Set&lt;string&gt;();
+s.add(&quot;x&quot;);
+s.add(&quot;y&quot;);
+for (const v of s) print(v);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">1
+2
+3
+a
+b
+b=2
+a=1
+y
+x
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>for-in-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de `for..in`: itera sobre los índices de un array o las claves de un Map.
+// La variable ligada es de tipo `number` para arrays y de tipo `K` para Map&lt;K,V&gt;.
+
+let xs: number[] = [10, 20, 30];
+for (const i in xs) print(&quot;idx=&quot; + numberToString(i));
+
+let m: Map&lt;string, number&gt; = new Map&lt;string, number&gt;();
+m.set(&quot;alpha&quot;, 1);
+m.set(&quot;beta&quot;, 2);
+for (const k in m) print(&quot;key=&quot; + k);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">idx=0
+idx=1
+idx=2
+key=beta
+key=alpha
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>match-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// match-demo.ets — Fase 1.10: match expressions (TC39 stage 2).
+//
+// `match (subject) { when (pattern) =&gt; result; ... }` desazucara a una
+// cadena de comparaciones `(subject == pattern ? result : ...)` con
+// short-circuit. Cada arm se evalúa en orden; el primero que matchea
+// determina el resultado. El último arm puede ser un wildcard `_` que
+// siempre matchea (default).
+//
+// Limitaciones actuales:
+// - Los patterns son expresiones (literales, identifiers). No hay
+//   pattern destructuring, rangos, ni type guards.
+// - El operador `==` se usa para comparar; en runtime depende de
+//   operator== del tipo (no funciona con strings si no se define).
+
+function classify(x: number): string {
+  return match (x) {
+    when (0) =&gt; &quot;zero&quot;;
+    when (1) =&gt; &quot;one&quot;;
+    when (2) =&gt; &quot;two&quot;;
+    when (3) =&gt; &quot;three&quot;;
+    when (_) =&gt; &quot;many&quot;;
+  };
+}
+
+function sign(n: number): string {
+  return match (n) {
+    when (0) =&gt; &quot;zero&quot;;
+    when (_) =&gt; match (n) {
+      when (1) =&gt; &quot;one&quot;;
+      when (_) =&gt; &quot;many&quot;;
+    };
+  };
+}
+
+print(classify(0));   // zero
+print(classify(1));   // one
+print(classify(2));   // two
+print(classify(3));   // three
+print(classify(42));  // many
+
+print(sign(0));   // zero
+print(sign(1));   // one
+print(sign(2));   // many
+print(sign(5));   // many
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">zero
+one
+two
+three
+many
+zero
+one
+many
+many
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>using-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// using-demo.ets — Fase 1.9: declaración `using` (TC39 stage 3).
+//
+// `using name = expr;` declara un recurso con garantía de RAII automático:
+// al salir del bloque donde se declaró, el destructor C++ del tipo se
+// invoca. Es syntactic sugar sobre `let name = expr` con la semántica
+// de que el binding es inmutable y scope-limited.
+//
+// En el dialecto actual, los tipos runtime (Optional&lt;T&gt;, Task&lt;T&gt;, etc.)
+// ya son RAII por diseño, así que `using` se comporta igual que `let`.
+// Cuando se añadan destructores user-defined a clases (Fase 3), `using`
+// invocará también el método `dispose()` explícitamente.
+
+function demoBasic(): void {
+  // Caso 1: `using` con tipo primitivo.
+  using greeting: string = &quot;hello&quot;;
+  print(greeting);
+
+  // Caso 2: `using` con tipo Optional&lt;T&gt; — RAII ya garantiza cleanup.
+  using maybe: Optional&lt;number&gt; = optionalSome(42);
+  print(numberToString(maybe ?? -1));
+
+  // Caso 3: `using` con tipo vector.
+  using items: number[] = [10, 20, 30];
+  print(numberToString(items[0]));
+  print(numberToString(items[2]));
+}
+
+function demoScope(): void {
+  // `using` tiene scope de bloque: declarado dentro de un bloque, muere al
+  // cerrar la llave. Esto se observa porque la variable no es accesible fuera.
+  {
+    using local: string = &quot;inside&quot;;
+    print(local);
+  }
+  // `local` ya no está en scope aquí. Si intentamos `print(local)`, error.
+  print(&quot;after-block&quot;);
+}
+
+demoBasic();
+demoScope();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">hello
+42
+10
+30
+inside
+after-block
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-stdlib-runtime">
+  <h2><span class="icon">🔧</span> Stdlib runtime <span class="count">5/5</span></h2>
+  <article class="demo">
+  <header>
+    <h3>math-date-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// math-date-demo.ets — Bloque E: APIs estáticas `Math.*` y `Date.*`.
+// Reciben y devuelven `number` (mapeado a `double` en C++); no hay objetos
+// mutables ni zonas horarias dinámicas (el dialecto evita `Object`/`any`).
+
+// Aritmética básica: redondeo y valores absolutos
+print(Math.floor(3.7));        // 3
+print(Math.ceil(3.2));         // 4
+print(Math.round(3.5));        // 4
+print(Math.abs(-7));           // 7
+print(Math.sqrt(16));          // 4
+print(Math.pow(2, 10));        // 1024
+print(Math.min(5, 9));         // 5
+print(Math.max(5, 9));         // 9
+
+// Aplicación a un problema real: redondear el área de un círculo de radio 5.
+const radius: number = 5;
+const circleArea: number = 3.14159265 * radius * radius;
+print(Math.round(circleArea)); // 79
+
+// `Date.now()` y `Date.utc(...)` devuelven timestamps en milisegundos.
+const now: number = Date.now();
+print(now &gt; 0);                // true (asumimos 1970+)
+
+const epoch: number = Date.utc(1970, 0, 1); // 0
+print(epoch);                  // 0
+
+// JSON.stringify para strings (existente; nueva: también documentamos en el Bloque E)
+const quoted: string = JSON.stringify(&quot;hola&quot;);
+print(quoted);
+
+// JSON.parse: parsea literales JSON escalares; devuelve su representación canónica
+const parsed: string = JSON.parse('&quot;hello world&quot;');
+print(parsed);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">3
+4
+4
+7
+4
+1024
+5
+9
+79
+1
+0
+&quot;hola&quot;
+hello world
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>numeric-literal</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// numeric-literal.ets — Bloque C: literales numéricos no decimales y
+// separadores. El dialecto acepta los formatos:
+//   - Hexadecimal:    0xFF, 0X1A, 0xFF_FF_FF
+//   - Octal:          0o77, 0O7
+//   - Binario:        0b1010, 0B0
+//   - Decimal:        42, 1_000_000
+// El codegen emite hex tal cual (`0xFF.0p0` en C++ para forzar `double`)
+// y convierte octal/binario a decimal porque C++ estándar no los soporta.
+
+// Hexadecimal: 0xFF = 255
+print(0xFF);
+print(0X1A);                // 26
+print(0xFF_FF_FF);          // 16777215 — separadores ignorados
+
+// Octal: 0o77 = 63
+print(0o77);
+print(0O7);                 // 7
+
+// Binario: 0b1010 = 10
+print(0b1010);
+print(0B1111);              // 15
+
+// Decimal con separadores
+print(1_000_000);           // 1000000
+print(1_000);               // 1000
+
+// Aritmética con literales no decimales
+print(0x10 + 5);            // 21
+print(0b1111 * 2);          // 30
+print(0o10 - 1);            // 7
+print(0xFF - 0o77);         // 255 - 63 = 192
+
+// Uso práctico: máscaras de bits
+const READ: number = 0b001;
+const WRITE: number = 0b010;
+const EXEC: number = 0b100;
+const RWX: number = READ | WRITE | EXEC;
+print(RWX);                 // 7
+print((RWX &amp; READ) &gt; 0);    // 1 (true)
+print((RWX &amp; 0b1000) &gt; 0);  // 0 (false)
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">255
+26
+1.67772e+07
+63
+7
+10
+15
+1e+06
+1000
+21
+30
+7
+192
+7
+1
+0
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>enum-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demostración de `enum`: numéricos con auto-incremento y valores explícitos,
+// y de cadena con valores explícitos.
+enum Color { Red, Green = 5, Blue }
+enum Direction { Up = &quot;UP&quot;, Down = &quot;DOWN&quot;, Left = &quot;LEFT&quot;, Right = &quot;RIGHT&quot; }
+
+let c: Color = Color.Green;
+print(numberToString(c));
+
+let d: Direction = Direction.Up;
+print(d);
+
+let all: Direction[] = [Direction.Up, Direction.Down, Direction.Left, Direction.Right];
+for (const v of all) print(v);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">5
+UP
+UP
+DOWN
+LEFT
+RIGHT
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>delete-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">let m: Map&lt;string, number&gt; = new Map&lt;string, number&gt;();
+m.set(&quot;a&quot;, 1);
+m.set(&quot;b&quot;, 2);
+delete m[&quot;a&quot;];
+print(numberToString(m.size()));
+
+let s: Set&lt;string&gt; = new Set&lt;string&gt;();
+s.add(&quot;x&quot;);
+s.add(&quot;y&quot;);
+delete s[&quot;x&quot;];
+print(numberToString(s.size()));
+
+let xs: number[] = [10, 20, 30];
+delete xs[1];
+print(&quot;len=&quot; + numberToString(length(xs)) + &quot; first=&quot; + numberToString(xs[0]) + &quot; second=&quot; + numberToString(xs[1]));</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">1
+1
+len=2 first=10 second=30
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>instanceof-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de `instanceof`:
+//   - Sobre uniones, valida en runtime con `std::holds_alternative&lt;T&gt;(v)`.
+//   - Sobre clases (sin herencia dinámica en etsc), la verificación es
+//     estática y siempre verdadera; el codegen emite `true`.
+
+// Las dos pruebas se hacen dentro de funciones para que `v` se evalúe
+// secuencialmente (en el nivel superior, `let` se inicializa estáticamente
+// antes de que se ejecuten las asignaciones de `main`).
+function checkString(v: string | number): void {
+  if (v instanceof string) print(&quot;string&quot;); else print(&quot;number&quot;);
+}
+function checkNumber(v: string | number): void {
+  if (v instanceof number) print(&quot;number&quot;); else print(&quot;string&quot;);
+}
+function checkClass(): void {
+  // `instanceof` sobre un tipo que no es unión: el codegen emite `true`
+  // porque etsc no tiene herencia dinámica.
+  let x: number = 42;
+  if (x instanceof number) print(&quot;number-class&quot;); else print(&quot;other&quot;);
+}
+
+let v: string | number = &quot;hi&quot;;
+checkString(v);   // string
+v = 42;
+checkNumber(v);   // number
+checkClass();      // number-class
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">string
+number
+number-class
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-json-y-strings">
+  <h2><span class="icon">📝</span> JSON y strings <span class="count">2/2</span></h2>
+  <article class="demo">
+  <header>
+    <h3>json-tree-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// json-tree-demo.ets — Bloque 7: JSON.parse con árboles dinámicos.
+//
+// `JSON.parseValue(s)` devuelve un `JsonValue`, un tipo opaco (variant) que
+// puede contener string/number/boolean/null/array/object. El dialecto
+// no tiene `Object`/`any`/`unknown`, así que el acceso a campos se hace
+// a través de funciones helper globales: `jsonIsString(v)`,
+// `jsonObjectGet(v, &quot;key&quot;)`, `jsonArrayGet(v, i)`, etc.
+//
+// Limitaciones del runtime:
+//   - Las variables top-level no pueden llamar a `JSON.parse` durante la
+//     inicialización estática (C++ static init order es indefinido). Se
+//     deben asignar dentro del cuerpo de funciones que se llamen desde
+//     `main`. Aquí usamos una función helper para evitar el problema.
+
+// Helper: dado un JSON object, imprime el valor asociado a `key`.
+function printIfString(v: JsonValue, key: string): void {
+  if (jsonIsObject(v)) {
+    const field: JsonValue = jsonObjectGet(v, key);
+    if (jsonIsString(field)) {
+      print(jsonAsString(field));
+    }
+  }
+}
+
+// Helper: imprime la longitud de un array si lo es.
+function printArrayLen(v: JsonValue): void {
+  if (jsonIsArray(v)) {
+    print(jsonArrayLength(v));
+  }
+}
+
+// Parsear un objeto con campos primitivos.
+function demoObject(): void {
+  const src: string = '{&quot;name&quot;: &quot;alice&quot;, &quot;age&quot;: 30, &quot;active&quot;: true}';
+  const v: JsonValue = JSON.parseValue(src);
+  printIfString(v, &quot;name&quot;);
+  const age: JsonValue = jsonObjectGet(v, &quot;age&quot;);
+  if (jsonIsNumber(age)) {
+    print(jsonAsNumber(age));
+  }
+}
+
+// Parsear un array.
+function demoArray(): void {
+  const src: string = '[&quot;a&quot;, &quot;b&quot;, &quot;c&quot;]';
+  const v: JsonValue = JSON.parseValue(src);
+  printArrayLen(v);
+  const first: JsonValue = jsonArrayGet(v, 0);
+  if (jsonIsString(first)) {
+    print(jsonAsString(first));
+  }
+}
+
+// JSON anidado (array dentro de object).
+function demoNested(): void {
+  const src: string = '{&quot;tags&quot;: [&quot;admin&quot;, &quot;user&quot;], &quot;data&quot;: 42}';
+  const v: JsonValue = JSON.parseValue(src);
+  const tags: JsonValue = jsonObjectGet(v, &quot;tags&quot;);
+  printArrayLen(tags);
+  const data: JsonValue = jsonObjectGet(v, &quot;data&quot;);
+  if (jsonIsNumber(data)) {
+    print(jsonAsNumber(data));
+  }
+}
+
+demoObject();
+demoArray();
+demoNested();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">alice
+30
+3
+a
+2
+42
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>template-strings-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de template strings (interpolación): sintaxis `` `texto ${expr} texto` ``.
+// Las expresiones se evalúan en su scope y se serializan vía `ets::concat` (que
+// usa `operator&lt;&lt;` para que números/booleanos se conviertan automáticamente).
+
+function greet(name: string, age: number): string {
+  return `Hola ${name}, tienes ${age} años`;
+}
+
+function demo(): void {
+  const name: string = &quot;Mundo&quot;;
+  const count: number = 42;
+  const flag: boolean = true;
+
+  // Mezcla de tipos primitivos.
+  console.log(`Hola ${name}, count=${count}, flag=${flag}`);
+
+  // Expresiones más complejas dentro del template.
+  console.log(`Suma: ${count + 8}`);
+  console.log(`Doble: ${count * 2}`);
+
+  // Anidamiento: un template dentro de otro.
+  const inner: string = `soy ${name}`;
+  console.log(`Anidado: ${inner}`);
+
+  // Función que retorna un template.
+  console.log(greet(&quot;Ana&quot;, 30));
+
+  // Template sin interpolación (parte literal pura).
+  console.log(`Literal puro`);
+}
+
+demo();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Hola Mundo, count=42, flag=1
+Suma: 50
+Doble: 84
+Anidado: soy Mundo
+Hola Ana, tienes 30 años
+Literal puro
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-tipos-nullish-fase-1-">
+  <h2><span class="icon">❓</span> Tipos nullish (Fase 1) <span class="count">4/4</span></h2>
+  <article class="demo">
+  <header>
+    <h3>optional-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// optional-demo.ets — Fase 1.2: `Optional&lt;T&gt;` runtime + dialecto.
+//
+// `Optional&lt;T&gt;` es el envoltorio de `std::optional&lt;T&gt;` con API ergonómica
+// (isPresent, valueOr, map, andThen, orElse). Reemplaza el &quot;ausente&quot; del
+// dialecto sin reintroducir null/undefined.
+//
+// API expuesta (como funciones libres porque el dialecto aún no soporta
+// métodos sobre tipos genéricos como `Optional&lt;T&gt;`):
+//
+//   optionalSome(value)    → Optional&lt;T&gt;
+//   optionalNone&lt;T&gt;()      → Optional&lt;T&gt;
+//   optionalIsPresent(opt) → boolean
+//   optionalValueOr(opt, defaultValue) → T
+//   optionalMap(opt, f)    → Optional&lt;U&gt;
+//   optionalAndThen(opt, f) → Optional&lt;U&gt;
+//   optionalOrElse(opt, other) → Optional&lt;T&gt;
+
+// Helper que demuestra `some`/`none`/`valueOr`.
+function findFirstPositive(arr: number[]): Optional&lt;number&gt; {
+  let result: Optional&lt;number&gt; = optionalNone&lt;number&gt;();
+  for (const x of arr) {
+    if (optionalIsPresent(result)) break;
+    if (x &gt; 0) result = optionalSome(x);
+  }
+  return result;
+}
+
+const positives: number[] = [10, 20, 30];
+const found: Optional&lt;number&gt; = findFirstPositive(positives);
+print(optionalValueOr(found, -1));            // 10
+
+const allNegative: number[] = [-1, -2, -3];
+const notFound: Optional&lt;number&gt; = findFirstPositive(allNegative);
+print(optionalValueOr(notFound, -1));        // -1 (default)
+
+// `optionalMap`: si presente, transforma; si no, sigue siendo None.
+const doubled: Optional&lt;number&gt; = optionalMap(found, (n: number): number =&gt; n * 2);
+print(optionalValueOr(doubled, 0));          // 20
+
+const doubledEmpty: Optional&lt;number&gt; = optionalMap(notFound, (n: number): number =&gt; n * 2);
+print(optionalValueOr(doubledEmpty, 0));     // 0 (default)
+print(optionalIsPresent(doubledEmpty));      // false (0)
+
+// `optionalAndThen`: encadena operaciones que devuelven Optional.
+function safeDivide(a: number, b: number): Optional&lt;number&gt; {
+  if (b == 0) return optionalNone&lt;number&gt;();
+  return optionalSome(a / b);
+}
+
+const chain: Optional&lt;number&gt; = optionalAndThen(found, (n: number): Optional&lt;number&gt; =&gt; safeDivide(n, 2));
+print(optionalValueOr(chain, -1));           // 5
+
+const chainEmpty: Optional&lt;number&gt; = optionalAndThen(notFound, (n: number): Optional&lt;number&gt; =&gt; safeDivide(n, 2));
+print(optionalValueOr(chainEmpty, -1));      // -1
+
+// `optionalOrElse`: si vacío, devuelve otro Optional.
+const fallback: Optional&lt;number&gt; = optionalOrElse(notFound, optionalSome(0));
+print(optionalValueOr(fallback, -1));        // 0
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">10
+-1
+20
+0
+0
+5
+-1
+0
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>nullish-coalescing-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// nullish-coalescing-demo.ets — Fase 1.3: operador `??` sobre Optional&lt;T&gt;.
+//
+// `expr ?? default` devuelve `default` cuando `expr` es `Optional&lt;T&gt;` vacío,
+// o el valor desempaquetado cuando tiene contenido. Es syntactic sugar
+// sobre `optionalValueOr(expr, default)` con type-check de que el LHS
+// es `Optional&lt;T&gt;` y el default es de tipo `T`.
+
+function findPositive(arr: number[]): Optional&lt;number&gt; {
+  let result: Optional&lt;number&gt; = optionalNone&lt;number&gt;();
+  for (const x of arr) {
+    if (optionalIsPresent(result)) break;
+    if (x &gt; 0) result = optionalSome(x);
+  }
+  return result;
+}
+
+// Caso 1: presente.
+const positives: number[] = [10, 20, 30];
+print(findPositive(positives) ?? -1);     // 10
+
+// Caso 2: ausente, usa el default.
+const allNegative: number[] = [-1, -2, -3];
+print(findPositive(allNegative) ?? -1);  // -1
+
+// Caso 3: con strings.
+function firstNonEmpty(arr: string[]): Optional&lt;string&gt; {
+  let result: Optional&lt;string&gt; = optionalNone&lt;string&gt;();
+  for (const s of arr) {
+    if (optionalIsPresent(result)) break;
+    if (length(s) &gt; 0) result = optionalSome(s);
+  }
+  return result;
+}
+const tags: string[] = [];
+print(firstNonEmpty(tags) ?? &quot;(none)&quot;);          // (none)
+const names: string[] = [&quot;alice&quot;, &quot;bob&quot;];
+print(firstNonEmpty(names) ?? &quot;(none)&quot;);         // alice
+
+// Caso 4: encadenado con map.
+const value: Optional&lt;number&gt; = findPositive([5]);
+print(optionalMap(value, (n: number): number =&gt; n * 2) ?? 0);  // 10
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">10
+-1
+(none)
+alice
+10
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>optional-chaining-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// optional-chaining-demo.ets — Fase 1.4: operador `?.` sobre Optional&lt;T&gt;.
+//
+// `obj?.field` desazucara a `optionalAndThen(obj, e =&gt; optionalSome(e.field))`.
+// Si `obj` es `Optional&lt;T&gt;` con T que tiene `field`, el resultado es
+// `Optional&lt;typeof field&gt;`. Encadenable con `??` para defaults.
+
+class Box { value: number; }
+
+function maybeBox(b: boolean): Optional&lt;Box&gt; {
+  if (b) return optionalSome&lt;Box&gt;(new Box(42));
+  return optionalNone&lt;Box&gt;();
+}
+
+// Caso 1: presente.
+const present: Optional&lt;Box&gt; = maybeBox(true);
+const v1: Optional&lt;number&gt; = present?.value;
+print(v1 ?? -1);     // 42
+
+// Caso 2: ausente, usa el default.
+const absent: Optional&lt;Box&gt; = maybeBox(false);
+const v2: Optional&lt;number&gt; = absent?.value;
+print(v2 ?? -1);     // -1
+
+// Encadenado: Optional&lt;Box&gt; -&gt; Optional&lt;number&gt; -&gt; number.
+const chained: Optional&lt;number&gt; = maybeBox(true)?.value;
+print(chained ?? -1);   // 42
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">42
+-1
+42
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>optional-parameter-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// optional-parameter-demo.ets — Fase 1.6: parámetros opcionales con `?`.
+//
+// `name?: T` se traduce a `Optional&lt;T&gt;` automáticamente: el parámetro
+// tiene tipo `Optional&lt;T&gt;` en el cuerpo (igual que si el user escribiera
+// `Optional&lt;T&gt;` directamente, sin doble envoltorio). En el call site,
+// omitir el argumento lo rellena con `Optional&lt;T&gt;::none()`.
+//
+// Encadenable con `??` para obtener el valor por defecto.
+
+function greet(name: string, nickname?: string): string {
+  const prefix = nickname ?? &quot;(anon)&quot;;
+  return &quot;hello &quot; + prefix + &quot; (&quot; + name + &quot;)&quot;;
+}
+
+print(greet(&quot;alice&quot;));           // hello (anon) (alice)
+print(greet(&quot;bob&quot;, &quot;bobby&quot;));    // hello bobby (bob)
+
+// `Optional&lt;T&gt;` explícito no se doble-envuelve.
+function greetExplicit(name: string, nickname?: Optional&lt;string&gt;): string {
+  const prefix = nickname ?? &quot;(anon)&quot;;
+  return &quot;hi &quot; + prefix + &quot; &quot; + name;
+}
+
+print(greetExplicit(&quot;carl&quot;));                        // hi (anon) carl
+print(greetExplicit(&quot;dora&quot;, optionalSome(&quot;D&quot;)));     // hi D dora
+
+// Tres opcionales: omitir los tres usa defaults.
+function config(host: string, port?: number, tls?: boolean): string {
+  const p = port ?? 80;
+  const t = tls ?? false;
+  return host + &quot;:&quot; + numberToString(p) + (t ? &quot;/tls&quot; : &quot;&quot;);
+}
+
+print(config(&quot;api.example.com&quot;));                          // api.example.com:80
+print(config(&quot;api.example.com&quot;, 443));                     // api.example.com:443
+print(config(&quot;api.example.com&quot;, 443, true));               // api.example.com:443/tls
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">hello (anon) (alice)
+hello bobby (bob)
+hi (anon) carl
+hi D dora
+api.example.com:80
+api.example.com:443
+api.example.com:443/tls
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-decoradores-fase-1-">
+  <h2><span class="icon">🎨</span> Decoradores (Fase 1) <span class="count">1/1</span></h2>
+  <article class="demo">
+  <header>
+    <h3>decorator-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// decorator-demo.ets — Fase 1.5: decoradores (@deprecated).
+//
+// Los decoradores son syntactic sugar ejecutado en compile-time. El dialecto
+// reconoce decoradores de clase, de campo y de método. Solo `@deprecated`
+// tiene semántica: cuando se aplica a un método, el método emite un warning
+// a stderr en cada llamada. Otros decoradores como `@sealed` son admitidos
+// pero no producen efecto runtime (reservan el mecanismo para Fase 3).
+//
+// `@deprecated(&quot;msg&quot;)` toma un mensaje opcional. Sin mensaje, se usa &quot;deprecated&quot;.
+
+@sealed
+class Widget {
+  size: number;
+  constructor(s: number) { this.size = s; }
+
+  // Deprecated con mensaje.
+  @deprecated(&quot;use size field instead&quot;)
+  getOldSize(): number { return this.size; }
+
+  // Deprecated sin mensaje (default).
+  @deprecated
+  doNothing(): void { }
+}
+
+const w = new Widget(42);
+print(w.size);              // 42 (sin warning, no es deprecated)
+print(w.getOldSize());      // 42 (warning a stderr)
+w.doNothing();              // sin stdout (void), warning a stderr
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">42
+42
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-m-dulos-fase-1-">
+  <h2><span class="icon">📦</span> Módulos (Fase 1) <span class="count">1/1</span></h2>
+  <article class="demo">
+  <header>
+    <h3>exports-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// exports-demo.ets — Fase 1.15: `export default` y `export { name as alias }`.
+//
+// El dialecto es single-translation-unit, así que `export` no genera
+// dispatch runtime: las declaraciones se procesan como top-level normales.
+// El AST registra las marcas para tooling (linters, formatters, bundlers).
+// En runtime, todo está en el mismo translation unit y los símbolos son
+// accesibles directamente.
+
+// `export const`: la variable se declara sin `static` (visible global).
+export const PI: number = 3.14159;
+export const E: number = 2.71828;
+
+// `export function`: igual que una function top-level pero marcada como pública.
+export function square(x: number): number { return x * x; }
+
+// `export default function`: la función se publica como default. En runtime
+// el dialecto la procesa como una function normal; el codegen emite un
+// marcador `// export default:` antes de la declaración.
+export default function greet(name: string): string {
+  return &quot;hello &quot; + name;
+}
+
+// `export { name }`: re-exporta bindings ya declarados arriba. El alias
+// `as &lt;alias&gt;` se registra en el scope del type-checker para que pueda
+// usarse como nombre local (es un atajo al símbolo original).
+export { PI as PI_RENAMED, E };
+export { square as squareFn };
+
+// Las funciones y variables exportadas se pueden usar normalmente en runtime.
+print(PI);
+print(E);
+print(square(5));
+print(greet(&quot;alice&quot;));
+print(PI_RENAMED);
+print(squareFn(7));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">3.14159
+2.71828
+25
+hello alice
+3.14159
+49
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-i-o-nativo">
+  <h2><span class="icon">💾</span> I/O nativo <span class="count">2/5</span></h2>
+  <article class="demo">
+  <header>
+    <h3>native-io</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">let error: string = &quot;&quot;;
+const source: string = argument(1);
+const copy: string = source + &quot;.copy&quot;;
+const moved: string = source + &quot;.moved&quot;;
+
+if (writeFile(source, &quot;hello&quot;, error) == false) {
+  printError(error);
+} else {
+  if (appendFile(source, &quot; native&quot;, error) == false) {
+    printError(error);
+  }
+}
+
+let contents: string = &quot;&quot;;
+if (readFile(source, contents, error)) {
+  write(&quot;Contenido: &quot;);
+  print(contents);
+}
+
+if (copyFile(source, copy, error) &amp;&amp; moveFile(copy, moved, error)) {
+  print(&quot;Movido: &quot;, fileExists(moved));
+}
+
+if (removeFile(source, error) == false) { printError(error); }
+if (removeFile(moved, error) == false) { printError(error); }
+
+if (fail(&quot;error controlado&quot;, error) == false &amp;&amp; hasError(error)) {
+  writeError(&quot;Diagnóstico: &quot;);
+  printError(error);
+}
+clearError(error);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>fs-demo</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo del API estilo Node expuesta como built-in `fs` en Estatic.
+// (Sin `async function main` porque el `int main` de C++ no puede ser corutina;
+//  el codegen traduce `await` a top-level a `ets::syncWait`.)
+
+// --- Sync ---------------------------------------------------------------
+if (fs.existsSync(&quot;/tmp/fs-demo.txt&quot;)) {
+  const removed: Result&lt;boolean&gt; = fs.unlinkSync(&quot;/tmp/fs-demo.txt&quot;);
+  if (removed.isOk() == false) { console.error(&quot;unlink previo falló:&quot;, removed.error()); }
+}
+const written: Result&lt;boolean&gt; = fs.writeFileSync(&quot;/tmp/fs-demo.txt&quot;, &quot;hola fs\n&quot;);
+if (written.isOk() == false) { console.error(&quot;write falló:&quot;, written.error()); }
+console.log(&quot;escrito OK&quot;);
+
+const contents: Result&lt;string&gt; = fs.readFileSync(&quot;/tmp/fs-demo.txt&quot;);
+if (contents.isOk() == false) { console.error(&quot;read falló:&quot;, contents.error()); }
+console.log(&quot;leído sync:&quot;, contents.value());
+
+// --- Async --------------------------------------------------------------
+const asyncRead: Promise&lt;Result&lt;string&gt;&gt; = fs.readFile(&quot;/tmp/fs-demo.txt&quot;);
+const asyncResult: Result&lt;string&gt; = await asyncRead;
+if (asyncResult.isOk() == false) { console.error(&quot;async read falló:&quot;, asyncResult.error()); }
+console.log(&quot;leído async:&quot;, asyncResult.value());
+
+const removed: Result&lt;boolean&gt; = fs.unlinkSync(&quot;/tmp/fs-demo.txt&quot;);
+if (removed.isOk() == false) { console.error(&quot;unlink falló:&quot;, removed.error()); }
+console.log(&quot;borrado OK&quot;);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>result-files</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">function safeDivide(left: number, right: number): Result&lt;number&gt; {
+  if (right == 0) {
+    return err&lt;number&gt;(&quot;division by zero&quot;);
+  }
+  return ok(left / right);
+}
+
+const path: string = argument(1);
+const copy: string = path + &quot;.copy&quot;;
+
+const written: Result&lt;boolean&gt; = writeFile(path, &quot;hello&quot;);
+if (written.isOk() == false) {
+  printError(written.error());
+}
+
+const appended: Result&lt;boolean&gt; = appendFile(path, &quot; Result&quot;);
+if (appended.isOk() == false) {
+  printError(appended.error());
+}
+
+const contents: Result&lt;string&gt; = readFile(path);
+if (contents.isOk()) {
+  print(contents.value());
+} else {
+  printError(contents.error());
+}
+
+const copied: Result&lt;boolean&gt; = copyFile(path, copy);
+if (copied.isOk() == false) {
+  printError(copied.error());
+}
+
+const calculation: Result&lt;number&gt; = safeDivide(84, 2);
+if (calculation.isOk()) {
+  print(calculation.value());
+}
+
+const removedOriginal: Result&lt;boolean&gt; = removeFile(path);
+const removedCopy: Result&lt;boolean&gt; = removeFile(copy);
+if (removedOriginal.isOk() == false) { printError(removedOriginal.error()); }
+if (removedCopy.isOk() == false) { printError(removedCopy.error()); }
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>node-api-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo de los built-ins estilo Node añadidos tras console y fs.
+
+console.log(&quot;--- path ---&quot;);
+console.log(&quot;dirname('/tmp/a/b.txt') =&quot;, path.dirname(&quot;/tmp/a/b.txt&quot;));
+console.log(&quot;basename('/tmp/a/b.txt') =&quot;, path.basename(&quot;/tmp/a/b.txt&quot;));
+console.log(&quot;extname('/tmp/a/b.txt') =&quot;, path.extname(&quot;/tmp/a/b.txt&quot;));
+console.log(&quot;isAbsolute('/tmp/a') =&quot;, path.isAbsolute(&quot;/tmp/a&quot;));
+console.log(&quot;isAbsolute('relativo') =&quot;, path.isAbsolute(&quot;relativo&quot;));
+console.log(&quot;normalize('/tmp/a/../b//c') =&quot;, path.normalize(&quot;/tmp/a/../b//c&quot;));
+console.log(&quot;join(['/tmp','a','b','c.txt']) =&quot;, path.join([&quot;/tmp&quot;, &quot;a&quot;, &quot;b&quot;, &quot;c.txt&quot;]));
+console.log(&quot;resolve(['.','build','app']) =&quot;, path.resolve([&quot;.&quot;, &quot;build&quot;, &quot;app&quot;]));
+
+console.log(&quot;--- process ---&quot;);
+console.log(&quot;argc =&quot;, process.argc());
+const args: string[] = process.argv();
+console.log(&quot;argv length =&quot;, length(args));
+if (length(args) &gt; 0) console.log(&quot;argv[0] =&quot;, args[0]);
+console.log(&quot;cwd =&quot;, process.cwd());
+
+console.log(&quot;--- JSON ---&quot;);
+const escaped: string = JSON.stringify(&quot;hola\nmundo\t\&quot;!\&quot;&quot;);
+console.log(&quot;stringify =&quot;, escaped);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">--- path ---
+dirname('/tmp/a/b.txt') =/tmp/a
+basename('/tmp/a/b.txt') =b.txt
+extname('/tmp/a/b.txt') =.txt
+isAbsolute('/tmp/a') =1
+isAbsolute('relativo') =0
+normalize('/tmp/a/../b//c') =/tmp/b/c
+join(['/tmp','a','b','c.txt']) =/tmp/a/b/c.txt
+resolve(['.','build','app']) =/root/Ts2cpp/test/scratch/build/app
+--- process ---
+argc =1
+argv length =0
+cwd =/root/Ts2cpp/test/scratch
+--- JSON ---
+stringify =&quot;hola\nmundo\t\&quot;!\&quot;&quot;
+</pre>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>console-demo</h3>
+    <span class="badge ok" title="Tiene golden file">✓ output</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">// Demo del API estilo Node expuesta como built-in en Estatic.
+console.log(&quot;Hola desde console.log&quot;);
+console.info(&quot;Info:&quot;, 42, true);
+console.debug(&quot;Debug en stderr? No, stdout:&quot;, 1 + 1);
+console.warn(&quot;Esto sale por stderr&quot;);
+console.error(&quot;Error grave:&quot;, &quot;fallo X&quot;);
+console.log(&quot;Mezclando tipos:&quot;, &quot;texto&quot;, 99, false);
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <pre class="output" aria-label="Salida del programa">Hola desde console.log
+Info:421
+Debug en stderr? No, stdout:2
+Mezclando tipos:texto990
+</pre>
+  </details>
+</article>
+</section>
+<section class="category" id="cat-red-y-tls">
+  <h2><span class="icon">🌐</span> Red y TLS <span class="count">0/2</span></h2>
+  <article class="demo">
+  <header>
+    <h3>http-server</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">async function handleClient(connection: TcpConnection): Promise&lt;void&gt; {
+  const request: Result&lt;string&gt; = await readTcp(connection, 16384);
+  if (request.isOk()) {
+    const body: string = &quot;Hello from Estatic TS&quot;;
+    const response: string = &quot;HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: &quot; + numberToString(length(body)) + &quot;\r\nConnection: close\r\n\r\n&quot; + body;
+    const written: Result&lt;number&gt; = await writeTcp(connection, response);
+    if (written.isOk() == false) { printError(written.error()); }
+  } else {
+    printError(request.error());
+  }
+  closeTcp(connection);
+  return;
+}
+
+async function serve(): Promise&lt;void&gt; {
+  const opened: Result&lt;TcpListener&gt; = listenTcp(&quot;0.0.0.0&quot;, 8080);
+  if (opened.isOk() == false) {
+    printError(opened.error());
+    return;
+  }
+  const listener: TcpListener = opened.value();
+  print(&quot;Listening on http://127.0.0.1:8080&quot;);
+  while (true) {
+    const accepted: Result&lt;TcpConnection&gt; = await acceptTcp(listener);
+    if (accepted.isOk()) {
+      spawn(handleClient(accepted.value()));
+    } else {
+      printError(accepted.error());
+    }
+  }
+}
+
+await serve();
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+<article class="demo">
+  <header>
+    <h3>tls-server</h3>
+    <span class="badge warn" title="Sin golden file">⚠ sin golden</span>
+  </header>
+  <details>
+    <summary>Ver código fuente</summary>
+    <pre class="source" aria-label="Código fuente">async function secureServer(certificate: string, privateKey: string): Promise&lt;void&gt; {
+  const contextResult: Result&lt;TlsContext&gt; = createTlsServer(certificate, privateKey);
+  if (contextResult.isOk() == false) { printError(contextResult.error()); return; }
+  const opened: Result&lt;TcpListener&gt; = listenTcp(&quot;127.0.0.1&quot;, 34443);
+  if (opened.isOk() == false) { printError(opened.error()); return; }
+  const source: CancellationSource = createCancellation();
+  const listener: TcpListener = opened.value();
+  print(&quot;READY&quot;);
+  const accepted: Result&lt;TlsConnection&gt; = await acceptTls(listener, contextResult.value(), 5000, cancellationToken(source));
+  if (accepted.isOk()) {
+    const connection: TlsConnection = accepted.value();
+    const request: Result&lt;string&gt; = await readTls(connection, 4096, 5000, cancellationToken(source));
+    if (request.isOk()) {
+      const response: Result&lt;number&gt; = await writeTls(connection, &quot;secure:&quot; + request.value(), 5000, cancellationToken(source));
+      if (response.isOk() == false) { printError(response.error()); }
+    }
+    closeTls(connection);
+  } else { printError(accepted.error()); }
+  closeTcp(listener);
+  return;
+}
+
+await secureServer(argument(1), argument(2));
+</pre>
+  </details>
+  <details open>
+    <summary>Salida del programa</summary>
+    <p class="no-output">Sin golden file (ejemplo abre puertos de red o sale con código no verificable).</p>
+  </details>
+</article>
+</section>
+</main>
+<footer>
+  Generado automáticamente por <code>scripts/build-demo-page.ts</code> · <a href="./">Volver al repo</a>
+</footer>
+</body>
+</html>

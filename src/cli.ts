@@ -56,14 +56,13 @@ async function command(executable: string, commandArgs: string[], logger?: Build
 
 const nativeBuild = !!config && (config.compiler.enabled || args.includes("--build"));
 const incrementalBuild = !!config?.incremental.enabled && nativeBuild && !args.includes("--unity");
+const verbose = args.includes("--verbose") || args.includes("-v");
 const logger = incrementalBuild ? undefined : await BuildLogger.create(config);
 try {
   if (incrementalBuild) {
-    const result = await buildIncremental(config, compilerRoot);
-    for (const module of result.compiled) console.log(`Compilado módulo ${module}`);
-    for (const module of result.reused) console.log(`Reutilizado módulo ${module}`);
-    console.log(result.linked ? `Enlazado ${result.binary}` : `Enlace reutilizado ${result.binary}`);
-    console.log(`Cabecera común ${result.header}`);
+    const result = await buildIncremental(config, compilerRoot, { verbose });
+    console.log(`Build incremental (${result.cacheResult}): ${result.compiled.length} módulo(s) compilado(s), ${result.reused.length} reutilizado(s)${result.linked ? ", re-enlazado" : ""}, ${result.durationMs}ms`);
+    if (!verbose) for (const module of result.compiled) console.log(`  Compilado módulo ${module}`);
     process.exit(0);
   }
   await logger?.record("info", "transpile", "started", { input, output, unity: true });
@@ -76,7 +75,10 @@ try {
     await mkdir(dirname(config.output.binary), { recursive: true });
     const tlsLibraries = result.cpp.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
     const libraries = config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`);
-    await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, output, "-o", config.output.binary, ...libraries, ...tlsLibraries, ...config.compiler.linkFlags], logger);
+    // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
+    // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
+    // el objeto para resolver símbolos externos en las libs.
+    await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...libraries, ...tlsLibraries], logger);
     console.log(`Compilado ${config.output.binary}`);
   }
   await logger?.record("info", "transpile", "finished", { output, binary: nativeBuild ? config?.output.binary : undefined });
@@ -85,7 +87,8 @@ try {
   await logger?.error("transpile", error); await logger?.flush();
   if (error instanceof DiagnosticError) {
     const source = await readFile(input, "utf8").catch(() => "");
-    console.error(error.diagnostics.map(d => formatDiagnostic(input, source, d)).join("\n\n"));
+    const { formatDiagnostics } = await import("./core/diagnostic.ts");
+    console.error(formatDiagnostics(input, source, error.diagnostics));
   } else console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }
