@@ -56,14 +56,13 @@ async function command(executable: string, commandArgs: string[], logger?: Build
 
 const nativeBuild = !!config && (config.compiler.enabled || args.includes("--build"));
 const incrementalBuild = !!config?.incremental.enabled && nativeBuild && !args.includes("--unity");
+const verbose = args.includes("--verbose") || args.includes("-v");
 const logger = incrementalBuild ? undefined : await BuildLogger.create(config);
 try {
   if (incrementalBuild) {
-    const result = await buildIncremental(config, compilerRoot);
-    for (const module of result.compiled) console.log(`Compilado módulo ${module}`);
-    for (const module of result.reused) console.log(`Reutilizado módulo ${module}`);
-    console.log(result.linked ? `Enlazado ${result.binary}` : `Enlace reutilizado ${result.binary}`);
-    console.log(`Cabecera común ${result.header}`);
+    const result = await buildIncremental(config, compilerRoot, { verbose });
+    console.log(`Build incremental (${result.cacheResult}): ${result.compiled.length} módulo(s) compilado(s), ${result.reused.length} reutilizado(s)${result.linked ? ", re-enlazado" : ""}, ${result.durationMs}ms`);
+    if (!verbose) for (const module of result.compiled) console.log(`  Compilado módulo ${module}`);
     process.exit(0);
   }
   await logger?.record("info", "transpile", "started", { input, output, unity: true });
