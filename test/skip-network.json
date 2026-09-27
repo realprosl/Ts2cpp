@@ -1,0 +1,12 @@
+{
+  "_comment": "Ejemplos que NO se ejecutan en el harness de tests: solo se verifica que transpilen, compilen y enlacen sin errores. Toman rutas del usuario, escriben en /tmp/ o abren puertos TCP/TLS, por lo que no pueden correr de forma determinista.",
+  "skip": [
+    "async-files",
+    "cancellation",
+    "fs-demo",
+    "http-server",
+    "native-io",
+    "result-files",
+    "tls-server"
+  ]
+}
