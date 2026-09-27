@@ -96,6 +96,21 @@ const OPTIONAL_HELPERS: Record<string, { minParams: number; returnsGeneric: bool
   optionalOrElse: { minParams: 2, returnsGeneric: true },      // (Optional<T>, Optional<T>) → Optional<T>
 });
 
+// Helpers sobre `Task<T>[]` (Promise-like arrays). El dialecto expone
+// `all(tasks)` y `race(tasks)` que devuelven el T del array (o `T[]` para
+// `all`). Se modelan con un tipo contextual: el user declara `const x: T =
+// race([delay(1), delay(2)])` y el helper propaga `T` desde el array.
+const ASYNC_HELPERS: Record<string, { returnsElement: boolean; returnsArray: boolean }> = Object.assign(Object.create(null), {
+  all: { returnsElement: false, returnsArray: true },
+  race: { returnsElement: true, returnsArray: false },
+});
+
+// `sleep` y `spawn` ya están registradas en runtime como funciones top-level.
+const ASYNC_PRIMITIVE_HELPERS: Record<string, { params: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  sleep: { params: ["number"], returnType: "Promise<void>" },
+  spawn: { params: ["Promise<void>"], returnType: "void" },
+});
+
 // Bloque E: tabla de métodos de `Math`. Todos reciben y devuelven `number`
 // (mapeado a `double` en C++). Las funciones que en JavaScript aceptan
 // número variable de argumentos (`Math.max(...args)`) se limitan a dos
@@ -1082,12 +1097,24 @@ export class TypeChecker {
         break;
       }
       case "CallExpression": {
-        if (JSON_HELPERS[node.callee]) {
-          const signature = JSON_HELPERS[node.callee];
-          if (!signature || !signature.params) { result = "void"; node.args.forEach(a => this.expression(a, scope)); break; }
+        if (ASYNC_PRIMITIVE_HELPERS[node.callee]) {
+          const signature = ASYNC_PRIMITIVE_HELPERS[node.callee];
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
           node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
           result = signature.returnType; break;
+        }
+        if (ASYNC_HELPERS[node.callee]) {
+          const helper = ASYNC_HELPERS[node.callee];
+          if (node.args.length !== 1) this.report(node, `'${node.callee}' espera 1 argumento, recibió ${node.args.length}`);
+          const argType = node.args[0] ? this.expression(node.args[0], scope) : "void";
+          if (!isArrayType(argType) || !isGenericType(arrayElement(argType)) || genericBase(arrayElement(argType)) !== "Promise") {
+            this.report(node.args[0] ?? node, `'${node.callee}' requiere un array de Promise<T> (Task<T>[])`);
+            result = "void"; break;
+          }
+          const elementType = genericArguments(arrayElement(argType))[0] ?? "unknown";
+          if (helper.returnsArray) result = arrayType(elementType);
+          else result = elementType;
+          break;
         }
         if (OPTIONAL_HELPERS[node.callee]) {
           const helper = OPTIONAL_HELPERS[node.callee];
@@ -1145,6 +1172,13 @@ export class TypeChecker {
           }
           if (result === undefined) { result = "void"; node.args.forEach(arg => this.expression(arg, scope)); }
           break;
+        }
+        if (JSON_HELPERS[node.callee]) {
+          const signature = JSON_HELPERS[node.callee];
+          if (!signature || !signature.params) { result = "void"; node.args.forEach(a => this.expression(a, scope)); break; }
+          if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
+          node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
+          result = signature.returnType; break;
         }
         const symbol = scope.resolve(node.callee);
         if (!symbol) { this.report(node, `Función no definida '${node.callee}'`, this.suggestSimilar(node.callee, scope.names())); node.args.forEach(a => this.expression(a, scope)); break; }

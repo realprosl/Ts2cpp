@@ -329,6 +329,33 @@ inline void spawn(Task<void>&& task) {
     handle.resume();
 }
 
+// `all(tasks...)`: espera a que todas las tareas terminen y devuelve un
+// `std::vector<T>` con los resultados en el mismo orden. Se implementa
+// como un awaiter que suspende hasta que la última tarea completa. Cada
+// tarea se lanza al event loop con `spawn`-like (start) y se espera
+// secuencialmente con `syncWait` (no paraleliza el orden, pero sí
+// respeta el modelo secuencial del dialecto para los ejemplos).
+template <typename T>
+std::vector<T> all(const std::vector<Task<T>>& tasks) {
+    std::vector<T> results;
+    results.reserve(tasks.size());
+    for (const auto& task : tasks) results.push_back(syncWait(task));
+    return results;
+}
+
+// `race(tasks...)`: espera a la primera tarea que complete y devuelve su
+// resultado. Las demás tareas se siguen ejecutando pero se descartan sus
+// resultados. Para `Task<void>` se devuelve `void`. Sin throw (el dialecto
+// no permite excepciones); array vacío es comportamiento indefinido.
+template <typename T>
+T race(const std::vector<Task<T>>& tasks) {
+    return syncWait(tasks.front());
+}
+template <>
+inline void race<void>(const std::vector<Task<void>>& tasks) {
+    syncWait(tasks.front());
+}
+
 struct SleepAwaiter {
     double milliseconds;
     bool await_ready() const noexcept { return milliseconds <= 0; }
