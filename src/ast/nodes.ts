@@ -50,7 +50,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression;
+export type Expression = LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression;
 export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; raw?: string; span: Span }
 export interface IdentifierExpression { kind: "IdentifierExpression"; name: string; span: Span }
 export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: ArrayElement[]; span: Span }
@@ -61,6 +61,7 @@ export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elemen
 export type ArrayElement = Expression | SpreadElement;
 export interface SpreadElement { kind: "SpreadElement"; expression: Expression; span: Span }
 export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }
+export interface SatisfiesExpression { kind: "SatisfiesExpression"; operand: Expression; declaredType: TypeName; span: Span }
 export interface MatchArm { pattern: Expression; result: Expression; span: Span }
 export interface MatchExpression { kind: "MatchExpression"; subject: Expression; arms: MatchArm[]; span: Span }
 // `parts` y `expressions` tienen la misma longitud menos 1 (siempre hay un

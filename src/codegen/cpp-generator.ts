@@ -697,6 +697,7 @@ export class CppGenerator {
       case "AssignmentExpression": return `(${this.emitExpression(node.target)} = ${this.emitExpression(node.value)})`;
       case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
       case "MatchExpression": return this.emitMatch(node);
+      case "SatisfiesExpression": return this.emitExpression(node.operand);
       case "CallExpression": {
         const args = node.args.map(argument => {
           let text = this.emitExpression(argument);

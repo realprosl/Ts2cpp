@@ -592,7 +592,16 @@ export class Parser {
     if (this.match("await")) { const keyword = this.previous(); const operand = this.unary(); return { kind: "AwaitExpression", operand, span: span(keyword.span.start, operand.span.end) }; }
     if (this.match("typeof")) { const op = this.previous(); const operand = this.unary(); return { kind: "UnaryExpression", operator: "typeof", operand, span: span(op.span.start, operand.span.end) }; }
     if (this.match("!", "-", "+")) { const op = this.previous(); const operand = this.unary(); return { kind: "UnaryExpression", operator: op.lexeme as "!" | "-" | "+", operand, span: span(op.span.start, operand.span.end) }; }
-    return this.call();
+    const operand = this.call();
+    // `expr satisfies T` verifica que expr sea asignable a T. En el dialecto
+    // el tipo de la expresión es siempre T (no preserva el inferido porque
+    // no hay distinción inferido/declarado). Sintácticamente se permite
+    // solo después de un call (postfix).
+    if (this.match("satisfies")) {
+      const declaredType = this.typeName();
+      return { kind: "SatisfiesExpression", operand, declaredType, span: span(operand.span.start, this.peek().span.start) };
+    }
+    return operand;
   }
   private call(): Expression {
     let expr = this.primary();

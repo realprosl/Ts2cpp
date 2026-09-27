@@ -947,6 +947,15 @@ export class TypeChecker {
         result = resultType ?? "void";
         break;
       }
+      case "SatisfiesExpression": {
+        // `expr satisfies T`: type-check que expr sea asignable a T. Pasamos
+        // el tipo declarado como `expected` para que `optionalSome(value)` y
+        // helpers similares puedan propagar T desde el contexto.
+        const operandType = this.expression(node.operand, scope, node.declaredType);
+        if (!typeMatches(operandType, node.declaredType)) this.report(node, `Tipo '${operandType}' no satisface '${node.declaredType}'`);
+        result = node.declaredType;
+        break;
+      }
       case "ArrayLiteralExpression": {
         if (expected && isArrayType(expected)) {
           const element = arrayElement(expected);
