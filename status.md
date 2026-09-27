@@ -129,7 +129,35 @@
   - `docs/demos.html` (nuevo, 2587 líneas): 50 demos en 13 categorías con CSS embebido (tema oscuro Catppuccin-inspired). Cada card colapsable con código fuente (cerrado por defecto) y salida golden (abierta por defecto). TOC con anchors. Badges `✓ output` / `⚠ sin golden`.
   - `package.json`: script `demos` añadido.
   - `README.md`: enlace prominente a `docs/demos.html` con comando `npm run demos`.
-- **Próxima fase**: Consolidación — todas las fases del plan original están cerradas.
+## Última fase cerrada: Fase 3 — watch mode + SKIP_NETWORK (1+2) · commit 1cafb31
+
+- **Tests**: 130/130 PASS en 4:42
+- **Cambios**:
+  - `scripts/watch.ts` (nuevo, ~120 LOC): watch mode con debounce 100ms. Vigila recursivamente moduleRoots + directorio del entry. Filtra .ets/.ts, ignora node_modules y archivos bajo compilerRoot. Re-compila vía spawn del CLI. Output: timestamp + tiempo + ✓/✗.
+  - `test/runner.ts`: `loadSkipList()` respeta `SKIP_NETWORK=1` (devuelve todos como compile-only).
+  - `package.json`: script `watch` añadido.
+- **Uso**:
+  ```
+  npm run watch         # vigila cambios y re-compila
+  SKIP_NETWORK=1 npm test  # CI sin ejecutar demos de red
+  ```
+- **Output ejemplo**:
+  ```
+  watch: estatic.config.ts
+  resolviendo entry...
+  entry: main.ts
+  vigilando:
+    /tmp/inc-build
+  → re-compilando (4:46:07 AM)
+  Build incremental (hit): 0 módulo(s) compilado(s), 2 reutilizado(s), 38ms
+  ✓ ok en 0.41s
+  (Ctrl+C para terminar)
+  cambio: /tmp/inc-build/main.ts
+  → re-compilando (4:46:11 AM)
+  Build incremental (hit): 0 módulo(s) compilado(s), 2 reutilizado(s), 32ms
+  ✓ ok en 0.38s
+  ```
+- **Próxima fase**: Fase 3 — piezas pendientes (pre-compiled headers del runtime, PGO del compilador mismo, worker pool).
 
 ## Plan en cola
 
@@ -164,10 +192,10 @@
 
 ### Fase 3 — Compilación incremental
 
-- [ ] Caché de tokens/AST entre invocaciones (daemon que escucha en socket)
+- [x] ~~Caché de tokens/AST entre invocaciones~~ → integrado con el incremental-builder (Fase Bloque A)
 - [ ] Worker pool para compilación paralela
-- [ ] Incremental watch mode que invalide solo módulos con hash cambiado
-- [ ] Skip tests de red en CI (`SKIP_NETWORK=1`)
+- [x] Incremental watch mode que invalide solo módulos con hash cambiado → `npm run watch` (commit 1cafb31)
+- [x] Skip tests de red en CI (`SKIP_NETWORK=1`) → commit 1cafb31
 - [ ] Pre-compiled headers del runtime
 - [ ] Profile-guided optimization del compilador mismo
 
