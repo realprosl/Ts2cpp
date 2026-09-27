@@ -18,7 +18,7 @@
     "init": "node --experimental-strip-types src/cli.ts init",
     "demos": "node --experimental-strip-types scripts/build-demo-page.ts",
     "watch": "node --experimental-strip-types scripts/watch.ts",
-    "test": "node --experimental-strip-types --test test/unit/lexer.test.ts test/unit/parser.test.ts test/unit/type-checker.test.ts test/unit/codegen.test.ts test/runner.ts"
+    "test": "node --experimental-strip-types --test test/unit/lexer.test.ts test/unit/parser.test.ts test/unit/type-checker.test.ts test/unit/codegen.test.ts test/unit/docs-sync.test.ts test/runner.ts"
   },
   "engines": { "node": ">=22.6" }
 }

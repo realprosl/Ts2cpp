@@ -79,6 +79,26 @@ binario
 - **Nueva opción de config** → `project-config.ts` (`EstaticConfig` + `ResolvedConfig`)
   + sitio de uso (cli.ts/incremental-builder.ts).
 
+## Verificación de documentación
+
+`scripts/check-docs-sync.ts` cruza automáticamente el estado del código
+con `LIMITATIONS.md`. Detecta:
+
+- **Contradicciones** — el doc marca X como rechazado pero X existe como
+  nodo AST, keyword, TokenKind o ejemplo.
+- **Referencias rotas** — el doc menciona `examples/<name>.ets` pero el
+  archivo no existe.
+
+Ejecutar manualmente:
+
+```bash
+node --experimental-strip-types scripts/check-docs-sync.ts
+```
+
+El test `test/unit/docs-sync.test.ts` lo invoca automáticamente en
+`npm test`. Si añades un nodo AST o keyword nuevo, ejecuta el check
+manualmente y actualiza `LIMITATIONS.md` si reporta problemas.
+
 ## Lo que NO está aquí
 
 - Runtime C++ → `runtime/`.
