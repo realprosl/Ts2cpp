@@ -174,8 +174,11 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.once("error", () => resolvePromise({ stdout, code: -1 }));
-    // `close` en lugar de `exit`: evita perder el último chunk de stdout
-    // cuando hay concurrencia de compilación.
+    // Usamos `close` en lugar de `exit`: `close` se dispara cuando todos los
+    // streams (stdout/stderr) están cerrados Y el proceso ha liberado sus
+    // recursos, lo que evita perder el último chunk de stdout en escenarios
+    // de alta concurrencia de compilación (flake observado con 4 workers
+    // compilando ets_runtime.hpp simultáneamente).
     child.once("close", code => resolvePromise({ stdout, code: code ?? -1 }));
   });
 
