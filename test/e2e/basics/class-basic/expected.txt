@@ -1,0 +1,7 @@
+Box(42)
+value inicial = 42
+tras 2 increment = 44
+area(3x4) = 12
+width = 3
+height = 4
+Empty ok

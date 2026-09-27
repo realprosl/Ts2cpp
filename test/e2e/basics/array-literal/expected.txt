@@ -1,0 +1,12 @@
+nums[0] = 10
+nums[2] = 30
+nums[4] = 50
+length(nums) = 5
+sum = 60
+length(empty) = 0
+words[1] = dos
+length(words) = 3
+values antes = 2
+values despues = 99
+implicit[0] = 7
+length(implicit) = 3

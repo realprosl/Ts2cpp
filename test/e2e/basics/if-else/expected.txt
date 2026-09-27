@@ -1,0 +1,10 @@
+zero
+one
+two
+many
+small
+out of range
+out of range
+zero
+fine pero no ready
+fine o ready

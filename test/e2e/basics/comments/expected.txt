@@ -1,0 +1,5 @@
+primera línea
+segunda línea
+x = 7
+tercera línea
+cuarta línea
