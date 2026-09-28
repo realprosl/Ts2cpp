@@ -126,6 +126,76 @@ test("checker: rechaza uso de variable como tipo", () => {
   expectError("const x = 5; const y: x = 5;", "Tipo");
 });
 
+// V0.3: el checker anota `resolvedSignature` en FunctionDeclaration con
+// parámetros, returnType, typeParameters y flags correctos.
+test("checker: anota resolvedSignature en FunctionDeclaration", () => {
+  const { ast } = check(`
+    function add(x: number, y: number): number { return x + y; }
+  `);
+  const decl = ast.statements[0];
+  if (decl.kind !== "FunctionDeclaration") throw new Error("expected FunctionDeclaration");
+  const sig = decl.resolvedSignature!;
+  assert.ok(sig, "resolvedSignature debe estar poblado");
+  assert.equal(sig.parameters.length, 2);
+  assert.equal(sig.parameters[0]?.name, "x");
+  assert.equal(sig.parameters[0]?.type.kind, "primitive");
+  if (sig.parameters[0]?.type.kind === "primitive") {
+    assert.equal(sig.parameters[0].type.name, "number");
+  }
+  assert.equal(sig.returnType.kind, "primitive");
+  if (sig.returnType.kind === "primitive") {
+    assert.equal(sig.returnType.name, "number");
+  }
+  assert.equal(sig.async, false);
+  assert.equal(sig.typeParameters.length, 0);
+});
+
+test("checker: anota resolvedSignature en ClassMethod", () => {
+  const { ast } = check(`
+    class Counter {
+      value: number;
+      constructor(value: number) { this.value = value; }
+      bump(by: number): number { return this.value + by; }
+    }
+  `);
+  const cls = ast.statements[0];
+  if (cls.kind !== "ClassDeclaration") throw new Error("expected ClassDeclaration");
+  const bump = cls.methods.find(m => m.name === "bump");
+  assert.ok(bump, "debe haber método bump");
+  const sig = bump!.resolvedSignature;
+  assert.ok(sig);
+  assert.equal(sig.parameters.length, 1);
+  assert.equal(sig.parameters[0]?.name, "by");
+  assert.equal(sig.returnType.kind, "primitive");
+});
+
+test("checker: anota resolvedSignature en InterfaceMethod", () => {
+  const { ast } = check(`
+    interface Adder {
+      add(x: number, y: number): number;
+    }
+  `);
+  const iface = ast.statements[0];
+  if (iface.kind !== "InterfaceDeclaration") throw new Error("expected InterfaceDeclaration");
+  const add = iface.methods.find(m => m.name === "add");
+  assert.ok(add, "debe haber método add");
+  const sig = add!.resolvedSignature;
+  assert.ok(sig);
+  assert.equal(sig.parameters.length, 2);
+});
+
+test("checker: resolvedSignature detecta parámetro variádico", () => {
+  const { ast } = check(`
+    function sum(nums: number[]): number { return 0; }
+  `);
+  const decl = ast.statements[0];
+  if (decl.kind !== "FunctionDeclaration") throw new Error("expected FunctionDeclaration");
+  const sig = decl.resolvedSignature!;
+  // Array de números, no variádico.
+  assert.equal(sig.parameters[0]?.variadic, false);
+  assert.equal(sig.parameters[0]?.type.kind, "array");
+});
+
 // V0.1: el checker anota `resolvedType` directamente sobre cada Expression.
 test("checker: anota resolvedType en literales", () => {
   const { ast } = check("const x: number = 42;");

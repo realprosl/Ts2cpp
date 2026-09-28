@@ -288,6 +288,32 @@ export function resolvedTypeOf(expr: ExpressionWithResolvedType): ResolvedType {
 }
 
 /**
+ * V0.3: huella estructural de una función/método. Adjuntada a
+ * `FunctionDeclaration`, `ClassMethod`, `InterfaceMethod` y
+ * `ArrowFunctionExpression` por el semantic checker. Permite al codegen:
+ * - Comparar firmas para overload resolution sin parsear strings.
+ * - Generar SFINAE constraints para genéricos.
+ * - Decidir const-correctness directamente desde los tipos resueltos
+ *   en lugar de recaer en regex.
+ */
+export interface ResolvedParameterSignature {
+  name: string;
+  type: ResolvedType;
+  optional: boolean;
+  variadic: boolean;
+  hasDefault: boolean;
+}
+
+export interface ResolvedSignature {
+  parameters: ResolvedParameterSignature[];
+  returnType: ResolvedType;
+  /** Nombres de los typeParameters declarados (sin sustituir aún). */
+  typeParameters: string[];
+  /** `true` si la función es async (`async`/`Promise<T>`). */
+  async: boolean;
+}
+
+/**
  * Convierte `ResolvedType` de vuelta a su `TypeName` (string) para APIs
  * que aún dependen del string. Útil durante la transición: el codegen y
  * los consumidores históricos pueden seguir operando con strings mientras
