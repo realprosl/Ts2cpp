@@ -209,3 +209,99 @@ export function isMapType(type: TypeName): boolean {
 export function isSetType(type: TypeName): boolean {
   return type.startsWith("Set<") && type.endsWith(">");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ResolvedType — representación rica del tipo, adjuntada a cada Expression.
+//
+// V0.1 lleva la información semántica al AST en lugar de tener un mapa
+// paralelo (`Map<Expression, TypeName>`). Las decisiones del codegen (qué
+// tipo C++ emitir, si el target es puntero, si es genérico) se toman
+// inspeccionando `expr.resolvedType.kind`, no parseando strings.
+//
+// Esta representación es backward-compatible con `TypeName` (string): el
+// helper `toResolvedType(typeName)` convierte cualquier `TypeName` a su forma
+// estructurada. El codegen acepta ambos hasta que todo el checker use
+// `resolvedType` directamente.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ResolvedPrimitiveName = "number" | "string" | "boolean" | "void";
+
+export type ResolvedType =
+  | { kind: "primitive"; name: ResolvedPrimitiveName }
+  | { kind: "class"; name: string }
+  | { kind: "generic"; base: string; args: ResolvedType[] }
+  | { kind: "array"; element: ResolvedType }
+  | { kind: "tuple"; elements: ResolvedType[] }
+  | { kind: "function"; parameters: ResolvedType[]; result: ResolvedType }
+  | { kind: "union"; members: ResolvedType[] }
+  | { kind: "any" };
+
+/**
+ * Convierte un `TypeName` (string) a su forma `ResolvedType` estructurada.
+ * Útil durante la transición: el checker puede seguir produciendo strings
+ * pero el codegen consume `ResolvedType` directamente.
+ */
+export function toResolvedType(type: TypeName | undefined): ResolvedType | undefined {
+  if (type === undefined) return undefined;
+  if (isPrimitive(type)) return { kind: "primitive", name: type as ResolvedPrimitiveName };
+  if (isUnionType(type)) {
+    return { kind: "union", members: unionMembers(type).map(toResolvedType).filter((t): t is ResolvedType => !!t) };
+  }
+  if (isGenericType(type)) {
+    return { kind: "generic", base: genericBase(type), args: genericArguments(type).map(toResolvedType).filter((t): t is ResolvedType => !!t) };
+  }
+  if (isArrayType(type)) {
+    const inner = toResolvedType(arrayElement(type));
+    return inner ? { kind: "array", element: inner } : { kind: "any" };
+  }
+  if (isTupleType(type)) {
+    // tuple "T1,T2" inside [...]
+    const inner = type.slice(1, -1);
+    return { kind: "tuple", elements: splitTopLevel(inner).map(toResolvedType).filter((t): t is ResolvedType => !!t) };
+  }
+  if (isFunctionType(type)) {
+    return { kind: "function", parameters: functionParameters(type).map(toResolvedType).filter((t): t is ResolvedType => !!t), result: toResolvedType(functionResult(type)) ?? { kind: "any" } };
+  }
+  if (isTypeofType(type)) {
+    return { kind: "class", name: typeofTarget(type) };
+  }
+  // Tipo "class" plano.
+  return { kind: "class", name: type };
+}
+
+/**
+ * `resolvedType` es un campo opcional de Expression. Este tipo helper acota
+ * el resultado para que el codegen pueda usar `expr.resolvedType.kind` sin
+ * chequeos opcionales en cada call site.
+ */
+export type ExpressionWithResolvedType = {
+  resolvedType?: ResolvedType;
+};
+
+/**
+ * Obtiene el `ResolvedType` de una expresión, devolviendo `{ kind: "any" }`
+ * si no está anotado (compatible con código que aún no haya pasado por el
+ * semantic checker, p.ej. tests unit del AST).
+ */
+export function resolvedTypeOf(expr: ExpressionWithResolvedType): ResolvedType {
+  return expr.resolvedType ?? { kind: "any" };
+}
+
+/**
+ * Convierte `ResolvedType` de vuelta a su `TypeName` (string) para APIs
+ * que aún dependen del string. Útil durante la transición: el codegen y
+ * los consumidores históricos pueden seguir operando con strings mientras
+ * el checker va poblando `resolvedType`.
+ */
+export function resolvedTypeToTypeName(type: ResolvedType): TypeName {
+  switch (type.kind) {
+    case "primitive": return type.name;
+    case "class":     return type.name;
+    case "array":     return arrayType(resolvedTypeToTypeName(type.element));
+    case "tuple":     return `[${type.elements.map(resolvedTypeToTypeName).join(",")}]`;
+    case "generic":   return genericType(type.base, type.args.map(resolvedTypeToTypeName));
+    case "function":  return functionType(type.parameters.map(resolvedTypeToTypeName), resolvedTypeToTypeName(type.result));
+    case "union":     return type.members.map(resolvedTypeToTypeName).join("|");
+    case "any":       return "any";
+  }
+}

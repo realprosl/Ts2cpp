@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -96,6 +96,21 @@ const FILE_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[];
   fileRemove:  { minParams: 1, paramTypes: ["string"],         returnType: "boolean" },
 });
 
+// Helpers para networking (Issue #14). Wrappers síncronos sobre POSIX sockets
+// (runtime/ets_net_sync.hpp). Devuelven fd numéricos o string vacío en error.
+// V1 (tagged unions) reemplazará estos por `Result<TcpConn, NetError>`.
+const NET_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[]; returnType: TypeName }> = Object.assign(Object.create(null), {
+  tcpListen:        { minParams: 2, paramTypes: ["string", "number"], returnType: "number"  },  // (host, port) -> fd
+  tcpAccept:        { minParams: 1, paramTypes: ["number"],          returnType: "number"  },  // (listenerFd) -> clientFd
+  tcpConnect:       { minParams: 2, paramTypes: ["string", "number"], returnType: "number"  },  // (host, port) -> fd
+  tcpRead:          { minParams: 2, paramTypes: ["number", "number"], returnType: "string"  },  // (fd, maxBytes) -> data
+  tcpWrite:         { minParams: 2, paramTypes: ["number", "string"], returnType: "boolean" },  // (fd, data) -> ok
+  tcpClose:         { minParams: 1, paramTypes: ["number"],          returnType: "void"    },  // (fd)
+  // Helper de alto nivel: server en background + cliente en foreground.
+  // Usado por los tests E2E hasta que V1 introduzca tagged unions.
+  etsNetSyncEcho:   { minParams: 4, paramTypes: ["string", "number", "string", "number"], returnType: "string" },  // (host, port, request, maxBytes) -> response
+  etsNetSyncLarge:  { minParams: 3, paramTypes: ["string", "number", "number"], returnType: "string" },  // (host, port, payloadBytes) -> response
+});
 // Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
 // tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
 // funciones libres. Cada helper preserva el tipo genérico a través
@@ -376,8 +391,27 @@ export class TypeChecker {
   }
 
   typeOf(expression: Expression): TypeName | undefined {
+    // V0.1: si el nodo tiene `resolvedType` adjuntado, lo usamos directamente
+    // y lo convertimos a `TypeName` para mantener la API existente.
+    if (expression.resolvedType) {
+      const resolvedAsString = resolvedTypeToTypeName(expression.resolvedType);
+      if (resolvedAsString) return this.unwrapMutLike(resolvedAsString);
+    }
     const stored = this.types.get(expression);
     if (!stored) return undefined;
+    return this.unwrapMutLike(stored);
+  }
+
+  /**
+   * Devuelve el `ResolvedType` de una expresión, sin convertir a string.
+   * Usado por el codegen cuando quiere inspeccionar estructura (genéricos,
+   * argumentos, etc.) sin parsear.
+   */
+  resolvedTypeOf(expression: Expression): import("../types/type-system.ts").ResolvedType | undefined {
+    return expression.resolvedType ?? toResolvedType(this.types.get(expression));
+  }
+
+  private unwrapMutLike(stored: TypeName): TypeName {
     // `Mut<T>` y `MutRef<T>` son modificadores: el tipo "real" para el
     // codegen y el semantic es el tipo interno T. Devolvemos T en lugar del
     // envoltorio (que ya no existe).
@@ -1185,6 +1219,13 @@ export class TypeChecker {
           else node.args.forEach(arg => this.expression(arg, scope));
           result = helper.returnType; break;
         }
+        if (NET_HELPERS[node.callee]) {
+          const helper = NET_HELPERS[node.callee];
+          if (node.args.length < helper.minParams) this.report(node, `'${node.callee}' espera al menos ${helper.minParams} argumentos, recibió ${node.args.length}`);
+          if (helper.paramTypes) node.args.forEach((arg, index) => { if (helper.paramTypes![index]) this.require(this.expression(arg, scope, helper.paramTypes![index]), helper.paramTypes![index], arg); });
+          else node.args.forEach(arg => this.expression(arg, scope));
+          result = helper.returnType; break;
+        }
         if (ASYNC_HELPERS[node.callee]) {
           const helper = ASYNC_HELPERS[node.callee];
           if (node.args.length !== 1) this.report(node, `'${node.callee}' espera 1 argumento, recibió ${node.args.length}`);
@@ -1561,6 +1602,11 @@ export class TypeChecker {
         break;
       }
     }
+    // V0.1: anotar `resolvedType` directamente sobre el nodo además de
+    // (durante la transición) mantener el mapa paralelo. Las llamadas a
+    // `typeOf` consultan primero `resolvedType` para que la transición sea
+    // transparente.
+    node.resolvedType = toResolvedType(result);
     this.types.set(node, result); return result;
   }
 

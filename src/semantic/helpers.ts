@@ -70,4 +70,13 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   fileCopy:          { minParams: 2 },
   fileMove:          { minParams: 2 },
   fileRemove:        { minParams: 1 },
+  // Networking (Issue #14)
+  tcpListen:         { minParams: 2 },
+  tcpAccept:         { minParams: 1 },
+  tcpConnect:        { minParams: 2 },
+  tcpRead:           { minParams: 2 },
+  tcpWrite:          { minParams: 2 },
+  tcpClose:          { minParams: 1 },
+  etsNetSyncEcho:    { minParams: 4 },
+  etsNetSyncLarge:   { minParams: 3 },
 });

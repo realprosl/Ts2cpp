@@ -125,3 +125,54 @@ test("checker: rechaza uso de variable como tipo", () => {
   // El dialecto no permite usar variables como tipos (no hay typeof type).
   expectError("const x = 5; const y: x = 5;", "Tipo");
 });
+
+// V0.1: el checker anota `resolvedType` directamente sobre cada Expression.
+test("checker: anota resolvedType en literales", () => {
+  const { ast } = check("const x: number = 42;");
+  const stmt = ast.statements[0];
+  if (stmt.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  const init = stmt.initializer;
+  assert.ok(init, "debe tener inicializador");
+  assert.ok(init.resolvedType, "resolvedType debe estar poblado");
+  assert.equal(init.resolvedType?.kind, "primitive");
+  if (init.resolvedType?.kind === "primitive") assert.equal(init.resolvedType.name, "number");
+});
+
+test("checker: anota resolvedType en class types", () => {
+  const { ast } = check(`
+    class Counter {
+      value: number;
+      constructor(value: number) { this.value = value; }
+    }
+    const c: Counter = new Counter(0);
+  `);
+  const decl = ast.statements[1];
+  if (decl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  const init = decl.initializer;
+  assert.ok(init.resolvedType, "resolvedType debe estar poblado en new Counter(0)");
+  assert.equal(init.resolvedType?.kind, "class");
+  if (init.resolvedType?.kind === "class") assert.equal(init.resolvedType.name, "Counter");
+});
+
+test("checker: anota resolvedType en generics", () => {
+  const { ast } = check(`
+    class Item {
+      name: string;
+      constructor(name: string) { this.name = name; }
+    }
+    function wrap(): Unq<Item> { return unSome<Item>(new Item("a")); }
+  `);
+  const decl = ast.statements[1];
+  if (decl.kind !== "FunctionDeclaration") throw new Error("expected FunctionDeclaration");
+  const ret = decl.body;
+  if (ret.kind !== "BlockStatement") throw new Error("expected block body");
+  const retStmt = ret.statements[0];
+  if (retStmt.kind !== "ReturnStatement") throw new Error("expected ReturnStatement");
+  const value = retStmt.value;
+  assert.ok(value?.resolvedType, "resolvedType debe estar poblado en unSome<Item>(...)");
+  assert.equal(value?.resolvedType?.kind, "generic");
+  if (value?.resolvedType?.kind === "generic") {
+    assert.equal(value.resolvedType.base, "Unq");
+    assert.equal(value.resolvedType.args[0]?.kind, "class");
+  }
+});

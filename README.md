@@ -875,6 +875,11 @@ g++ -std=c++20 -fno-exceptions -pthread -I. hello.cpp -o hello
 
 O directamente con `npm start -- examples/<nombre>.ets -o <salida>.cpp` y luego compilar con `g++`.
 
+## Dirección del proyecto
+
+- [`docs/vision.md`](./docs/vision.md) — la filosofía del dialecto: escribir como TypeScript, conocerlo todo en compilación, pagar en ejecución como C++.
+- [`docs/roadmap.md`](./docs/roadmap.md) — el plan de ejecución derivado: V0 (cimiento semántico) hasta V10 (closures específicas), con dependencias y criterios de done.
+
 ## Licencia
 
 MIT — ver [`LICENSE`](LICENSE).

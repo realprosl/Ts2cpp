@@ -21,7 +21,7 @@ export interface ExportNamedDeclaration { kind: "ExportNamedDeclaration"; specif
 // patterns por ahora; el dialecto favorece el acceso explícito por índice
 // (`arr[0]`, `arr[1]`) cuando hace falta más azúcar.
 export interface ArrayBinding { name: string; declaredType?: TypeName; defaultValue?: Expression }
-export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; optional?: boolean; span: Span }
+export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; optional?: boolean; /** V0.1: tipo resuelto adjuntado por el semantic checker. */ resolvedType?: import("../types/type-system.ts").ResolvedType; span: Span }
 export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
 export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; span: Span }
 export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; span: Span }
@@ -50,7 +50,16 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression;
+export type Expression = (LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
+  /**
+   * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
+   * El codegen consume este campo directamente en lugar de parsear
+   * strings de tipo. Si no está presente (p.ej. nodos sintéticos de
+   * tests unitarios del AST), el codegen cae al comportamiento previo
+   * basado en `TypeName`.
+   */
+  resolvedType?: import("../types/type-system.ts").ResolvedType;
+};
 export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; raw?: string; span: Span }
 export interface IdentifierExpression { kind: "IdentifierExpression"; name: string; span: Span }
 export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: ArrayElement[]; span: Span }
