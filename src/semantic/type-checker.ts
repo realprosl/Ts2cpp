@@ -1512,15 +1512,17 @@ export class TypeChecker {
             const variant = unionNode.variants.find(v => v.name === node.method);
             if (!variant) {
               this.report(node, `La unión '${unionName}' no tiene variante '${node.method}' (variantes: ${unionNode.variants.map(v => v.name).join(", ")})`);
-              result = genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)); break;
+              result = unionNode.typeParameters.length ? genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)) : unionName;
+              break;
             }
             if ((variant.payload ? 1 : 0) !== node.args.length) {
-              this.report(node, `La variante '${node.method}' espera ${variant.payload ? 1 : 0} argumento(s), recibió ${node.args.length}`);
-              result = genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)); break;
+              this.report(node, `La variante '${unionName}' espera ${variant.payload ? 1 : 0} argumento(s), recibió ${node.args.length}`);
+              result = unionNode.typeParameters.length ? genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)) : unionName;
+              break;
             }
             const args_ = node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters);
             if (variant.payload) this.expression(node.args[0]!, scope, variant.payload);
-            result = genericType(unionName, args_);
+            result = unionNode.typeParameters.length ? genericType(unionName, args_) : unionName;
             break;
           }
         }

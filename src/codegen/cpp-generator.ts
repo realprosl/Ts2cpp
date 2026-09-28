@@ -86,6 +86,16 @@ export class CppGenerator {
   private usesNetworking(program: Program): boolean { return /\b(?:tcpListen|tcpAccept|tcpConnect|tcpRead|tcpWrite|tcpClose|etsNetSyncEcho|etsNetSyncLarge)\b/.test(JSON.stringify(program)); }
   // V1.2: si hay UnionDeclaration necesitamos `<variant>` y `<type_traits>`.
   private usesUnions(program: Program): boolean { return program.statements.some(s => s.kind === "UnionDeclaration"); }
+  // V1.3: dado un TypeName resuelto por el type-checker, devuelve el
+  // UnionDeclaration si representa una tagged union declarada en el
+  // programa. Usa los helpers de `type-system.ts` (`isGenericType` +
+  // `genericBase`) en lugar de parsear strings manualmente: el dialecto
+  // no admite regex ni string-matching mágico, solo operaciones sobre la
+  // representación estructurada del tipo.
+  private unionFromType(type: TypeName): UnionDeclaration | undefined {
+    const base = isGenericType(type) ? genericBase(type) : type;
+    return this.unionsMap.get(base);
+  }
   private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean): string[] {
     return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : [])];
   }
@@ -385,10 +395,26 @@ export class CppGenerator {
       return `${tparamSpec} inline ${node.name}${tnamesSpec} ${variant.name}(${payloadType} ${paramName}) { ${node.name}${tnamesSpec} u; u.payload.template emplace<${index}>(static_cast<${payloadType}&&>(${paramName})); u.kind = ${variantIndexEnum}::${variant.name}; return u; }`;
     }).join("\n");
     const variantPayloads = node.variants.map(variant => variant.payload ? cppType(variant.payload) : "std::monostate").join(", ");
+    // `operator<<` para `print(union)` (V1.3). Cada variante se imprime como
+    // `Variant(payload)`; las variantes nulas como `Variant`. El prefijo
+    // `template <...>` se reusa para que coincida con la declaración del
+    // struct (GCC exige que las plantillas friend coincidan exactamente).
+    const printerBranches = node.variants.map((variant, index) => {
+      const access = `std::get<${index}>(u.payload)`;
+      return `        case ${variantIndexEnum}::${variant.name}: ${variant.payload ? `std::cout << "${variant.name}(" << ${access} << ")"; break;` : `std::cout << "${variant.name}"; break;`}`;
+    }).join("\n");
+    const printerDef = `${tparamSpec}\ninline std::ostream& operator<<(std::ostream& os, const ${node.name}${tnamesSpec}& u) {\n    switch (u.kind) {\n${printerBranches}\n    }\n    return os;\n}`;
+    // V1.3: `operator==` contextual para tagged unions. `std::variant` no
+    // ofrece comparación por defecto; emitimos uno que dispatcha por
+    // discriminador y compara payload solo si los kinds coinciden.
+    const eqBranches = node.variants.map((variant, index) =>
+      `    (a.kind == ${variantIndexEnum}::${variant.name} && b.kind == ${variantIndexEnum}::${variant.name} && std::get<${index}>(a.payload) == std::get<${index}>(b.payload))`
+    ).join(" ||\n");
+    const eqDef = `${tparamSpec}\ninline bool operator==(const ${node.name}${tnamesSpec}& a, const ${node.name}${tnamesSpec}& b) {\n    return\n${eqBranches};\n}`;
     // El prefijo `template <...>` ya se emite arriba; el nombre del struct
     // NO lleva los angle brackets (eso es lo que provocaba el error
     // "'Outcome' is not a class template" de GCC).
-    return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${variantIndexEnum} kind;\n    std::variant<${variantPayloads}> payload;\n};\n${constructorDefs}`;
+    return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${variantIndexEnum} kind;\n    std::variant<${variantPayloads}> payload;\n};\n${constructorDefs}\n${printerDef}\n${eqDef}`;
   }
   private function(fn: FunctionDeclaration, internal = false): string {
     const previous = this.inAsyncFunction; this.inAsyncFunction = fn.async;
@@ -826,6 +852,23 @@ export class CppGenerator {
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
         if (node.operator === "+" && this.expressionType(node) === "string") return `ets::concat(${this.stringConcatParts(node).map(part => this.emitExpression(part)).join(", ")})`;
+        // V1.3: las tagged unions declaran su propio `operator==` (en
+        // `unionDeclaration`) que dispatcha por discriminador, así que
+        // C++ resuelve la comparación de forma natural cuando ambos
+        // operandos son la MISMA tagged union. No inyectamos código
+        // extra aquí: si `operator==` no existiera el compilador ya
+        // habría rechazado el programa al verificar el tipo. Esto
+        // evita lambdas IIFE con bloques GCC-extension y mantiene el
+        // codegen declarativo.
+        if ((node.operator === "==" || node.operator === "!=") && this.unionNames.size > 0) {
+          const leftType = this.expressionType(node.left);
+          const rightType = this.expressionType(node.right);
+          const leftUnion = leftType ? this.unionFromType(leftType) : undefined;
+          const rightUnion = rightType ? this.unionFromType(rightType) : undefined;
+          if (leftUnion && leftUnion === rightUnion) {
+            return `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
+          }
+        }
         // Operadores bitwise: el dialecto modela `number` como `double`, pero
         // C++ rechaza `|`/`&`/`^`/etc. entre doubles. Hacemos cast explícito
         // a `std::int64_t` para la operación y devolvemos `double`.
