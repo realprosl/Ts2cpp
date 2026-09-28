@@ -22,13 +22,13 @@ export interface ExportNamedDeclaration { kind: "ExportNamedDeclaration"; specif
 // (`arr[0]`, `arr[1]`) cuando hace falta más azúcar.
 export interface ArrayBinding { name: string; declaredType?: TypeName; defaultValue?: Expression }
 export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; optional?: boolean; /** V0.1: tipo resuelto adjuntado por el semantic checker. */ resolvedType?: import("../types/type-system.ts").ResolvedType; span: Span }
-export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; span: Span }
-export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; span: Span }
+export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; /** V0.3: huella estructural resuelta por el semantic checker. */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; span: Span }
+export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; span: Span }
 export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; span: Span }
 export type Decorator = { name: string; args: Expression[] };
 
 export interface ClassField { name: string; type: TypeName; readonly?: boolean; decorators?: Decorator[]; span: Span }
-export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; body: BlockStatement; decorators?: Decorator[]; span: Span }
+export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; decorators?: Decorator[]; span: Span }
 export interface ClassDeclaration { kind: "ClassDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; fields: ClassField[]; methods: ClassMethod[]; decorators?: Decorator[]; span: Span }
 export interface BlockStatement { kind: "BlockStatement"; statements: Statement[]; span: Span }
 export interface ExpressionStatement { kind: "ExpressionStatement"; expression: Expression; span: Span }
@@ -69,7 +69,7 @@ export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elemen
 // spreads anidados; el primer spread debe ser el último elemento.
 export type ArrayElement = Expression | SpreadElement;
 export interface SpreadElement { kind: "SpreadElement"; expression: Expression; span: Span }
-export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }
+export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }
 export interface SatisfiesExpression { kind: "SatisfiesExpression"; operand: Expression; declaredType: TypeName; span: Span }
 export interface MatchArm { pattern: Expression; result: Expression; span: Span }
 export interface MatchExpression { kind: "MatchExpression"; subject: Expression; arms: MatchArm[]; span: Span }

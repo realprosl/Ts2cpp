@@ -486,6 +486,20 @@ export class TypeChecker {
       params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue, optional: p.optional })),
       returnType: node.returnType
     };
+    // V0.3: huella estructural resuelta sobre el nodo. Permite al codegen
+    // comparar firmas sin parsear strings y generar SFINAE constraints.
+    node.resolvedSignature = {
+      parameters: node.params.map(p => ({
+        name: p.name,
+        type: toResolvedType(p.type) ?? { kind: "any" },
+        optional: p.optional ?? false,
+        variadic: p.variadic ?? false,
+        hasDefault: p.defaultValue !== undefined,
+      })),
+      returnType: toResolvedType(node.returnType) ?? { kind: "any" },
+      typeParameters: TypeChecker.namesOf(node.typeParameters),
+      async: node.async,
+    };
     const existing = scope.resolveLocal(node.name);
     if (!existing) scope.define(node.name, { kind: "function", overloads: [signature] });
     else if (existing.kind !== "function") this.report(node, `Símbolo duplicado '${node.name}'`);
@@ -506,6 +520,19 @@ export class TypeChecker {
       this.validateType(method.returnType, method, false, true, scope);
       for (const parameter of method.params) this.validateType(parameter.type, parameter, false, true, scope);
       this.validateParameterDefaults(method.params, method);
+      // V0.3: huella estructural resuelta del método de interfaz.
+      method.resolvedSignature = {
+        parameters: method.params.map(p => ({
+          name: p.name,
+          type: toResolvedType(p.type) ?? { kind: "any" },
+          optional: p.optional ?? false,
+          variadic: p.variadic ?? false,
+          hasDefault: p.defaultValue !== undefined,
+        })),
+        returnType: toResolvedType(method.returnType) ?? { kind: "any" },
+        typeParameters: TypeChecker.namesOf(method.typeParameters ?? []),
+        async: false,
+      };
     }
   }
 
@@ -982,6 +1009,19 @@ export class TypeChecker {
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       local.define("this", { kind: "variable", type: ownerType, mutable: true });
       for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type) })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+      // V0.3: huella estructural resuelta del método.
+      method.resolvedSignature = {
+        parameters: method.params.map(p => ({
+          name: p.name,
+          type: toResolvedType(p.type) ?? { kind: "any" },
+          optional: p.optional ?? false,
+          variadic: p.variadic ?? false,
+          hasDefault: p.defaultValue !== undefined,
+        })),
+        returnType: toResolvedType(method.returnType) ?? { kind: "any" },
+        typeParameters: TypeChecker.namesOf(method.typeParameters ?? []),
+        async: false,
+      };
       const previous = this.currentReturn; const previousAsync = this.currentAsync; const previousCtor = this.inConstructor;
       this.currentReturn = method.returnType; this.currentAsync = false; this.inConstructor = method.name === "constructor";
       this.statement(method.body, local);
