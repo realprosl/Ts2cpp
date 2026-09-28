@@ -84,7 +84,11 @@ export type ArrayElement = Expression | SpreadElement;
 export interface SpreadElement { kind: "SpreadElement"; expression: Expression; span: Span }
 export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; params: Parameter[]; returnType?: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: Expression | BlockStatement; mutatesCapturedState?: boolean; span: Span }
 export interface SatisfiesExpression { kind: "SatisfiesExpression"; operand: Expression; declaredType: TypeName; span: Span }
-export interface MatchArm { pattern: Expression; result: Expression; span: Span }
+export interface MatchArm { pattern: Expression; result: Expression; /** V2: pattern destructuring sobre tagged unions. Cuando está presente, el
+ *  parser lo pobló a partir de `case { kind: "<Variant>", <bindings>? }:` o
+ *  `case _: <expr>;`. `pattern` (legacy) queda para el flujo `when (...)`
+ *  y para exponer `_` como `IdentifierExpression("_")` en consumos que aún
+ *  no soportan exhaustividad. */ variantMatch?: { variantName: string; bindings: string[]; isWildcard?: boolean }; span: Span }
 export interface MatchExpression { kind: "MatchExpression"; subject: Expression; arms: MatchArm[]; span: Span }
 // `parts` y `expressions` tienen la misma longitud menos 1 (siempre hay un
 // parte más que expresiones). Las partes son los trozos literales; las
