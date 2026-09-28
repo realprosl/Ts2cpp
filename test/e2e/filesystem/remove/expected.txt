@@ -1,0 +1,4 @@
+existe_antes=1
+borrado=1
+existe_despues=0
+segundo_borrado=0

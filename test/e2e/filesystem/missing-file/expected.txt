@@ -1,0 +1,3 @@
+existe=0
+contenido:[]
+longitud=0

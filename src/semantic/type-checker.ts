@@ -111,7 +111,6 @@ const NET_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[]; 
   etsNetSyncEcho:   { minParams: 4, paramTypes: ["string", "number", "string", "number"], returnType: "string" },  // (host, port, request, maxBytes) -> response
   etsNetSyncLarge:  { minParams: 3, paramTypes: ["string", "number", "number"], returnType: "string" },  // (host, port, payloadBytes) -> response
 });
-
 // Helpers para `Optional<T>`. El dialecto aún no soporta métodos sobre
 // tipos genéricos como `Optional<T>.some(...)`, así que se exponen como
 // funciones libres. Cada helper preserva el tipo genérico a través
