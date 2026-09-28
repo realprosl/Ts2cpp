@@ -528,8 +528,81 @@ export class Parser {
    * El subject se evalúa una vez. Cada arm se evalúa como `subject == pattern ? result : ...`.
    * El último arm con pattern `_` actúa como default (siempre matchea).
    */
+  /**
+   * Parsea arms de `match`:
+   *   - V2: `case { kind: "Variant", payload1, payload2 }: <expr>;`
+   *   - V2: `case _: <expr>;`
+   *   - Legacy TC39: `when (<expr>) => <expr>;` (sigue funcionando para
+   *     matches cuyo subject NO sea tagged union).
+   *
+   * El parser detecta el dialecto por el primer token: si ve `case`,
+   * parsea todos los arms como V2; si ve `when`, los parsea como legacy.
+   * Mezclar en un mismo match es un error de diagnóstico.
+   */
+  private matchArms(arms: MatchArm[]): void {
+    while (!this.check("}") && !this.check("eof")) {
+      if (this.check("case")) {
+        this.advance(); // consume 'case'
+        const arm = this.parseCaseArm();
+        arms.push(arm);
+      } else if (this.check("when")) {
+        this.advance(); // consume 'when'
+        this.consume("(", "Se esperaba '(' después de 'when'");
+        const pattern = this.expression();
+        this.consume(")", "Se esperaba ')' después del pattern");
+        this.consume("=>", "Se esperaba '=>' en el arm de 'match'");
+        const result = this.expression();
+        const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+        arms.push({ pattern, result, span: span(pattern.span.start, end.span.end) });
+      } else {
+        this.error(this.peek(), "Se esperaba 'case' o 'when' para iniciar un arm de 'match'");
+        return;
+      }
+    }
+  }
+  private parseCaseArm(): MatchArm {
+    const start = this.peek().span.start;
+    // Wildcard: `case _: ...;`
+    if (this.check("identifier") && this.peek().lexeme === "_") {
+      this.advance();
+      this.consume(":", "Se esperaba ':' después del pattern de 'case'");
+      const result = this.expression();
+      const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+      return {
+        pattern: { kind: "IdentifierExpression", name: "_", span: span(start, end.span.start) },
+        result,
+        variantMatch: { variantName: "", bindings: [], isWildcard: true },
+        span: span(start, end.span.end),
+      };
+    }
+    // Pattern destructuring: `case { kind: "<Variant>", <id>, ... }: ...;`
+    this.consume("{", "Se esperaba '{' para iniciar el pattern de 'case'");
+    let variantName = "";
+    const bindings: string[] = [];
+    // Primer campo obligatorio: `kind: "VariantName"`.
+    this.consume("identifier", "Se esperaba 'kind' como primer campo del pattern");
+    if (this.previous().lexeme !== "kind") this.error(this.previous(), "Se esperaba 'kind' como primer campo del pattern de 'case'");
+    this.consume(":", "Se esperaba ':' después de 'kind'");
+    const variantTok = this.consume("string", "El campo 'kind' de un pattern debe ser un literal de cadena");
+    variantName = variantTok.lexeme;
+    // Campos adicionales opcionales: cada uno es un identifier → binding.
+    while (this.match(",")) {
+      const id = this.consume("identifier", "Se esperaba un identifier como binding");
+      bindings.push(id.lexeme);
+    }
+    this.consume("}", "Se esperaba '}' para cerrar el pattern de 'case'");
+    this.consume(":", "Se esperaba ':' después del pattern de 'case'");
+    const result = this.expression();
+    const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+    return {
+      pattern: { kind: "IdentifierExpression", name: variantName, span: span(start, this.peek().span.start) },
+      result,
+      variantMatch: { variantName, bindings },
+      span: span(start, end.span.end),
+    };
+  }
   private matchExpression(): MatchExpression {
-    const keyword = this.previous(); // no debería ser undefined porque verificamos check("match") antes
+    const keyword = this.previous();
     const start = this.peek().span.start;
     this.match("match");
     this.consume("(", "Se esperaba '(' después de 'match'");
@@ -537,16 +610,7 @@ export class Parser {
     this.consume(")", "Se esperaba ')' después del sujeto de 'match'");
     this.consume("{", "Se esperaba '{' para los arms de 'match'");
     const arms: MatchArm[] = [];
-    while (!this.check("}") && !this.check("eof")) {
-      this.consume("when", "Se esperaba 'when' para iniciar un arm de 'match'");
-      this.consume("(", "Se esperaba '(' después de 'when'");
-      const pattern = this.expression();
-      this.consume(")", "Se esperaba ')' después del pattern");
-      this.consume("=>", "Se esperaba '=>' en el arm de 'match'");
-      const result = this.expression();
-      const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
-      arms.push({ pattern, result, span: span(start, end.span.end) });
-    }
+    this.matchArms(arms);
     this.consume("}", "Se esperaba '}' al final de 'match'");
     return { kind: "MatchExpression", subject, arms, span: span(keyword.span.start, this.peek().span.start) };
   }
