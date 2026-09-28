@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, UnionDeclaration, UnionVariant, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -36,6 +36,7 @@ export class Parser {
     if (this.check("@")) return this.classDeclaration(true, exported);
     if (this.match("type")) return this.typeAliasDeclaration(this.previous(), exported);
     if (this.match("enum")) return this.enumDeclaration(this.previous(), exported);
+    if (this.match("union")) return this.unionDeclaration(this.previous(), exported);
     if (exported) {
       if (this.match("default")) return this.exportDefaultDeclaration();
       if (this.match("{")) return this.exportNamedDeclaration();
@@ -367,6 +368,42 @@ export class Parser {
     if (!members.length) this.error(close, "El enum debe tener al menos un miembro");
     const underlying: "number" | "string" = hasString ? "string" : "number";
     const node: EnumDeclaration = { kind: "EnumDeclaration", exported, name: name.lexeme, members, underlying, span: span(keyword.span.start, close.span.end) };
+    return node;
+  }
+
+  // V1: `union Outcome<T, E> = Ok(T) | Err(E);`. Tagged unions nativas del
+  // dialecto. Cada variante tiene un nombre y opcionalmente un payload
+  // (un tipo). Se emite como `std::variant<T1, T2, ...>` con discriminador.
+  private unionDeclaration(keyword: Token, exported = false): Statement {
+    const generics = this.typeParameterNames();
+    // Si no hay `<` inmediato, el orden es: nombre primero, después `<T, E>`.
+    // Si hay `<` inmediato, el usuario escribió `union <T, E> = ...` que es
+    // sintaxis vieja. Aceptamos ambas formas: si el primer token tras `union`
+    // es `<`, los typeParameters ya están consumidos y el siguiente es nombre.
+    let name: Token;
+    let typeParameters = generics.parameters;
+    if (this.check("identifier")) {
+      name = this.consume("identifier", "Se esperaba el nombre de la unión");
+      const after = this.typeParameterNames();
+      typeParameters = after.parameters;
+    } else {
+      this.error(this.peek(), "Se esperaba el nombre de la unión");
+      return { kind: "UnionDeclaration", exported, name: "", typeParameters, variants: [], span: keyword.span };
+    }
+    this.consume("=", "Se esperaba '=' después del nombre de la unión");
+    const variants: UnionVariant[] = [];
+    do {
+      const variantName = this.consume("identifier", "Se esperaba el nombre de la variante");
+      let payload: TypeName | undefined;
+      if (this.match("(")) {
+        payload = this.typeName();
+        this.consume(")", "Se esperaba ')' después del payload de la variante");
+      }
+      variants.push({ name: variantName.lexeme, payload, span: span(variantName.span.start, (this.previous()).span.end) });
+    } while (this.match("|"));
+    const end = this.consume(";", "Se esperaba ';' después de la unión");
+    if (!variants.length) this.error(end, "La unión debe tener al menos una variante");
+    const node: UnionDeclaration = { kind: "UnionDeclaration", exported, name: name.lexeme, typeParameters, variants, span: span(keyword.span.start, end.span.end) };
     return node;
   }
 
