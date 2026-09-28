@@ -1,7 +1,7 @@
-import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -758,6 +758,9 @@ export class TypeChecker {
       if (parameter.defaultValue) {
         const actual = this.expression(parameter.defaultValue, local, parameter.type);
         this.require(actual, parameter.type, parameter.defaultValue);
+        // V3: idem VariableDeclaration, validamos rango de literales numéricos
+        // concretos en defaults de parámetros (acepta `-N` / `+N` unarios).
+        this.validateNumericExpression(parameter.defaultValue, parameter.type);
       }
       local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), variadic: parameter.variadic });
     }
@@ -801,6 +804,66 @@ export class TypeChecker {
     const missing = subjectUnion.variants.filter(v => !covered.has(v.name)).map(v => v.name);
     if (missing.length) this.report(node, `'match' no es exhaustivo: faltan variantes ${missing.join(", ")}`);
   }
+  // V3: rango de un literal numérico contra un tipo numérico concreto (i8..u64, f32, f64).
+  // Se invoca cuando una declaración anota explícitamente el tipo numérico y el
+  // initializer es un literal numérico (con posible prefijo `-` o `+`). Reporta
+  // diagnóstico si el valor no cabe en el rango del tipo destino. Las reglas:
+  //   - i*/u* (enteros): Number.isSafeInteger(value) + rango [-2^(n-1), 2^(n-1)-1] para signed,
+  //     [0, 2^n-1] para unsigned. Para unsigned, valor negativo => error.
+  //   - f32/f64 (flotantes): sólo se rechaza que no sea finito (no validamos precisión).
+  private validateNumericLiteral(node: LiteralExpression, expectedType: TypeName): void {
+    if (!isNumericType(expectedType)) return;
+    if (node.literalType !== "number") return; // sólo literales numéricos
+    const raw = node.value;
+    const kind = numericKind(expectedType);
+    const bits = numericBitWidth(expectedType);
+    const sign = numericSign(expectedType);
+    if (kind === "integer" && bits !== null) {
+      // Para u* (unsigned), el valor negativo es siempre un error.
+      if (sign === "unsigned" && typeof raw === "number" && raw < 0) {
+        this.report(node, `El literal ${raw} no cabe en ${expectedType} (rango 0..${(2 ** bits) - 1})`);
+        return;
+      }
+      if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+        this.report(node, `El literal ${raw} no cabe en ${expectedType} (se esperaba un entero)`);
+        return;
+      }
+      if (!Number.isSafeInteger(raw)) {
+        this.report(node, `El literal ${raw} no cabe en ${expectedType} (no es un entero seguro de JavaScript)`);
+        return;
+      }
+      const max = sign === "unsigned" ? (2 ** bits) - 1 : (2 ** (bits - 1)) - 1;
+      const min = sign === "unsigned" ? 0 : -(2 ** (bits - 1));
+      if (raw < min || raw > max) {
+        this.report(node, `El literal ${raw} no cabe en ${expectedType} (rango ${min}..${max})`);
+      }
+    } else if (kind === "float" && bits !== null) {
+      // Para f32/f64: cualquier número finito cabe (rango muy laxo; no
+      // validamos precisión). NaN/Infinity no caben — un literal parseado
+      // rara vez es NaN/Inf, pero defenderse si el lexer lo produce.
+      if (typeof raw !== "number" || !Number.isFinite(raw)) {
+        this.report(node, `El literal ${raw} no es un número finito válido para ${expectedType}`);
+      }
+    }
+  }
+
+  // V3: helper público-equivalente para casos donde el initializer es un
+  // UnaryExpression con un literal numérico (p.ej. `-129`). Lo desempaqueta y
+  // delega en `validateNumericLiteral` con el signo aplicado.
+  private validateNumericExpression(node: Expression, expectedType: TypeName): void {
+    if (!isNumericType(expectedType)) return;
+    // Acepta LiteralExpression directo.
+    if (node.kind === "LiteralExpression") { this.validateNumericLiteral(node, expectedType); return; }
+    // O UnaryExpression con operador `-`/`+` y operando literal numérico.
+    if (node.kind === "UnaryExpression" && (node.operator === "-" || node.operator === "+") && node.operand.kind === "LiteralExpression") {
+      const operand = node.operand;
+      if (operand.literalType !== "number") return;
+      const signed = node.operator === "-" ? -Number(operand.value) : Number(operand.value);
+      const synthetic: LiteralExpression = { ...operand, value: signed };
+      this.validateNumericLiteral(synthetic, expectedType);
+    }
+  }
+
   private validateType(type: TypeName, node: { span: import("../core/span.ts").Span }, interfaceAllowed: boolean, primitiveOnly = false, scope?: Scope, visited?: Set<string>): TypeName {
     // Resolver cualquier `typeof X` en posición de tipo antes de validar.
     // Devolvemos el tipo ya resuelto para que el llamador pueda reescribirlo
@@ -967,6 +1030,10 @@ export class TypeChecker {
           // marca `$typeof$x`.
           node.declaredType = expandedDeclared;
           this.validateType(node.declaredType, node, true, false, scope);
+          // V3: si el tipo es un numérico concreto (i8..u64, f32, f64) y el
+          // initializer es un literal numérico (con posible signo unario),
+          // verificamos que el valor quepa en el rango del tipo destino.
+          this.validateNumericExpression(node.initializer, node.declaredType);
         }
         if (expected === "void") this.report(node, "Una variable no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
@@ -999,6 +1066,8 @@ export class TypeChecker {
         const actual = this.expression(node.initializer, scope, expandedDeclared);
         const expected = expandedDeclared ?? actual;
         if (expandedDeclared) this.validateType(expandedDeclared, node, true, false, scope);
+        // V3: rango literal para tipos numéricos concretos (idem VariableDeclaration).
+        if (expandedDeclared) this.validateNumericExpression(node.initializer, expandedDeclared);
         if (expected === "void") this.report(node, "Un recurso 'using' no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
         if (!scope.define(node.name, { kind: "variable", type: expected, mutable: false })) this.report(node, `Símbolo duplicado '${node.name}'`);
@@ -1375,14 +1444,33 @@ export class TypeChecker {
             result = element;
           }
         }
-        else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
-        else if (["|", "&", "^", "<<", ">>"].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "number"; }
-        else if (["<", "<=", ">", ">="].includes(node.operator)) { this.require(left, "number", node.left); this.require(right, "number", node.right); result = "boolean"; }
-        else if (["==", "!="].includes(node.operator)) { if (left !== right) this.report(node, "Los operandos comparados deben tener el mismo tipo"); result = "boolean"; }
+        else if (["+", "-", "*", "/", "%"].includes(node.operator)) { this.requireNumericOperand(left, node.left); this.requireNumericOperand(right, node.right); result = "number"; }
+        else if (["|", "&", "^", "<<", ">>"].includes(node.operator)) { this.requireNumericOperand(left, node.left); this.requireNumericOperand(right, node.right); result = "number"; }
+        else if (["<", "<=", ">", ">="].includes(node.operator)) { this.requireNumericOperand(left, node.left); this.requireNumericOperand(right, node.right); result = "boolean"; }
+        else if (["==", "!="].includes(node.operator)) { if (!this.sameNumericFamily(left, right)) this.report(node, "Los operandos comparados deben tener el mismo tipo"); result = "boolean"; }
         else { this.require(left, "boolean", node.left); this.require(right, "boolean", node.right); result = "boolean"; }
         break;
       }
       case "CallExpression": {
+        // V3: `i32(x)`, `u64(y)`, `f32(z)`, etc. son casts a tipos numéricos
+        // concretos (10 primitivos). El parser los desazucara como
+        // CallExpression con callee=identifier; aquí reconocemos ese patrón y
+        // emitimos el tipo destino. La validación de rango del argumento
+        // ocurre si el argumento es un literal (idem VariableDeclaration).
+        if (isNumericType(node.callee) && node.typeArguments.length === 0) {
+          if (node.args.length !== 1) this.report(node, `'${node.callee}' espera 1 argumento, recibió ${node.args.length}`);
+          const arg = node.args[0];
+          if (arg) {
+            const expected = node.callee;
+            const actual = this.expression(arg, scope, expected);
+            this.require(actual, expected, arg);
+            // Validación de rango si el argumento es un literal numérico
+            // (con o sin signo unario). Mismas reglas que en VariableDeclaration.
+            this.validateNumericExpression(arg, expected);
+          }
+          result = node.callee;
+          break;
+        }
         if (ASYNC_PRIMITIVE_HELPERS[node.callee]) {
           const signature = ASYNC_PRIMITIVE_HELPERS[node.callee];
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
@@ -1904,6 +1992,24 @@ export class TypeChecker {
   private require(actual: TypeName, expected: TypeName, node: { span: import("../core/span.ts").Span }): void {
     if (this.enumCompatible(actual, expected)) return;
     if (!typeMatches(actual, expected) && !this.satisfiesInterface(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+  }
+
+  // V3: variante de `require` que acepta tipos numéricos concretos (i8..u64,
+  // f32, f64) además de `number`. Usada por los operadores binarios
+  // aritméticos y de comparación: cualquier tipo numérico es admisible y se
+  // promueve a `number` para la operación.
+  private requireNumericOperand(actual: TypeName, node: { span: import("../core/span.ts").Span }): void {
+    if (actual === "number" || isNumericType(actual)) return;
+    this.report(node, `Se esperaba un operando numérico, se obtuvo '${actual}'`);
+  }
+
+  // V3: dos operandos pertenecen a la "misma familia numérica" si ambos son
+  // numéricos (incluyendo `number`) o si son iguales. Usada por `==`/`!=`.
+  private sameNumericFamily(left: TypeName, right: TypeName): boolean {
+    if (left === right) return true;
+    const leftIsNumeric = left === "number" || isNumericType(left);
+    const rightIsNumeric = right === "number" || isNumericType(right);
+    return leftIsNumeric && rightIsNumeric;
   }
   // Un enum numérico es intercambiable con `number` (y un enum de cadena con `string`)
   // en cualquier posición: asignación, paso de argumento, etc. El codegen hace el cast

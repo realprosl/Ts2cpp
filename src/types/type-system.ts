@@ -1,8 +1,34 @@
 import type { TypeName } from "../ast/nodes.ts";
 
-const PRIMITIVES = new Set<TypeName>(["number", "string", "boolean", "void"]);
+// V3: tipos numéricos concretos mapeados 1:1 a C++ (i8..u64, f32, f64). NO se
+// cambian las reglas de inferencia de literales: `42` y `3.14` siguen siendo
+// `number`. Los nuevos tipos requieren anotación explícita (`let x: i32 = 42`)
+// para preservar la compatibilidad con los 50+ demos existentes.
+export const NUMERIC_TYPES = new Set<TypeName>(["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]);
+
+const PRIMITIVES = new Set<TypeName>(["number", "string", "boolean", "void", ...NUMERIC_TYPES]);
 
 export function isPrimitive(type: TypeName): boolean { return PRIMITIVES.has(type); }
+export function isNumericType(type: TypeName): boolean { return NUMERIC_TYPES.has(type); }
+// Devuelve el ancho en bits (8/16/32/64) para i*/u*, o null para f*/no-numéricos.
+// Válido solo cuando `isNumericType(type)` es true.
+export function numericBitWidth(type: TypeName): number | null {
+  if (!NUMERIC_TYPES.has(type)) return null;
+  if (type === "f32") return 32;
+  if (type === "f64") return 64;
+  return Number(type.slice(1)); // "i8" -> 8, "u64" -> 64
+}
+// Devuelve 'integer' | 'float' para los tipos numéricos V3, o null si no aplica.
+export function numericKind(type: TypeName): "integer" | "float" | null {
+  if (!NUMERIC_TYPES.has(type)) return null;
+  return type.startsWith("f") ? "float" : "integer";
+}
+// Devuelve 'signed' | 'unsigned' para i*/u*, null para f* o no-numéricos.
+export function numericSign(type: TypeName): "signed" | "unsigned" | null {
+  if (!NUMERIC_TYPES.has(type)) return null;
+  if (type.startsWith("f")) return null;
+  return type.startsWith("u") ? "unsigned" : "signed";
+}
 export function arrayType(element: TypeName): TypeName { return `${element}[]`; }
 export function isArrayType(type: TypeName): boolean { return type.endsWith("[]"); }
 export function arrayElement(type: TypeName): TypeName { return type.slice(0, -2); }
@@ -85,6 +111,16 @@ export function typeMatches(actual: TypeName, expected: TypeName): boolean {
       if (inner && typeMatches(inner, expected)) return true;
     }
   }
+  // V3: el literal numérico del dialecto siempre se modela como `number`
+  // (= double). Cuando el usuario anota un tipo numérico concreto (i8..u64,
+  // f32, f64) en la declaración, permitimos la asignación; el rango se
+  // verifica en `validateNumericLiteral` y el codegen emite el
+  // `static_cast<target>(literal)` correspondiente.
+  if (actual === "number" && isNumericType(expected)) return true;
+  // V3: dos tipos numéricos concretos son intercambiables para asignación
+  // (el C++ emite el static_cast correcto en narrowing). Esto permite
+  // `let y: i64 = i32(42);` y similares.
+  if (isNumericType(actual) && isNumericType(expected)) return true;
   if (expected === actual) return true;
   if (!isUnionType(expected)) return false;
   if (isUnionType(actual)) return unionMembers(actual).every(member => unionMembers(expected).includes(member));
@@ -224,7 +260,7 @@ export function isSetType(type: TypeName): boolean {
 // `resolvedType` directamente.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type ResolvedPrimitiveName = "number" | "string" | "boolean" | "void";
+export type ResolvedPrimitiveName = "number" | "string" | "boolean" | "void" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64";
 
 export type ResolvedType =
   | { kind: "primitive"; name: ResolvedPrimitiveName }

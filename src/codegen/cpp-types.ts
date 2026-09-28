@@ -6,7 +6,25 @@ import { cppInputType } from "./cpp-parameters.ts";
 // before reaching cppType. If a raw alias name ever reaches here, it falls through to the
 // passthrough branch and will appear as `Name` in C++ output. This should not happen in practice.
 
-const PRIMITIVE_CPP: Record<string, string> = { number: "double", string: "std::string", boolean: "bool", void: "void" };
+// V3: 10 tipos numéricos concretos mapeados 1:1 a C++ (i8..u64, f32, f64).
+// Los nuevos tipos requieren anotación explícita; los literales siguen
+// infiriendo a `number` (= double) para no romper demos existentes.
+const PRIMITIVE_CPP: Record<string, string> = {
+  number: "double",
+  string: "std::string",
+  boolean: "bool",
+  void: "void",
+  i8: "int8_t",
+  i16: "int16_t",
+  i32: "int32_t",
+  i64: "int64_t",
+  u8: "uint8_t",
+  u16: "uint16_t",
+  u32: "uint32_t",
+  u64: "uint64_t",
+  f32: "float",
+  f64: "double",
+};
 
 /**
  * V0.2: `cppType` acepta `TypeName` o `ResolvedType`. Si recibe `ResolvedType`,
