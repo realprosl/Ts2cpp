@@ -791,6 +791,12 @@ export class TypeChecker {
       return this.validateType(this.aliases.get(type)!.type, node, interfaceAllowed, primitiveOnly, scope, next);
     }
     if (this.activeTypeParameters.has(type)) return type;
+    // V1.2: las uniones no-genéricas (e.g. `Direction`) son tipos concretos válidos.
+    if (this.unions.has(type)) {
+      const unionNode = this.unions.get(type)!;
+      if (unionNode.typeParameters.length) this.report(node, `'${type}' espera ${unionNode.typeParameters.length} argumento(s) de tipo, no lleva ninguno`);
+      return type;
+    }
     if (isUnionType(type)) { for (const member of unionMembers(type)) this.validateType(member, node, interfaceAllowed, primitiveOnly, scope); return type; }
     if (isIntersectionType(type)) { for (const member of intersectionMembers(type)) this.validateType(member, node, true, true, scope); return type; }
     if (isArrayType(type)) {
@@ -819,7 +825,14 @@ export class TypeChecker {
       return type;
     }
     if (isGenericType(type)) {
-      const base = genericBase(type); const owner = this.classes.get(base); const arguments_ = genericArguments(type);
+      const base = genericBase(type); const owner = this.classes.get(base);
+      // V1.2: las uniones son tipos válidos aunque no estén en classes.
+      if (!owner && this.unions.has(base)) {
+        const unionNode = this.unions.get(base)!;
+        if (genericArguments(type).length !== unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo, recibió ${genericArguments(type).length}`);
+        genericArguments(type).forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
+        return type;
+      } const arguments_ = genericArguments(type);
       // Instanciación de alias genérico: `type Box<T> = T[]` + `Box<number>`.
       if (!owner && this.aliases.has(base)) {
         const alias = this.aliases.get(base)!;
@@ -874,6 +887,14 @@ export class TypeChecker {
       }
       if (base === "Set") {
         if (arguments_.length !== 1) this.report(node, `'Set' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
+        return type;
+      }
+      // V1.2: las uniones también son tipos genéricos. Aceptan el número
+      // declarado de typeParameters.
+      if (this.unions.has(base)) {
+        const unionNode = this.unions.get(base)!;
+        if (arguments_.length !== unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo, recibió ${arguments_.length}`);
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
@@ -1201,6 +1222,10 @@ export class TypeChecker {
         // TypeSymbol (no como variable), y sin este atajo el type-checker diría
         // que `Color` no es un valor.
         if (this.enums.has(node.name)) { result = node.name; break; }
+        // V1.2: las uniones también son espacios de nombres para sus variantes.
+        // `Outcome.Ok(...)` se trata como llamada válida aunque `Outcome` esté
+        // registrado como TypeSymbol. El tipo de la expresión es la unión misma.
+        if (this.unions.has(node.name)) { result = node.name; break; }
         // Luego buscamos en el scope: una declaración local (variable,
         // parámetro) debe ganar sobre el tipo builtin del mismo nombre. Esto
         // permite `const path: string = argument(1); path + ".ext"` sin que
@@ -1219,6 +1244,13 @@ export class TypeChecker {
         if (node.name === "Math") { result = "Math"; break; }
         if (node.name === "Date") { result = "Date"; break; }
         this.report(node, `Símbolo no definido '${node.name}'`, this.suggestSimilar(node.name, scope.names()));
+        break;
+      }
+      case "GenericIdentifierExpression": {
+        // V1.2: `Name<T1, T2>` antes de un member access. Devolvemos el
+        // tipo genérico instanciado para que `typeMatches` lo compare
+        // correctamente con el esperado.
+        result = genericType(node.name, node.typeArguments);
         break;
       }
       case "UnaryExpression": {
@@ -1470,6 +1502,28 @@ export class TypeChecker {
       }
       case "MemberCallExpression": {
         const objectType = this.expression(node.object, scope);
+        // V1.2: `Union<T1, T2>.Variant(args)` o `Union.Variant(args)`. Si la
+        // unión existe y la variante está declarada, el resultado es el tipo
+        // de la unión instanciado (o simple si no hay genéricos).
+        if (node.object.kind === "IdentifierExpression" || node.object.kind === "GenericIdentifierExpression") {
+          const unionName = node.object.name;
+          if (this.unions.has(unionName)) {
+            const unionNode = this.unions.get(unionName)!;
+            const variant = unionNode.variants.find(v => v.name === node.method);
+            if (!variant) {
+              this.report(node, `La unión '${unionName}' no tiene variante '${node.method}' (variantes: ${unionNode.variants.map(v => v.name).join(", ")})`);
+              result = genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)); break;
+            }
+            if ((variant.payload ? 1 : 0) !== node.args.length) {
+              this.report(node, `La variante '${node.method}' espera ${variant.payload ? 1 : 0} argumento(s), recibió ${node.args.length}`);
+              result = genericType(unionName, node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters)); break;
+            }
+            const args_ = node.object.kind === "GenericIdentifierExpression" ? node.object.typeArguments : TypeChecker.namesOf(unionNode.typeParameters);
+            if (variant.payload) this.expression(node.args[0]!, scope, variant.payload);
+            result = genericType(unionName, args_);
+            break;
+          }
+        }
         if (objectType === "Filesystem") {
           result = this.dispatchBuiltin("fs", FILESYSTEM_METHODS, node, scope);
           break;
@@ -1612,6 +1666,15 @@ export class TypeChecker {
         }
         const resolved = this.resolveClass(objectType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
+        // V1.2: los miembros de una unión (variantes) se acceden como `Direction.North`.
+        // Si el objeto es un nombre de unión, el miembro es una variante.
+        if (!owner && this.unions.has(objectType)) {
+          const unionNode = this.unions.get(objectType)!;
+          const variant = unionNode.variants.find(v => v.name === node.member);
+          if (variant) { result = objectType; break; }
+          this.report(node, `La unión '${objectType}' no tiene variante '${node.member}'`);
+          break;
+        }
         if (!owner) this.report(node.object, `El tipo '${objectType}' no es una clase concreta`);
         else if (!field) this.report(node, `La clase '${objectType}' no declara el campo '${node.member}'`);
         if (field) result = this.substituteType(field.type, resolved?.substitutions ?? new Map());
