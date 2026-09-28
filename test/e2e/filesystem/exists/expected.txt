@@ -1,0 +1,3 @@
+antes=0
+despues_crear=1
+despues_borrar=0

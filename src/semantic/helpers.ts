@@ -62,4 +62,21 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   // Array
   arrayPush:         { minParams: 2 },
   arrayLength:       { minParams: 1 },
+  // Filesystem (Issue #13)
+  fileRead:          { minParams: 1 },
+  fileWrite:         { minParams: 2 },
+  fileAppend:        { minParams: 2 },
+  fileExists:        { minParams: 1 },
+  fileCopy:          { minParams: 2 },
+  fileMove:          { minParams: 2 },
+  fileRemove:        { minParams: 1 },
+  // Networking (Issue #14)
+  tcpListen:         { minParams: 2 },
+  tcpAccept:         { minParams: 1 },
+  tcpConnect:        { minParams: 2 },
+  tcpRead:           { minParams: 2 },
+  tcpWrite:          { minParams: 2 },
+  tcpClose:          { minParams: 1 },
+  etsNetSyncEcho:    { minParams: 4 },
+  etsNetSyncLarge:   { minParams: 3 },
 });

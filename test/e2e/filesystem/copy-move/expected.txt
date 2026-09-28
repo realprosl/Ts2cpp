@@ -1,0 +1,5 @@
+existe_original=1
+existe_copia=1
+copia_tras_mover=0
+existe_destino=1
+destino_contenido:[contenido X]
