@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -541,6 +541,8 @@ export class TypeChecker {
       this.report(node, `Símbolo duplicado '${node.name}'`); return;
     }
     this.interfaces.set(node.name, node);
+    // V0.4: interfaces se emiten como `struct` C++ con métodos virtuales puros.
+    node.resolvedRuntimeType = { kind: "passthrough", cppName: node.name };
     const methods = new Set<string>();
     for (const method of node.methods) {
       const signature = `${method.name}(${method.params.map(parameter => parameter.type).join(",")})`;
@@ -573,6 +575,10 @@ export class TypeChecker {
       this.report(node, `Símbolo duplicado '${node.name}'`); return;
     }
     this.aliases.set(node.name, node);
+    // V0.4: pre-computa el ResolvedRuntimeType del RHS del alias. Esto
+    // permite que el codegen consuma directamente la forma resuelta sin
+    // tener que parsear `node.type` cada vez.
+    node.resolvedRuntimeType = { kind: "alias", target: toResolvedRuntimeType(node.type) };
     this.withTypeParameters(node.typeParameters, () => {
       const visited = new Set<string>([node.name]);
       this.validateType(node.type, node, false, false, scope, visited);
@@ -648,6 +654,9 @@ export class TypeChecker {
       this.report(node, `Símbolo duplicado '${node.name}'`); return;
     }
     this.classes.set(node.name, node);
+    // V0.4: tipo concreto en runtime C++.
+    if (node.typeParameters.length) node.resolvedRuntimeType = { kind: "polymorphic", typeParameters: TypeChecker.namesOf(node.typeParameters) };
+    else node.resolvedRuntimeType = { kind: "passthrough", cppName: node.name };
   }
 
   private declareEnum(node: EnumDeclaration, scope: Scope): void {
@@ -655,6 +664,8 @@ export class TypeChecker {
       this.report(node, `Símbolo duplicado '${node.name}'`); return;
     }
     this.enums.set(node.name, node);
+    // V0.4: enums se emiten como un struct C++.
+    node.resolvedRuntimeType = { kind: "passthrough", cppName: node.name };
     const seen = new Set<string>();
     for (const member of node.members) {
       if (seen.has(member.name)) this.report(member, `Miembro de enum duplicado '${member.name}'`);

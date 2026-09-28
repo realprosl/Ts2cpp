@@ -314,6 +314,23 @@ export interface ResolvedSignature {
 }
 
 /**
+ * V0.4: tipo concreto en runtime C++ que se emite para una declaración
+ * top-level. Adjuntado a `ClassDeclaration`, `InterfaceDeclaration`,
+ * `EnumDeclaration` y `TypeAliasDeclaration`.
+ *
+ * A diferencia de `ResolvedType` (que describe tipos en el dialecto TS),
+ * `ResolvedRuntimeType` describe cómo se materializa en C++: si la clase
+ * se emite tal cual, si un alias se sustituye por otro tipo, si un genérico
+ * necesita envoltorio `ets::` etc.
+ */
+export type ResolvedRuntimeType =
+  | { kind: "passthrough"; cppName: string }
+  | { kind: "ets_envelope"; base: "Unq" | "Rc" | "Optional" | "Task" | "Result" | "Map" | "Set"; args: ResolvedRuntimeType[] }
+  | { kind: "alias"; target: ResolvedRuntimeType }
+  | { kind: "polymorphic"; typeParameters: string[] }
+  | { kind: "builtin"; cppName: string };
+
+/**
  * Convierte `ResolvedType` de vuelta a su `TypeName` (string) para APIs
  * que aún dependen del string. Útil durante la transición: el codegen y
  * los consumidores históricos pueden seguir operando con strings mientras
@@ -330,4 +347,28 @@ export function resolvedTypeToTypeName(type: ResolvedType): TypeName {
     case "union":     return type.members.map(resolvedTypeToTypeName).join("|");
     case "any":       return "any";
   }
+}
+
+/**
+ * V0.4: convierte un `TypeName` (string) a su `ResolvedRuntimeType`. La
+ * conversión es conservadora: tipos que no encajan en las categorías
+ * conocidas caen a `passthrough` (se emiten tal cual en C++). Esto
+ * preserva la semántica actual mientras el codegen migra.
+ */
+export function toResolvedRuntimeType(type: TypeName): ResolvedRuntimeType {
+  if (isPrimitive(type)) return { kind: "builtin", cppName: type };
+  if (isGenericType(type)) {
+    const base = genericBase(type);
+    const args = genericArguments(type).map(toResolvedRuntimeType);
+    if (base === "Unq" || base === "Rc" || base === "Optional" || base === "Promise" || base === "Result" || base === "Map" || base === "Set") {
+      const envelopeBase = base === "Promise" ? "Task" : base as "Unq" | "Rc" | "Optional" | "Result" | "Map" | "Set";
+      return { kind: "ets_envelope", base: envelopeBase, args };
+    }
+    return { kind: "passthrough", cppName: type };
+  }
+  if (isUnionType(type)) return { kind: "passthrough", cppName: type };
+  if (isArrayType(type)) return { kind: "passthrough", cppName: type };
+  if (isTupleType(type)) return { kind: "passthrough", cppName: type };
+  if (isFunctionType(type)) return { kind: "passthrough", cppName: type };
+  return { kind: "passthrough", cppName: type };
 }
