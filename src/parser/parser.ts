@@ -657,6 +657,17 @@ export class Parser {
         if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
         const close = this.consume(")", "Se esperaba ')' después de los argumentos");
         expr = { kind: "CallExpression", callee: expr.name, typeArguments, args, span: span(expr.span.start, close.span.end) };
+      } else if (expr.kind === "IdentifierExpression" && this.isGenericInstance()) {
+        // V1.2: `Name<T1, T2>.Member(...)` — typeArguments del identificador
+        // antes del member access. Modelamos el resultado como
+        // MemberCallExpression sobre un GenericIdentifier.
+        this.consume("<", "Se esperaba '<'");
+        const typeArguments: TypeName[] = [];
+        do { typeArguments.push(this.typeName()); } while (this.match(","));
+        this.consume(">", "Se esperaba '>'");
+        expr = { kind: "GenericIdentifierExpression", name: expr.name, typeArguments, span: expr.span };
+        // Reentrar el bucle para procesar el `.` siguiente (si lo hay).
+        continue;
       } else if (this.match(".", "?.")) {
         // `?.` marca el MemberExpression como `optional`. El type-checker
         // valida que el objeto sea `Optional<X>`; el codegen lo desazucara
@@ -834,12 +845,16 @@ export class Parser {
     const subParser = new Parser(subTokens);
     return subParser.expression();
   }
-  private isGenericCall(): boolean {
+  private isGenericCall(): boolean { return this.isGenericFollowedBy("("); }
+  // V1.2: igual que `isGenericCall` pero acepta `.` después de `>`, para
+  // soportar `Name<T>.Member(...)` (constructor de variante de unión).
+  private isGenericInstance(): boolean { return this.isGenericFollowedBy(".") || this.isGenericFollowedBy("("); }
+  private isGenericFollowedBy(follower: TokenKind): boolean {
     if (!this.check("<")) return false;
     let depth = 0;
     for (let index = this.current; index < this.tokens.length; index++) {
       if (this.tokens[index].kind === "<") depth++;
-      else if (this.tokens[index].kind === ">") { depth--; if (depth === 0) return this.tokens[index + 1]?.kind === "("; }
+      else if (this.tokens[index].kind === ">") { depth--; if (depth === 0) return this.tokens[index + 1]?.kind === follower; }
       else if (this.tokens[index].kind === ";" || this.tokens[index].kind === "eof") return false;
     }
     return false;

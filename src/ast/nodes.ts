@@ -60,7 +60,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = (LiteralExpression | IdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
+export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
   /**
    * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
    * El codegen consume este campo directamente en lugar de parsear
@@ -72,6 +72,9 @@ export type Expression = (LiteralExpression | IdentifierExpression | ArrayLitera
 };
 export interface LiteralExpression { kind: "LiteralExpression"; value: number | string | boolean; literalType: PrimitiveType; raw?: string; span: Span }
 export interface IdentifierExpression { kind: "IdentifierExpression"; name: string; span: Span }
+// V1.2: `Name<T, U>.Member(...)` modela el identificador parametrizado
+// antes de un member access.
+export interface GenericIdentifierExpression { kind: "GenericIdentifierExpression"; name: string; typeArguments: TypeName[]; span: Span }
 export interface ArrayLiteralExpression { kind: "ArrayLiteralExpression"; elements: ArrayElement[]; span: Span }
 // Un `ArrayElement` puede ser una expresión normal o un spread (`...expr`).
 // El spread se aplica como `insert`/`push_back` sobre el `std::vector` del

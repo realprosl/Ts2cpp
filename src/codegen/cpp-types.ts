@@ -84,3 +84,37 @@ function classNameOfResolved(r: ResolvedType): string {
     case "any":       return "any";
   }
 }
+
+// V1.2: recorre un `TypeName` (string) y devuelve los type parameter names
+// que están declarados en `declared`. Se usa para emitir el prefijo de
+// template mínimo en constructores de variantes de uniones genéricas:
+// `Ok<T>` para `union Outcome<T, E> = Ok(T) | Err(E);`. Respeta paréntesis,
+// corchetes y `<>`.
+export function collectTypeParameterNames(type: TypeName, declared: Set<string>): Set<string> {
+  const used = new Set<string>();
+  let depthRound = 0; let depthSquare = 0; let depthAngle = 0;
+  let current = "";
+  const flush = () => {
+    if (current.length) {
+      if (declared.has(current)) used.add(current);
+      current = "";
+    }
+  };
+  for (let i = 0; i < type.length; i++) {
+    const ch = type[i];
+    if (ch === "(") depthRound++;
+    else if (ch === ")") depthRound--;
+    else if (depthRound > 0) continue;
+    else if (ch === "[") depthSquare++;
+    else if (ch === "]") depthSquare--;
+    else if (depthSquare > 0) continue;
+    else if (ch === "<") depthAngle++;
+    else if (ch === ">") { depthAngle--; flush(); }
+    else if (ch === "," || ch === "|" || ch === "&") { flush(); }
+    else if (depthAngle > 0) current += ch;
+    else if (/[a-zA-Z0-9_]/.test(ch)) current += ch;
+    else flush();
+  }
+  flush();
+  return used;
+}
