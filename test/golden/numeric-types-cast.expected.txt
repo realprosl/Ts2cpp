@@ -1,0 +1,4 @@
+3.14159 trunc to i32:3
+42 widen to f64:42
+100 signed to u32:100
+2.71828 to f32:2.71828

@@ -40,7 +40,7 @@ test("checker: rechaza tipo incompatible en asignación", () => {
 });
 
 test("checker: rechaza operador bitwise con operandos no numéricos", () => {
-  expectError("const x: number = \"a\" | \"b\";", "number");
+  expectError("const x: number = \"a\" | \"b\";", "numérico");
 });
 
 test("checker: acepta bitwise entre números", () => {
@@ -376,4 +376,33 @@ test("checker: anota resolvedType en generics", () => {
     assert.equal(value.resolvedType.base, "Unq");
     assert.equal(value.resolvedType.args[0]?.kind, "class");
   }
+});
+
+// V3: tipos numéricos concretos (Issue #58).
+test("V3: acepta literales que caben en tipos numéricos concretos", () => {
+  const { checker } = check(`
+    let a: i8 = 127;
+    let b: u8 = 255;
+    let c: i32 = -2147483647;
+    let d: u32 = 4294967295;
+    let e: f32 = 3.14;
+    let f: f64 = 15000000000.0;
+  `);
+  assert.ok(checker);
+});
+test("V3: rechaza i8 overflow positivo", () => {
+  expectError("let x: i8 = 300;", "no cabe");
+});
+test("V3: rechaza i8 overflow negativo", () => {
+  expectError("let x: i8 = -200;", "no cabe");
+});
+test("V3: rechaza u32 negativo", () => {
+  expectError("let x: u32 = -1;", "no cabe");
+});
+test("V3: acepta i32 → u32 cast via función", () => {
+  const { checker } = check(`
+    function toU32(x: i32): u32 { return x; }
+    let r: u32 = toU32(100);
+  `);
+  assert.ok(checker);
 });

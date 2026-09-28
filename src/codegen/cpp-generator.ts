@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
 import { cppType, collectTypeParameterNames } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
-import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
+import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
 import { HELPER_METADATA } from "../semantic/helpers.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
@@ -46,6 +46,26 @@ export class CppGenerator {
   }
   // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
   // por colisión con un global del runtime, devuelve el nombre prefijado.
+  // V3: emite la representación textual de un operando numérico para uso en
+  // expresiones binarias aritméticas/de comparación. Si el operando es un
+  // tipo numérico concreto (i8..u64, f32, f64), lo envuelve en `static_cast<double>`;
+  // si es `number` lo deja tal cual. Si es otro tipo, lo emite sin tocar (el
+  // type-checker garantiza que llegamos aquí solo con operandos válidos).
+  private numericOperandAsDouble(node: Expression): string {
+    const text = this.emitExpression(node);
+    const type = this.expressionType(node);
+    if (type && isNumericType(type)) return `static_cast<double>(${text})`;
+    return text;
+  }
+  // V3: ambos operandos son de la familia numérica (number o numérico concreto).
+  private sameNumericExprType(left: Expression, right: Expression): boolean {
+    const lType = this.expressionType(left);
+    const rType = this.expressionType(right);
+    if (!lType || !rType) return false;
+    const leftNum = lType === "number" || isNumericType(lType);
+    const rightNum = rType === "number" || isNumericType(rType);
+    return leftNum && rightNum;
+  }
   private resolveAlias(name: string): string { return this.exportAliases.get(name) ?? name; }
   private cppName(name: string): string {
     return this.localRenames.get(name) ?? name;
@@ -136,7 +156,15 @@ export class CppGenerator {
     for (const variable of simpleTopLevel) {
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
-      const initializer = this.emitExpression(variable.initializer);
+      let initializer = this.emitExpression(variable.initializer);
+      // V3: idem VariableDeclaration; emitir `static_cast<target>` cuando el
+      // tipo declarado es un numérico concreto y el initializer es de otro tipo
+      // numérico (o `number` literal). Esto cubre el caso de top-level.
+      if (variable.declaredType && isNumericType(variable.declaredType)) {
+        const initType = this.expressionType(variable.initializer);
+        const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== variable.declaredType);
+        if (needsCast) initializer = `static_cast<${cppType(variable.declaredType)}>(${initializer})`;
+      }
       this.inStaticInit = previous;
       // Si el nombre colisiona con un singleton global del runtime, lo
       // renombramos en C++ y registramos el rename para que las referencias
@@ -454,7 +482,17 @@ export class CppGenerator {
         // para evitar la copia. El type-checker garantiza que el tipo
         // declarado coincide con el tipo del valor retornado.
         const typeRef = this.expressionReturnsRef(node.initializer) ? "&" : "";
-        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) + typeRef : "auto"} ${this.cppName(node.name)} = ${this.emitExpression(node.initializer)};`;
+        // V3: si el tipo declarado es un numérico concreto y el initializer
+        // tiene un tipo numérico distinto (o es `number` literal), insertamos
+        // `static_cast<Target>` para que el C++ no se queje de la conversión
+        // (p.ej. `int32_t x = 42.0` es narrowing implícito y emite warning).
+        let initializerExpr = this.emitExpression(node.initializer);
+        if (node.declaredType && isNumericType(node.declaredType)) {
+          const initType = this.expressionType(node.initializer);
+          const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== node.declaredType);
+          if (needsCast) initializerExpr = `static_cast<${cppType(node.declaredType)}>(${initializerExpr})`;
+        }
+        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) + typeRef : "auto"} ${this.cppName(node.name)} = ${initializerExpr};`;
       }
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
@@ -469,14 +507,31 @@ export class CppGenerator {
             return promiseResult(valueType) === "void" ? `${this.pad()}${awaited};\n${this.pad()}co_return;` : `${this.pad()}co_return ${awaited};`;
           }
         }
-        return `${this.pad()}${this.inAsyncFunction ? "co_return" : "return"}${node.value ? " " + this.emitExpression(node.value) : ""};`;
+        // V3: emitir static_cast si el tipo declarado del retorno es un
+        // numérico concreto y el valor es de otro tipo numérico.
+        let returnText = node.value ? this.emitExpression(node.value) : "";
+        if (node.value && this.currentReturn && isNumericType(this.currentReturn)) {
+          const valueType = this.expressionType(node.value);
+          if (valueType && (valueType === "number" || isNumericType(valueType)) && valueType !== this.currentReturn) {
+            returnText = `static_cast<${cppType(this.currentReturn)}>(${returnText})`;
+          }
+        }
+        return `${this.pad()}${this.inAsyncFunction ? "co_return" : "return"}${returnText ? " " + returnText : ""};`;
       }
       case "IfStatement": { let out = `${this.pad()}if (${this.emitExpression(node.condition)}) ${this.statementBody(node.thenBranch)}`; if (node.elseBranch) out += ` else ${this.statementBody(node.elseBranch)}`; return out; }
       case "WhileStatement": return `${this.pad()}while (${this.emitExpression(node.condition)}) ${this.statementBody(node.body)}`;
       case "ForStatement": {
         let initializer = "";
-        if (node.initializer?.kind === "VariableDeclaration") initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${this.cppName(node.initializer.name)} = ${this.emitExpression(node.initializer.initializer)}`;
-        else if (node.initializer?.kind === "ExpressionStatement") initializer = this.emitExpression(node.initializer.expression);
+        if (node.initializer?.kind === "VariableDeclaration") {
+          // V3: static_cast en for-init si el tipo es numérico concreto.
+          let init = this.emitExpression(node.initializer.initializer);
+          if (node.initializer.declaredType && isNumericType(node.initializer.declaredType)) {
+            const initType = this.expressionType(node.initializer.initializer);
+            const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== node.initializer.declaredType);
+            if (needsCast) init = `static_cast<${cppType(node.initializer.declaredType)}>(${init})`;
+          }
+          initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${this.cppName(node.initializer.name)} = ${init}`;
+        } else if (node.initializer?.kind === "ExpressionStatement") initializer = this.emitExpression(node.initializer.expression);
         return `${this.pad()}for (${initializer}; ${node.condition ? this.emitExpression(node.condition) : ""}; ${node.increment ? this.emitExpression(node.increment) : ""}) ${this.statementBody(node.body)}`;
       }
       case "BreakStatement": return `${this.pad()}break;`;
@@ -910,9 +965,19 @@ export class CppGenerator {
             return `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
           }
         }
+        // V3: comparación entre tipos numéricos concretos se promueve a
+        // `double` (idem aritmética) para evitar narrowing warnings.
+        if ((node.operator === "==" || node.operator === "!=") && this.sameNumericExprType(node.left, node.right)) {
+          const leftText = this.numericOperandAsDouble(node.left);
+          const rightText = this.numericOperandAsDouble(node.right);
+          return `(${leftText} ${node.operator} ${rightText})`;
+        }
         // Operadores bitwise: el dialecto modela `number` como `double`, pero
         // C++ rechaza `|`/`&`/`^`/etc. entre doubles. Hacemos cast explícito
-        // a `std::int64_t` para la operación y devolvemos `double`.
+        // a `std::int64_t` para la operación y devolvemos `double`. V3: los
+        // tipos numéricos concretos (i8..u64) también se promueven a int64
+        // para bitwise; f32/f64 no se admiten en bitwise (rechazado por el
+        // type-checker en requireNumericOperand).
         if (["|", "&", "^", "<<", ">>"].includes(node.operator)) {
           return `(static_cast<std::int64_t>(${this.emitExpression(node.left)}) ${node.operator} static_cast<std::int64_t>(${this.emitExpression(node.right)}))`;
         }
@@ -924,13 +989,46 @@ export class CppGenerator {
           // garantiza que lhs es `Optional<T>` y default es `T`.
           return `optionalValueOr(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})`;
         }
-        return node.operator === "%" ? `std::fmod(${this.emitExpression(node.left)}, ${this.emitExpression(node.right)})` : `(${this.emitExpression(node.left)} ${node.operator} ${this.emitExpression(node.right)})`;
+        // V3: aritmética y comparación entre numéricos concretos se promueven
+        // a `double` (mismo tratamiento que `number`). Si el operando ya es
+        // `number` no añadimos el cast (sería redundante).
+        const leftText = this.numericOperandAsDouble(node.left);
+        const rightText = this.numericOperandAsDouble(node.right);
+        return node.operator === "%" ? `std::fmod(${leftText}, ${rightText})` : `(${leftText} ${node.operator} ${rightText})`;
       }
-      case "AssignmentExpression": return `(${this.emitExpression(node.target)} = ${this.emitExpression(node.value)})`;
+      case "AssignmentExpression": {
+        // V3: si el target es un numérico concreto y el value es de otro tipo
+        // numérico (o `number`), emitir `static_cast<Target>` para evitar
+        // narrowing warnings del compilador C++.
+        let valueText = this.emitExpression(node.value);
+        const targetType = this.expressionType(node.target);
+        if (targetType && isNumericType(targetType)) {
+          const valueType = this.expressionType(node.value);
+          if (valueType && (valueType === "number" || isNumericType(valueType)) && valueType !== targetType) {
+            valueText = `static_cast<${cppType(targetType)}>(${valueText})`;
+          }
+        }
+        return `(${this.emitExpression(node.target)} = ${valueText})`;
+      }
       case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
       case "MatchExpression": return this.emitMatch(node);
       case "SatisfiesExpression": return this.emitExpression(node.operand);
       case "CallExpression": {
+        // V3: cast explícito entre tipos numéricos concretos. `i32(x)` se
+        // reescribe a `static_cast<int32_t>(x)`. El callee es uno de los
+        // 10 primitivos numéricos (i8..u64, f32, f64) y debe tener exactamente
+        // un argumento. Esto es azúcar sobre `CallExpression` para no añadir
+        // un nuevo tipo de nodo AST (cumple "AST estable: solo campos aditivos").
+        if (isNumericType(node.callee) && node.args.length === 1 && node.typeArguments.length === 0) {
+          const arg = node.args[0]!;
+          let text = this.emitExpression(arg);
+          // Enums: el resultado del cast debe pasar por el subyacente (id. resto de casts).
+          const argType = this.expressionType(arg);
+          const underlying = argType && this.enumUnderlying.get(argType);
+          if (underlying === "number") text = `static_cast<double>(${text})`;
+          else if (underlying === "string") text = `static_cast<std::string>(${text})`;
+          return `static_cast<${cppType(node.callee)}>(${text})`;
+        }
         const args = node.args.map((argument, index) => {
           let text = this.emitExpression(argument);
           if (this.expressionIsVariadic(argument)) text += "...";
@@ -942,6 +1040,10 @@ export class CppGenerator {
             const underlying = argType && this.enumUnderlying.get(argType);
             if (underlying === "number") text = `static_cast<double>(${text})`;
             else if (underlying === "string") text = `static_cast<std::string>(${text})`;
+            // V3: tipos numéricos concretos también requieren cast explícito
+            // cuando se pasan a APIs que esperan `double` (p.ej. `numberToString`,
+            // `print`). Sin el cast, `int8_t`/`uint8_t` se imprimirían como char.
+            else if (argType && isNumericType(argType)) text = `static_cast<double>(${text})`;
           }
           // `Mut<T>` espera un puntero: si el argumento es un lvalue (identificador,
           // member access, index), le añadimos `&` para que C++ lo acepte.
