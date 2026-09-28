@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, promiseResult, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
@@ -248,6 +248,7 @@ export class TypeChecker {
   private readonly classes = new Map<string, ClassDeclaration>();
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
   private readonly enums = new Map<string, EnumDeclaration>();
+  private readonly unions = new Map<string, UnionDeclaration>();
   private activeTypeParameters = new Set<string>();
   private activeTypeConstraints = new Map<string, TypeName>();
   private activeTypeDefaults = new Map<string, TypeName>();
@@ -377,6 +378,7 @@ export class TypeChecker {
     for (const statement of program.statements) if (statement.kind === "InterfaceDeclaration") this.declareInterface(statement, global);
     for (const statement of program.statements) if (statement.kind === "TypeAliasDeclaration") this.declareTypeAlias(statement, global);
     for (const statement of program.statements) if (statement.kind === "EnumDeclaration") this.declareEnum(statement, global);
+    for (const statement of program.statements) if (statement.kind === "UnionDeclaration") this.declareUnion(statement, global);
     // Tras declarar los alias, expandimos en el AST cualquier referencia a un
     // nombre de alias (o a su instanciación genérica) por su forma canónica.
     // Así codegen ve directamente `number[]` en vez de `NumberArray`.
@@ -672,6 +674,28 @@ export class TypeChecker {
       seen.add(member.name);
       scope.define(member.name, { kind: "variable", type: node.name, mutable: false });
     }
+  }
+
+  // V1: tagged unions nativas del dialecto. Se emiten como `std::variant<...>`
+  // con discriminador. Cada variante es accesible vía `match` (V1.2 introducirá
+  // exhaustividad).
+  private declareUnion(node: UnionDeclaration, scope: Scope): void {
+    if (this.classes.has(node.name) || this.enums.has(node.name) || this.unions.has(node.name) || !scope.define(node.name, { kind: "type", type: node.name })) {
+      this.report(node, `Símbolo duplicado '${node.name}'`); return;
+    }
+    this.unions.set(node.name, node);
+    // V0.4: pre-computamos el ResolvedRuntimeType para que el codegen lo
+    // consuma directamente. Una unión sin parámetros genéricos se emite
+    // como passthrough (std::variant) en C++.
+    node.resolvedRuntimeType = { kind: "passthrough", cppName: node.name };
+    this.withTypeParameters(node.typeParameters, () => {
+      const seen = new Set<string>();
+      for (const variant of node.variants) {
+        if (seen.has(variant.name)) this.report(variant, `Variante de unión duplicada '${variant.name}'`);
+        seen.add(variant.name);
+        if (variant.payload) this.validateType(variant.payload, variant, false, false, scope);
+      }
+    });
   }
 
   private validateClass(node: ClassDeclaration, scope: Scope): void {

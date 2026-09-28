@@ -280,6 +280,53 @@ test("checker: anota resolvedRuntimeType en TypeAliasDeclaration", () => {
   }
 });
 
+// V1.1: tagged unions. El parser reconoce `union X<T> = A | B(T);` y el
+// checker anota resolvedRuntimeType.
+test("V1: parser acepta declaración de union", () => {
+  const { ast } = check(`
+    union Outcome<T, E> = Ok(T) | Err(E);
+  `);
+  const stmt = ast.statements[0];
+  if (stmt.kind !== "UnionDeclaration") throw new Error("expected UnionDeclaration");
+  assert.equal(stmt.name, "Outcome");
+  assert.equal(stmt.typeParameters.length, 2);
+  assert.equal(stmt.variants.length, 2);
+  assert.equal(stmt.variants[0]?.name, "Ok");
+  assert.equal(stmt.variants[0]?.payload, "T");
+  assert.equal(stmt.variants[1]?.name, "Err");
+  assert.equal(stmt.variants[1]?.payload, "E");
+});
+
+test("V1: union sin payload (variantes nulas)", () => {
+  const { ast } = check(`
+    union Direction = North | South | East | West;
+  `);
+  const stmt = ast.statements[0];
+  if (stmt.kind !== "UnionDeclaration") throw new Error("expected UnionDeclaration");
+  assert.equal(stmt.variants.length, 4);
+  assert.equal(stmt.variants[0]?.payload, undefined);
+});
+
+test("V1: union anota resolvedRuntimeType como passthrough", () => {
+  const { ast } = check(`
+    union Color = Red | Green | Blue;
+  `);
+  const stmt = ast.statements[0];
+  if (stmt.kind !== "UnionDeclaration") throw new Error("expected UnionDeclaration");
+  const rt = stmt.resolvedRuntimeType!;
+  assert.equal(rt.kind, "passthrough");
+  if (rt.kind === "passthrough") {
+    assert.equal(rt.cppName, "Color");
+  }
+});
+
+test("V1: union rechaza nombre duplicado", () => {
+  expectError(`
+    union X = A;
+    union X = B;
+  `, "Símbolo duplicado");
+});
+
 // V0.1: el checker anota `resolvedType` directamente sobre cada Expression.
 test("checker: anota resolvedType en literales", () => {
   const { ast } = check("const x: number = 42;");
