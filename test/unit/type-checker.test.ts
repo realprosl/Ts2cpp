@@ -196,6 +196,90 @@ test("checker: resolvedSignature detecta parámetro variádico", () => {
   assert.equal(sig.parameters[0]?.type.kind, "array");
 });
 
+// V0.4: el checker anota `resolvedRuntimeType` en declaraciones top-level.
+test("checker: anota resolvedRuntimeType en ClassDeclaration", () => {
+  const { ast } = check(`
+    class Counter {
+      value: number;
+      constructor(value: number) { this.value = value; }
+    }
+  `);
+  const cls = ast.statements[0];
+  if (cls.kind !== "ClassDeclaration") throw new Error("expected ClassDeclaration");
+  const rt = cls.resolvedRuntimeType!;
+  assert.equal(rt.kind, "passthrough");
+  if (rt.kind === "passthrough") {
+    assert.equal(rt.cppName, "Counter");
+  }
+});
+
+test("checker: anota resolvedRuntimeType en ClassDeclaration genérica", () => {
+  const { ast } = check(`
+    class Box<T> {
+      value: T;
+      constructor(value: T) { this.value = value; }
+    }
+  `);
+  const cls = ast.statements[0];
+  if (cls.kind !== "ClassDeclaration") throw new Error("expected ClassDeclaration");
+  const rt = cls.resolvedRuntimeType!;
+  assert.equal(rt.kind, "polymorphic");
+  if (rt.kind === "polymorphic") {
+    assert.deepEqual(rt.typeParameters, ["T"]);
+  }
+});
+
+test("checker: anota resolvedRuntimeType en InterfaceDeclaration", () => {
+  const { ast } = check(`
+    interface Adder {
+      add(x: number, y: number): number;
+    }
+  `);
+  const iface = ast.statements[0];
+  if (iface.kind !== "InterfaceDeclaration") throw new Error("expected InterfaceDeclaration");
+  const rt = iface.resolvedRuntimeType!;
+  assert.equal(rt.kind, "passthrough");
+  if (rt.kind === "passthrough") {
+    assert.equal(rt.cppName, "Adder");
+  }
+});
+
+test("checker: anota resolvedRuntimeType en EnumDeclaration", () => {
+  const { ast } = check(`
+    enum Color { Red, Green, Blue }
+  `);
+  const e = ast.statements[0];
+  if (e.kind !== "EnumDeclaration") throw new Error("expected EnumDeclaration");
+  const rt = e.resolvedRuntimeType!;
+  assert.equal(rt.kind, "passthrough");
+  if (rt.kind === "passthrough") {
+    assert.equal(rt.cppName, "Color");
+  }
+});
+
+test("checker: anota resolvedRuntimeType en TypeAliasDeclaration", () => {
+  const { ast } = check(`
+    type NumberArray = number[];
+    type Maybe = Optional<string>;
+  `);
+  const alias1 = ast.statements[0];
+  const alias2 = ast.statements[1];
+  if (alias1.kind !== "TypeAliasDeclaration") throw new Error("expected TypeAliasDeclaration");
+  if (alias2.kind !== "TypeAliasDeclaration") throw new Error("expected TypeAliasDeclaration");
+  const rt1 = alias1.resolvedRuntimeType!;
+  const rt2 = alias2.resolvedRuntimeType!;
+  assert.equal(rt1.kind, "alias");
+  if (rt1.kind === "alias") assert.equal(rt1.target.kind, "passthrough");
+  assert.equal(rt2.kind, "alias");
+  if (rt2.kind === "alias") {
+    assert.equal(rt2.target.kind, "ets_envelope");
+    if (rt2.target.kind === "ets_envelope") {
+      assert.equal(rt2.target.base, "Optional");
+      assert.equal(rt2.target.args[0]?.kind, "builtin");
+    }
+  }
+});
+
 // V0.1: el checker anota `resolvedType` directamente sobre cada Expression.
 test("checker: anota resolvedType en literales", () => {
   const { ast } = check("const x: number = 42;");
