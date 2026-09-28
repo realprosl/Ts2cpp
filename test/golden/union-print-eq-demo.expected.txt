@@ -1,0 +1,8 @@
+Ok(42)
+Err(boom)
+r1 == r3
+r1 != r4
+r1 != r2
+Circle
+Square
+s1 != s2
