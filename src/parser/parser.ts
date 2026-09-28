@@ -840,7 +840,22 @@ export class Parser {
       this.consume(">", "Se esperaba '>' en el tipo genérico");
       result = genericType(result, arguments_);
     }
-    while (this.match("[")) { this.consume("]", "Se esperaba ']' en el tipo array"); result = arrayType(result); }
+    // V4: sufijos de array. Distinguimos `[N]` (tamaño literal entero, fijo,
+    // pila) de `[]` (vector dinámico, heap). El canónico es T[N] para fijo
+    // y T[] para vector; los helpers isFixedArrayType/fixedArrayElement/
+    // fixedArraySize de type-system.ts permiten operar sin parsear strings.
+    while (this.match("[")) {
+      if (this.match("]")) {
+        // T[]: array dinámico (heap, std::vector). El `]` ya se consumió en
+        // el `match`, así que no hace falta consumirlo otra vez.
+        result = arrayType(result);
+      } else {
+        // T[N]: array de tamaño fijo (pila, std::array). N es literal entero.
+        const tok = this.consume("number", "Se esperaba un literal entero como tamaño del array fijo");
+        this.consume("]", "Se esperaba ']' cerrando el array fijo");
+        result = `${result}[${Number(tok.lexeme)}]`;
+      }
+    }
     // Sufijo de union: `A | B | C`. Se compone con la sintaxis existente
     // (arrays, generics, tuplas, funciones) ya parseada.
     while (this.match("|")) result = `${result} | ${this.typeName()}`;

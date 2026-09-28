@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -847,6 +847,15 @@ export class TypeChecker {
     }
   }
 
+  // V4: helper para extraer un valor entero literal de una expresión (o
+  // `undefined` si no es un literal entero). Soporta tanto LiteralExpression
+  // como UnaryExpression con `-`/`+` sobre LiteralExpression.
+  private literalIntValue(node: Expression): number | undefined {
+    if (node.kind === "LiteralExpression" && node.literalType === "number" && Number.isInteger(Number(node.value))) return Number(node.value);
+    if (node.kind === "UnaryExpression" && (node.operator === "-" || node.operator === "+") && node.operand.kind === "LiteralExpression" && node.operand.literalType === "number" && Number.isInteger(Number(node.operand.value))) return node.operator === "-" ? -Number(node.operand.value) : Number(node.operand.value);
+    return undefined;
+  }
+
   // V3: helper público-equivalente para casos donde el initializer es un
   // UnaryExpression con un literal numérico (p.ej. `-129`). Lo desempaqueta y
   // delega en `validateNumericLiteral` con el signo aplicado.
@@ -905,6 +914,19 @@ export class TypeChecker {
       if (element === "void" || this.interfaces.has(element)) this.report(node, `El array necesita un tipo de elemento concreto, no '${element}'`);
       this.validateType(element, node, false, primitiveOnly, scope);
       return type;
+    }
+    // V4: arrays de tamaño fijo `T[N]`. Validamos que T es concreto y N
+    // es positivo. Registramos en el cache indexado por el nombre canónico
+    // para que codegen y bounds-check puedan consultar element/size sin
+    // re-parsear el string (regla del dialecto: nada de regex sobre tipos).
+    const fixedMatch = type.match(/^([^\s\[\]]+)\[(\d+)\]$/);
+    if (fixedMatch) {
+      const element = fixedMatch[1];
+      const size = Number(fixedMatch[2]);
+      if (element === "void" || this.interfaces.has(element)) this.report(node, `El array fijo necesita un tipo de elemento concreto, no '${element}'`);
+      if (!Number.isInteger(size) || size <= 0) this.report(node, `El tamaño del array fijo debe ser un literal entero positivo, no '${size}'`);
+      this.validateType(element, node, false, primitiveOnly, scope);
+      return registerFixedArray(element, size);
     }
     if (isTupleType(type)) {
       const elements = tupleElements(type);
@@ -1022,14 +1044,18 @@ export class TypeChecker {
     switch (node.kind) {
       case "VariableDeclaration": {
         const expandedDeclared = node.declaredType ? this.expandType(node.declaredType, scope) : undefined;
+        // V4: validateType() registra el array fijo en los caches de
+        // type-system.ts ANTES de evaluar el initializer. Sin esto, el
+        // initializer no recibe `expected = T[N]` correctamente.
+        if (node.declaredType) this.validateType(node.declaredType, node, true, false, scope);
         const actual = this.expression(node.initializer, scope, expandedDeclared);
         const expected = expandedDeclared ?? actual;
         if (node.declaredType) {
           // Reescribimos el AST con el tipo ya expandido (`typeof` resuelto
           // incluido) para que codegen vea directamente `number` y no la
-          // marca `$typeof$x`.
+          // marca `$typeof$x`. validateType ya se llamó antes para registrar
+          // arrays fijos en los caches; no lo repetimos aquí.
           node.declaredType = expandedDeclared;
-          this.validateType(node.declaredType, node, true, false, scope);
           // V3: si el tipo es un numérico concreto (i8..u64, f32, f64) y el
           // initializer es un literal numérico (con posible signo unario),
           // verificamos que el valor quepa en el rango del tipo destino.
@@ -1303,6 +1329,23 @@ export class TypeChecker {
                 // ok
               } else this.report(item, `Spread: se esperaba vector de ${element}, se obtuvo ${actual}`);
             } else this.require(this.expression(item, scope, element), element, item);
+          }
+          result = expected;
+        } else if (expected && isFixedArrayType(expected)) {
+          // V4: arrays de tamaño fijo. Validamos el número de elementos y el
+          // tipo de cada uno. El `expected` se pasa a cada item para que el
+          // type-checker propague conversiones (p.ej. `let buf: u8[3] = [1,2,3];`
+          // donde los literales son `number` y se castean a `u8`).
+          const fixedElement = fixedArrayElement(expected)!;
+          const fixedSize = fixedArraySize(expected)!;
+          if (node.elements.length !== fixedSize) {
+            this.report(node, `El array fijo espera ${fixedSize} elementos, recibió ${node.elements.length}`);
+            result = expected;
+            break;
+          }
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") this.report(item, "Spread no se admite en arrays fijos (tamaño estático)");
+            else this.require(this.expression(item, scope, fixedElement), fixedElement, item);
           }
           result = expected;
         } else if (expected && isTupleType(expected)) {
@@ -1844,6 +1887,16 @@ export class TypeChecker {
         const objectType = this.expression(node.object, scope);
         this.require(this.expression(node.index, scope, "number"), "number", node.index);
         if (isArrayType(objectType)) result = arrayElement(objectType);
+        else if (isFixedArrayType(objectType)) {
+          // V4: bounds check en compilación cuando el índice es literal entero.
+          // Soportamos tanto `LiteralExpression` (p.ej. `buf[3]`) como
+          // `UnaryExpression` con `-` sobre LiteralExpression (p.ej. `buf[-1]`).
+          const size = fixedArraySize(objectType)!;
+          const elementType = fixedArrayElement(objectType)!;
+          const literalValue = this.literalIntValue(node.index);
+          if (literalValue !== undefined && (literalValue < 0 || literalValue >= size)) this.report(node.index, `Índice de array fijo fuera de rango: ${literalValue} (tamaño ${size})`);
+          result = elementType;
+        }
         else if (isTupleType(objectType)) {
           const items = tupleElements(objectType);
           if (node.index.kind !== "LiteralExpression" || node.index.literalType !== "number" || !Number.isInteger(node.index.value)) {
@@ -2194,6 +2247,13 @@ export class TypeChecker {
     const visited = new Set<string>();
     let current = type;
     while (true) {
+      // V4: los arrays fijos tienen caches indexados por nombre canónico en
+      // type-system.ts. expandType() puebla el cache aquí para que el
+      // type-checker pueda detectar `T[N]` antes de pasar por validateType.
+      const fixedMatch = current.match(/^([^\s\[\]]+)\[(\d+)\]$/);
+      if (fixedMatch) {
+        registerFixedArray(fixedMatch[1], Number(fixedMatch[2]));
+      }
       const alias = this.aliases.get(current);
       if (alias) {
         if (visited.has(current)) break;
