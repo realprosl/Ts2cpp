@@ -249,6 +249,12 @@ export class TypeChecker {
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
   private readonly enums = new Map<string, EnumDeclaration>();
   private readonly unions = new Map<string, UnionDeclaration>();
+  // V1.4: mapa de narrowing para tagged unions. Cuando entramos en un
+  // `thenBranch` con condición `expr.tag == literal`, marcamos el nombre
+  // `expr` como "narrowed" con la lista de variantes que cumplen el
+  // discriminador. `MemberExpression` consulta esto para разрешar
+  // campos exclusivos de la variante. Se restaura al salir del bloque.
+  private narrowed = new Map<string, { unionType: TypeName; discriminator: { field: string; value: string | number | boolean }; variants: string[] }>();
   // V0.2: nombres de variables que colisionan con singletons globales del
   // runtime C++ (definidos en `runtime/ets_runtime.hpp`). Si el usuario
   // declara un símbolo local con uno de estos nombres, el codegen lo
@@ -414,6 +420,16 @@ export class TypeChecker {
     const closeTcp = fn([input("TcpListener")], "void");
     closeTcp.overloads.push({ typeParameters: [], variadicTypeParameters: [], params: [input("TcpConnection")], returnType: "void" });
     global.define("closeTcp", closeTcp);
+    // V1.4: `Result<T, E = string>` se modela como una tagged union sintética
+    // del runtime con dos variantes:
+    //   { ok: true,  value: T }
+    //   { ok: false, error: E }
+    // El discriminador es el campo `ok` (boolean). Esto REEMPLAZA el wrapper
+    // `ets::Result<T>` como type alias real: el codegen emite el mismo
+    // `std::variant` que cualquier tagged union del dialecto. La clase
+    // `ets::Result<T>` del runtime queda marcada deprecated pero se conserva
+    // para no romper callers que aún la usen como tipo C++ directo.
+    this.declareResultSyntheticUnion(global);
     for (const statement of program.statements) if (statement.kind === "ClassDeclaration") this.declareClassName(statement, global);
     for (const statement of program.statements) if (statement.kind === "InterfaceDeclaration") this.declareInterface(statement, global);
     for (const statement of program.statements) if (statement.kind === "TypeAliasDeclaration") this.declareTypeAlias(statement, global);
@@ -716,6 +732,37 @@ export class TypeChecker {
     }
   }
 
+  // V1.4: registra `Result<T, E = string>` como unión sintética del
+  // runtime. Dos variantes con discriminador booleano en el campo `ok`:
+  //   { ok: true,  value: T }
+  //   { ok: false, error: E }
+  // Tras este registro, todo el flujo (validateType, match, narrowing)
+  // trata `Result<T>` y `Result<T, E>` como tagged union nativa.
+  private declareResultSyntheticUnion(scope: Scope): void {
+    // Span sintético para nodos sin posición real (no aparecen en código).
+    const synthSpan = { start: { offset: 0, line: 0, column: 0 }, end: { offset: 0, line: 0, column: 0 } };
+    const resultNode: UnionDeclaration = {
+      kind: "UnionDeclaration",
+      exported: true,
+      name: "Result",
+      typeParameters: [
+        { name: "T", span: synthSpan },
+        { name: "E", span: synthSpan, default: "string" },
+      ],
+      variants: [
+        { name: "Ok",  payload: "T", discriminator: { field: "ok", value: true  }, span: synthSpan },
+        { name: "Err", payload: "E", discriminator: { field: "ok", value: false }, span: synthSpan },
+      ],
+      resolvedRuntimeType: { kind: "passthrough", cppName: "Result" },
+      span: synthSpan,
+    };
+    // Marcamos para que NO entre en `expandAliasesInProgram` ni en la fase de
+    // validación de payloads (los nombres T/E son type parameters, no tipos
+    // reales). `declareUnion` los maneja correctamente vía `withTypeParameters`.
+    this.unions.set(resultNode.name, resultNode);
+    scope.define(resultNode.name, { kind: "type", type: resultNode.name });
+  }
+
   // V1: tagged unions nativas del dialecto. Se emiten como `std::variant<...>`
   // con discriminador. Cada variante es accesible vía `match` (V1.2 introducirá
   // exhaustividad).
@@ -998,7 +1045,15 @@ export class TypeChecker {
       // V1.2: las uniones son tipos válidos aunque no estén en classes.
       if (!owner && this.unions.has(base)) {
         const unionNode = this.unions.get(base)!;
-        if (genericArguments(type).length !== unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo, recibió ${genericArguments(type).length}`);
+        // V1.4: defaults en typeParameters (e.g. `Result<T>` → E="string").
+        if (genericArguments(type).length > unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo como máximo, recibió ${genericArguments(type).length}`);
+        else if (genericArguments(type).length < unionNode.typeParameters.length) {
+          const missing = unionNode.typeParameters.slice(genericArguments(type).length);
+          if (missing.some(p => p.default === undefined)) {
+            const required = unionNode.typeParameters.length - missing.filter(p => p.default !== undefined).length;
+            this.report(node, `'${base}' espera al menos ${required} argumento(s) de tipo, recibió ${genericArguments(type).length}`);
+          }
+        }
         genericArguments(type).forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       } const arguments_ = genericArguments(type);
@@ -1030,8 +1085,32 @@ export class TypeChecker {
         return type;
       }
       if (base === "Result") {
-        if (arguments_.length !== 1) this.report(node, `'Result' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        // V1.4: `Result<T>` (1 arg, E por defecto = string) o `Result<T, E>`.
+        // Se delega en la rama de uniones (sintética, registrada por
+        // declareResultSyntheticUnion) que ya valida nº de typeArgs y
+        // procesa defaults. Solo añadimos aquí la restricción legacy
+        // de que T ≠ void (que el flujo de unions no conoce).
+        if (arguments_.length < 1 || arguments_.length > 2) this.report(node, `'Result' espera 1 o 2 argumentos de tipo, recibió ${arguments_.length}`);
         if (arguments_[0] === "void") this.report(node, "Result<void> no está soportado; usa Result<boolean> o Promise<void>");
+        // Si no es la unión sintética (p.ej. alguien redeclaró `Result`),
+        // caemos al path genérico inferior para no romper su semántica.
+        if (this.unions.has(base) && this.unions.get(base)!.typeParameters.length) {
+          const unionNode = this.unions.get(base)!;
+          // V1.4: la unión sintética declara 2 typeParameters (T, E) pero
+          // E tiene default. Permitir 1 o 2 argumentos; los defaults se
+          // resuelven en la rama genérica inferior.
+          if (arguments_.length > unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo como máximo, recibió ${arguments_.length}`);
+          else if (arguments_.length < unionNode.typeParameters.length) {
+            const missing = unionNode.typeParameters.slice(arguments_.length);
+            if (missing.some(p => p.default === undefined)) {
+              const required = unionNode.typeParameters.length - missing.filter(p => p.default !== undefined).length;
+              this.report(node, `'${base}' espera al menos ${required} argumento(s) de tipo, recibió ${arguments_.length}`);
+            }
+          }
+          arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
+          return type;
+        }
+        // Si no hay unión sintética (caso patológico), validamos igual.
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
@@ -1060,10 +1139,19 @@ export class TypeChecker {
         return type;
       }
       // V1.2: las uniones también son tipos genéricos. Aceptan el número
-      // declarado de typeParameters.
+      // declarado de typeParameters. V1.4: si los parámetros que faltan
+      // tienen `default`, se omiten sin error (e.g. `Result<T>` → E="string").
       if (this.unions.has(base)) {
         const unionNode = this.unions.get(base)!;
-        if (arguments_.length !== unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo, recibió ${arguments_.length}`);
+        if (arguments_.length > unionNode.typeParameters.length) this.report(node, `'${base}' espera ${unionNode.typeParameters.length} argumento(s) de tipo como máximo, recibió ${arguments_.length}`);
+        else if (arguments_.length < unionNode.typeParameters.length) {
+          // ¿Todos los parámetros que faltan tienen default?
+          const missing = unionNode.typeParameters.slice(arguments_.length);
+          if (missing.some(p => p.default === undefined)) {
+            const required = unionNode.typeParameters.length - missing.filter(p => p.default !== undefined).length;
+            this.report(node, `'${base}' espera al menos ${required} argumento(s) de tipo, recibió ${arguments_.length}`);
+          }
+        }
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
@@ -1208,8 +1296,38 @@ export class TypeChecker {
       case "EnumDeclaration": break;
       case "BlockStatement": { const child = new Scope(scope); for (const s of node.statements) this.statement(s, child); break; }
       case "ExpressionStatement": this.expression(node.expression, scope); break;
-      case "IfStatement":
-        this.require(this.expression(node.condition, scope), "boolean", node.condition); this.statement(node.thenBranch, scope); if (node.elseBranch) this.statement(node.elseBranch, scope); break;
+      case "IfStatement": {
+        const condType = this.expression(node.condition, scope);
+        this.require(condType, "boolean", node.condition);
+        // V1.4: detectar narrowing de tagged unions. Patrones reconocidos:
+        //   if (expr.tag == lit) / === lit
+        //   if (expr.tag != lit) / !== lit
+        // `expr` debe ser `IdentifierExpression` con tipo union con
+        // variantes que tengan discriminador declarado.
+        const narrowInfo = this.parseNarrowingCondition(node.condition, scope);
+        if (narrowInfo) {
+          const thenVariants = narrowInfo.discriminator
+            ? this.variantsMatchingDiscriminator(narrowInfo.unionType, narrowInfo.discriminator)
+            : undefined;
+          const elseVariants = narrowInfo.discriminator && thenVariants
+            ? this.variantsExcludingDiscriminator(narrowInfo.unionType, narrowInfo.discriminator)
+            : undefined;
+          const previousNarrowed = new Map(this.narrowed);
+          if (thenVariants) this.narrowed.set(narrowInfo.name, { unionType: narrowInfo.unionType, discriminator: narrowInfo.discriminator, variants: thenVariants });
+          this.statement(node.thenBranch, scope);
+          this.narrowed = previousNarrowed;
+          if (node.elseBranch) {
+            const previousNarrowed2 = new Map(this.narrowed);
+            if (elseVariants) this.narrowed.set(narrowInfo.name, { unionType: narrowInfo.unionType, discriminator: narrowInfo.discriminator, variants: elseVariants });
+            this.statement(node.elseBranch, scope);
+            this.narrowed = previousNarrowed2;
+          }
+        } else {
+          this.statement(node.thenBranch, scope);
+          if (node.elseBranch) this.statement(node.elseBranch, scope);
+        }
+        break;
+      }
       case "WhileStatement":
         this.require(this.expression(node.condition, scope), "boolean", node.condition);
         this.loopDepth++; this.statement(node.body, scope); this.loopDepth--; break;
@@ -1895,6 +2013,57 @@ export class TypeChecker {
       }
       case "MemberExpression": {
         const objectType = this.expression(node.object, scope);
+        // V1.4: si el object es una expresión narrowada por un if anterior,
+        // devolvemos el payload de la variante narrowada. Si solo hay una
+        // variante activa y tiene payload, ese es el tipo. Si no,
+        // разреша el acceso devolviendo la unión misma (el codegen emitirá
+        // std::get_if o similar).
+        if (node.object.kind === "IdentifierExpression" && this.narrowed.has(node.object.name)) {
+          const narrow = this.narrowed.get(node.object.name)!;
+          const unionNode = this.unions.get(narrow.unionType);
+          if (unionNode) {
+            const activeVariants = unionNode.variants.filter(v => narrow.variants.includes(v.name));
+            if (activeVariants.length === 1 && activeVariants[0].payload) {
+              // Si la unión es genérica (e.g. `Result<T,E>`), sustituimos
+              // los type parameters con los argumentos reales del tipo del
+              // identificador narrowado.
+              const exprSymbol = scope.resolve(node.object.name);
+              if (exprSymbol && exprSymbol.kind === "variable") {
+                const exprType = exprSymbol.type;
+                if (isGenericType(exprType)) {
+                  const args = genericArguments(exprType);
+                  const params = unionNode.typeParameters;
+                  const subs = new Map<string, TypeName>();
+                  params.forEach((p, i) => { if (args[i]) subs.set(p.name, args[i]); });
+                  result = this.substituteType(activeVariants[0].payload, subs);
+                  break;
+                }
+              }
+              result = activeVariants[0].payload;
+              break;
+            }
+            if (activeVariants.length > 0) { result = narrow.unionType; break; }
+          }
+        }
+        // V1.4: acceso al campo discriminador de una unión siempre разрешен
+        // aunque la unión no tenga clase. El tipo del campo es el del
+        // literal declarado en la primera variante con discriminador.
+        if (!isGenericType(objectType) && this.unions.has(objectType)) {
+          const unionNode = this.unions.get(objectType)!;
+          const disc = unionNode.variants.find(v => v.discriminator)?.discriminator;
+          if (disc && disc.field === node.member) {
+            result = typeof disc.value === "boolean" ? "boolean" : typeof disc.value === "number" ? "number" : "string";
+            break;
+          }
+        }
+        if (isGenericType(objectType) && this.unions.has(genericBase(objectType))) {
+          const unionNode = this.unions.get(genericBase(objectType))!;
+          const disc = unionNode.variants.find(v => v.discriminator)?.discriminator;
+          if (disc && disc.field === node.member) {
+            result = typeof disc.value === "boolean" ? "boolean" : typeof disc.value === "number" ? "number" : "string";
+            break;
+          }
+        }
         // Acceso a miembro de enum: `Color.Green` se evalúa al tipo del enum, no al subyacente.
         // La conversión al subyacente ocurre en el codegen cuando se necesita (p.ej. `print(c)`).
         if (node.object.kind === "IdentifierExpression" && this.enums.has(node.object.name)) {
@@ -2388,5 +2557,64 @@ export class TypeChecker {
       if (distance <= 2 && (!best || distance < best.distance)) best = { candidate, distance };
     }
     return best ? `¿Quisiste decir '${best.candidate}'?` : undefined;
+  }
+
+  // V1.4: analiza una condición de IfStatement buscando un patrón de
+  // narrowing de tagged union: `expr.tag op literal`. Devuelve el nombre
+  // de la expresión, su tipo union, el operador y el discriminador.
+  // Si no encaja, devuelve undefined.
+  private parseNarrowingCondition(
+    condition: Expression,
+    scope: Scope,
+  ): { name: string; unionType: TypeName; discriminator: { field: string; value: string | number | boolean } } | undefined {
+    if (condition.kind !== "BinaryExpression") return undefined;
+    if (!["==", "===", "!=", "!=="].includes(condition.operator)) return undefined;
+    // Forma esperada: `expr.tag op literal`. El lado izquierdo debe ser
+    // `MemberExpression` con object = IdentifierExpression.
+    const memberAccess = condition.left.kind === "MemberExpression" ? condition.left : condition.right.kind === "MemberExpression" ? condition.right : undefined;
+    const literalSide = condition.left.kind === "MemberExpression" ? condition.right : condition.left;
+    if (!memberAccess || memberAccess.kind !== "MemberExpression") return undefined;
+    if (memberAccess.object.kind !== "IdentifierExpression") return undefined;
+    const exprName = memberAccess.object.name;
+    const exprType = scope.resolve(exprName);
+    if (!exprType || exprType.kind !== "variable") return undefined;
+    // El tipo puede ser el union directamente (e.g. `Result<number>`) o
+    // un wrapper genérico del union sintético (e.g. `Result<T,E>`).
+    // En ambos casos, el union base es lo que buscamos.
+    const unionType = isGenericType(exprType.type) ? genericBase(exprType.type) : exprType.type;
+    if (!this.unions.has(unionType)) return undefined;
+    // Extraer literal del lado derecho.
+    if (literalSide.kind !== "LiteralExpression") return undefined;
+    let literalValue: string | number | boolean;
+    if (literalSide.literalType === "string") literalValue = String(literalSide.value);
+    else if (literalSide.literalType === "number") literalValue = Number(literalSide.value);
+    else if (literalSide.literalType === "boolean") literalValue = Boolean(literalSide.value);
+    else return undefined;
+    return { name: exprName, unionType, discriminator: { field: memberAccess.member, value: literalValue } };
+  }
+
+  // V1.4: variantes de un union cuyo discriminador coincide con el literal.
+  // Si la unión no tiene discriminador declarado, devuelve undefined
+  // (no se puede narrowar de forma segura).
+  private variantsMatchingDiscriminator(
+    unionType: TypeName,
+    discriminator: { field: string; value: string | number | boolean },
+  ): string[] | undefined {
+    const union = this.unions.get(unionType);
+    if (!union) return undefined;
+    const matching = union.variants.filter(v => v.discriminator && v.discriminator.field === discriminator.field && v.discriminator.value === discriminator.value);
+    if (matching.length === 0) return undefined;
+    return matching.map(v => v.name);
+  }
+
+  // V1.4: variantes que NO cumplen el discriminador (para el else).
+  private variantsExcludingDiscriminator(
+    unionType: TypeName,
+    discriminator: { field: string; value: string | number | boolean },
+  ): string[] | undefined {
+    const union = this.unions.get(unionType);
+    if (!union) return undefined;
+    const matching = union.variants.filter(v => v.discriminator && v.discriminator.field === discriminator.field && v.discriminator.value === discriminator.value);
+    return union.variants.filter(v => !matching.includes(v)).map(v => v.name);
   }
 }
