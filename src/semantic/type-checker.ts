@@ -329,6 +329,12 @@ export class TypeChecker {
     global.define("write", fn([], "void"));
     global.define("printError", fn([], "void"));
     global.define("writeError", fn([], "void"));
+    // V9.1: awaiters io_uring. Mapean al runtime/ets_io_uring_async.hpp.
+    // Versión async: Promise<Result<T>>; versión sync: Result<T>.
+    global.define("asyncIoUringRead", fn([input("string")], "Promise<Result<string>>"));
+    global.define("asyncIoUringWrite", fn([input("string"), input("string")], "Promise<Result<boolean>>"));
+    global.define("ioUringRead", fn([input("string")], "Result<string>"));
+    global.define("ioUringWrite", fn([input("string"), input("string")], "Result<boolean>"));
     global.define("length", fn([input("string")], "number"));
     global.define("numberToString", fn([input("number")], "string"));
     global.define("charAt", fn([input("string"), input("number")], "string"));
