@@ -198,7 +198,14 @@ export class CppGenerator {
       const cppName = variable.fromRuntime
         ? (this.localRenames.set(variable.name, `ets_local_${variable.name}`), `ets_local_${variable.name}`)
         : variable.name;
-      lines.push(`static ${cppType(type)} ${cppName} = ${initializer};`);
+      // V6: `const` con initializer literal → `static constexpr`. Esto permite
+      // usar la variable como tamaño de array fijo (`std::array<T, N>`) y como
+      // condición de branch constante (propagación manual). Pero solo aplica
+      // a tipos primitivos (i8..u64, f32, f64, number, boolean); los strings
+      // usan heap y no son `constexpr` en C++ estándar (el ctor de std::string
+      // no es literal type). Los arrays/objects tampoco lo son aquí.
+      const canBeConstexpr = typeof variable.constValue !== "string" && variable.constValue !== null;
+      lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppType(type)} ${cppName} = ${initializer};`);
     }
     if (simpleTopLevel.length) lines.push("");
     for (const fn of functions) lines.push(this.function(fn), "");
