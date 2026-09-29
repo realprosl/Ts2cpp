@@ -1,8 +1,10 @@
 import type { Parameter, ParameterPassing, TypeName } from "../ast/nodes.ts";
-import { isGenericType, genericBase, genericArguments, type ResolvedType } from "../types/type-system.ts";
+import { isGenericType, genericBase, genericArguments, isReadonlyType, type ResolvedType } from "../types/type-system.ts";
 import { cppType } from "./cpp-types.ts";
 
 export function automaticParameterUsesValue(type: TypeName, asynchronous: boolean): boolean {
+  // V5: readonly<T> siempre se pasa por `const T&` aunque su inner sea primitivo.
+  if (isReadonlyType(type)) return false;
   return asynchronous || type === "number" || type === "boolean";
 }
 
