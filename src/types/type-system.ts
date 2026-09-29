@@ -32,6 +32,29 @@ export function numericSign(type: TypeName): "signed" | "unsigned" | null {
 export function arrayType(element: TypeName): TypeName { return `${element}[]`; }
 export function isArrayType(type: TypeName): boolean { return type.endsWith("[]"); }
 export function arrayElement(type: TypeName): TypeName { return type.slice(0, -2); }
+// V4: arrays de tamaño fijo. La representación canónica es `T[N]` con N
+// literal entero positivo. isFixedArrayType distingue entre T[N] (pila,
+// std::array) y T[] (heap, std::vector).
+//
+// Importante: TypeName es un string, pero el dialecto no admite regex ni
+// string-matching mágico sobre él. Mantenemos caches indexados por el
+// nombre canónico y poblados al validar el tipo. Los consumers consultan
+// los caches en vez de re-parsear.
+const FIXED_ARRAY_SIZES: Map<TypeName, number> = new Map();
+const FIXED_ARRAY_ELEMENTS: Map<TypeName, TypeName> = new Map();
+// Registra `T[N]` como array fijo. Llamar una sola vez por combinación
+// elemento/tamaño; idempotente. No validamos N (lo hace validateType).
+export function registerFixedArray(element: TypeName, size: number): TypeName {
+  const key: TypeName = `${element}[${size}]`;
+  if (!FIXED_ARRAY_SIZES.has(key)) {
+    FIXED_ARRAY_SIZES.set(key, size);
+    FIXED_ARRAY_ELEMENTS.set(key, element);
+  }
+  return key;
+}
+export function isFixedArrayType(type: TypeName): boolean { return FIXED_ARRAY_SIZES.has(type); }
+export function fixedArrayElement(type: TypeName): TypeName | null { return FIXED_ARRAY_ELEMENTS.get(type) ?? null; }
+export function fixedArraySize(type: TypeName): number | null { return FIXED_ARRAY_SIZES.get(type) ?? null; }
 export function tupleType(elements: TypeName[]): TypeName { return `[${elements.join(",")}]`; }
 export function isTupleType(type: TypeName): boolean { return type.startsWith("[") && type.endsWith("]"); }
 export function functionType(parameters: TypeName[], result: TypeName): TypeName { return `(${parameters.join(",")})=>${result}`; }

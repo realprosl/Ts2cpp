@@ -406,3 +406,19 @@ test("V3: acepta i32 → u32 cast via función", () => {
   `);
   assert.ok(checker);
 });
+test("V4: acepta array fijo con tipo correcto", () => {
+  const { checker } = check(`
+    let buf: u8[4] = [1, 2, 3, 4];
+    let p: u8 = buf[0];
+  `);
+  assert.ok(checker);
+});
+test("V4: rechaza número incorrecto de elementos", () => {
+  expectError("let buf: u8[4] = [1, 2, 3];", "espera 4 elementos");
+});
+test("V4: detecta bounds fuera de rango en compilación", () => {
+  expectError("let buf: u8[4] = [1, 2, 3, 4]; let x: u8 = buf[4];", "fuera de rango");
+});
+test("V4: detecta índice negativo fuera de rango", () => {
+  expectError("let buf: u8[4] = [1, 2, 3, 4]; let x: u8 = buf[-1];", "fuera de rango");
+});

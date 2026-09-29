@@ -1,5 +1,5 @@
 import type { TypeName } from "../ast/nodes.ts";
-import { arrayElement, functionParameters, functionResult, genericArguments, genericBase, isArrayType, isFunctionType, isGenericType, isTupleType, isUnionType, tupleElements, unionMembers, type ResolvedType } from "../types/type-system.ts";
+import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isTupleType, isUnionType, tupleElements, unionMembers, type ResolvedType } from "../types/type-system.ts";
 import { cppInputType } from "./cpp-parameters.ts";
 
 // TODO Phase 1.A: alias expansion happens in the type-checker (validateType, substituteType)
@@ -41,6 +41,9 @@ function cppTypeFromString(type: TypeName): string {
   if (PRIMITIVE_CPP[type]) return PRIMITIVE_CPP[type];
   if (isUnionType(type)) return `std::variant<${unionMembers(type).map(cppType).join(", ")}>`;
   if (isArrayType(type)) return `std::vector<${cppType(arrayElement(type))}>`;
+  // V4: arrays de tamaño fijo → std::array<T, N> en pila. Consultamos los
+  // caches tipados (no regex sobre el string del tipo).
+  if (isFixedArrayType(type)) return `std::array<${cppType(fixedArrayElement(type)!)}, ${fixedArraySize(type)!}>`;
   if (isTupleType(type)) return `std::tuple<${tupleElements(type).map(cppType).join(", ")}>`;
   if (isFunctionType(type)) return `std::function<${cppType(functionResult(type))}(${functionParameters(type).map(parameter => cppInputType(parameter, cppType(parameter))).join(", ")})>`;
   if (isGenericType(type)) return cppTypeFromGenericString(genericBase(type), genericArguments(type));

@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
 import { cppType, collectTypeParameterNames } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
-import { functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, arrayElement } from "../types/type-system.ts";
+import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, tupleElements, unionMembers } from "../types/type-system.ts";
 import { HELPER_METADATA } from "../semantic/helpers.ts";
 
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
@@ -104,7 +104,30 @@ export class CppGenerator {
   private usesCompilerAst(program: Program): boolean { return /\b(?:validateSyntax|syntaxTreeJson|syntaxTreeRecords|estaticAstRecords|estaticTypedAstJson|estaticTypedAstRecords)\b/.test(JSON.stringify(program)); }
   private usesFilesystem(program: Program): boolean { return /\b(?:fileRead|fileWrite|fileAppend|fileExists|fileCopy|fileMove|fileRemove)\b/.test(JSON.stringify(program)); }
   private usesNetworking(program: Program): boolean { return /\b(?:tcpListen|tcpAccept|tcpConnect|tcpRead|tcpWrite|tcpClose|etsNetSyncEcho|etsNetSyncLarge)\b/.test(JSON.stringify(program)); }
-  // V1.2: si hay UnionDeclaration necesitamos `<variant>` y `<type_traits>`.
+  // V0.3/V4: regex pre-existente para detectar helpers runtime (filesystem/
+  // networking). V4 introduce usesFixedArrays por visitor: recorremos las
+  // declaraciones de tipo buscando `T[N]` con N literal. NO usamos regex
+  // sobre el AST — el helper `isFixedArrayType` consulta los caches
+  // poblados por el type-checker (type-system.ts), no strings del AST.
+  private usesFixedArrays(program: Program): boolean {
+    const visit = (type: TypeName): boolean => {
+      if (isFixedArrayType(type)) return true;
+      if (isGenericType(type)) return genericArguments(type).some(visit);
+      if (isArrayType(type)) return visit(arrayElement(type));
+      if (isTupleType(type)) return tupleElements(type).some(visit);
+      if (isFunctionType(type)) return visit(functionResult(type)) || functionParameters(type).some(visit);
+      if (isUnionType(type)) return unionMembers(type).some(visit);
+      return false;
+    };
+    for (const stmt of program.statements) {
+      if (stmt.kind === "VariableDeclaration" && stmt.declaredType && visit(stmt.declaredType)) return true;
+      if (stmt.kind === "FunctionDeclaration" && (visit(stmt.returnType) || stmt.params.some(p => visit(p.type)))) return true;
+      if (stmt.kind === "ClassDeclaration" && (stmt.fields.some(f => visit(f.type)) || stmt.methods.some(m => visit(m.returnType) || m.params.some(p => visit(p.type))))) return true;
+      if (stmt.kind === "InterfaceDeclaration" && (stmt.methods.some(m => visit(m.returnType) || m.params.some(p => visit(p.type))))) return true;
+      if (stmt.kind === "TypeAliasDeclaration" && visit(stmt.type)) return true;
+    }
+    return false;
+  }
   private usesUnions(program: Program): boolean { return program.statements.some(s => s.kind === "UnionDeclaration"); }
   // V1.3: dado un TypeName resuelto por el type-checker, devuelve el
   // UnionDeclaration si representa una tagged union declarada en el
@@ -116,8 +139,8 @@ export class CppGenerator {
     const base = isGenericType(type) ? genericBase(type) : type;
     return this.unionsMap.get(base);
   }
-  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean): string[] {
-    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : [])];
+  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean): string[] {
+    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : [])];
   }
   generate(program: Program): string {
     // `export default` envuelve una declaración; hacemos unwrap para que el
@@ -138,7 +161,7 @@ export class CppGenerator {
       s.kind !== "UnionDeclaration" &&
       s.kind !== "ExportNamedDeclaration"
     );
-    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program)), ""];
+    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
@@ -190,7 +213,7 @@ export class CppGenerator {
     const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
     const classes = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !!statement.exported);
     const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.exported);
-    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program)), ""];
+    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of classes) lines.push(this.classForward(node));
     if (classes.length) lines.push("");
@@ -863,6 +886,14 @@ export class CppGenerator {
         if (type && isTupleType(type)) {
           const values = node.elements.map(item => this.emitExpression(item));
           return `std::make_tuple(${values.join(", ")})`;
+        }
+        // V4: arrays de tamaño fijo. Cada elemento se emite con static_cast
+        // al tipo del elemento, así el compilador C++ no se queja de
+        // narrowing (p.ej. `uint8_t` desde `double` literal).
+        if (type && isFixedArrayType(type)) {
+          const elementCppType = cppType(fixedArrayElement(type)!);
+          const values = node.elements.map(item => `static_cast<${elementCppType}>(${this.emitExpression(item as import("../ast/nodes.ts").Expression)})`);
+          return `std::array<${elementCppType}, ${fixedArraySize(type)!}>{${values.join(", ")}}`;
         }
         // Envoltorio en `std::move(...)` para que el initializer_list acepte
         // tipos move-only (Task<T>, Optional<T>, Result<T>). Para tipos copiables
