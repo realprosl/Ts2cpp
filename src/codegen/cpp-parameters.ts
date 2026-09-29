@@ -52,7 +52,7 @@ export function cppInputType(type: TypeName, renderedType: string): string {
   return automaticParameterUsesValue(type, false) ? renderedType : `const ${renderedType}&`;
 }
 
-export function cppParameterDeclaration(parameter: Parameter, renderedType: string, asynchronous: boolean, defaultText?: string): string {
+export function cppParameterDeclaration(parameter: Parameter, renderedType: string, asynchronous: boolean, defaultText?: string, cppName?: string): string {
   const mode: ParameterPassing = parameter.passing ?? (parameter.out ? "out" : "automatic");
   let type: string;
   // `Mut<T>` y `MutRef<T>` son modificadores: se traducen directamente a
@@ -60,11 +60,14 @@ export function cppParameterDeclaration(parameter: Parameter, renderedType: stri
   // V0.2: primero intentamos con `resolvedType` (estructurado); caemos al
   // string parsing solo si el checker aún no lo pobló.
   const modifier = resolveParameterModifier(parameter.resolvedType) ?? resolveParameterModifierFromString(parameter.type);
+  // V0.2: si el nombre colisiona con un singleton del runtime, usamos el
+  // nombre prefijado `cppName` (pasado por el codegen) en lugar del original.
+  const name = cppName ?? parameter.name;
   if (modifier) {
     const innerType = cppType(modifier.inner);
     type = modifier.kind === "pointer" ? `${innerType}*` : `${innerType}&`;
     if (parameter.variadic) type += "...";
-    return `${type} ${parameter.name}${defaultText ? ` = ${defaultText}` : ""}`;
+    return `${type} ${name}${defaultText ? ` = ${defaultText}` : ""}`;
   }
   if (mode === "out" || mode === "mut") type = `${renderedType}&`;
   else if (mode === "move") type = `${renderedType}&&`;
@@ -74,5 +77,5 @@ export function cppParameterDeclaration(parameter: Parameter, renderedType: stri
     if (type.endsWith("&")) type += "...";
     else type += "...";
   }
-  return `${type} ${parameter.name}${defaultText ? ` = ${defaultText}` : ""}`;
+  return `${type} ${name}${defaultText ? ` = ${defaultText}` : ""}`;
 }

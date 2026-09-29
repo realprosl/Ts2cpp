@@ -249,6 +249,23 @@ export class TypeChecker {
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
   private readonly enums = new Map<string, EnumDeclaration>();
   private readonly unions = new Map<string, UnionDeclaration>();
+  // V0.2: nombres de variables que colisionan con singletons globales del
+  // runtime C++ (definidos en `runtime/ets_runtime.hpp`). Si el usuario
+  // declara un símbolo local con uno de estos nombres, el codegen lo
+  // renombra para evitar colisiones.
+  private static readonly RUNTIME_GLOBAL_NAMES = new Set(["console", "fs", "path", "process", "JSON"]);
+  // V0.2: helper para registrar un símbolo variable. Marca `fromRuntime=true`
+  // si el nombre coincide con un singleton del runtime C++; el codegen usa
+  // este flag para renombrar y evitar colisiones de identificadores.
+  // También anota el AST si el `target` es VariableDeclaration o Parameter.
+  private defineVariable(scope: Scope, name: string, type: TypeName, mutable: boolean, extra: { variadic?: boolean } = {}, target?: { fromRuntime?: boolean }): boolean {
+    const symbol: import("./symbols.ts").VariableSymbol = { kind: "variable", type, mutable, ...extra };
+    if (TypeChecker.RUNTIME_GLOBAL_NAMES.has(name)) {
+      symbol.fromRuntime = true;
+      if (target) target.fromRuntime = true;
+    }
+    return scope.define(name, symbol);
+  }
   private activeTypeParameters = new Set<string>();
   private activeTypeConstraints = new Map<string, TypeName>();
   private activeTypeDefaults = new Map<string, TypeName>();
@@ -672,7 +689,7 @@ export class TypeChecker {
     for (const member of node.members) {
       if (seen.has(member.name)) this.report(member, `Miembro de enum duplicado '${member.name}'`);
       seen.add(member.name);
-      scope.define(member.name, { kind: "variable", type: node.name, mutable: false });
+      this.defineVariable(scope, member.name, node.name, false);
     }
   }
 
@@ -762,7 +779,7 @@ export class TypeChecker {
         // concretos en defaults de parámetros (acepta `-N` / `+N` unarios).
         this.validateNumericExpression(parameter.defaultValue, parameter.type);
       }
-      local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), variadic: parameter.variadic });
+      this.defineVariable(local, parameter.name, parameter.type, parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), { variadic: parameter.variadic }, parameter);
     }
   }
 
@@ -1078,9 +1095,9 @@ export class TypeChecker {
               const defaultType = this.expression(binding.defaultValue, scope, bindingType);
               if (!typeMatches(defaultType, bindingType)) this.report(binding.defaultValue, `Default value de '${binding.name}': se esperaba ${bindingType}, se obtuvo ${defaultType}`);
             }
-            if (!scope.define(binding.name, { kind: "variable", type: bindingType, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${binding.name}'`);
+            if (!this.defineVariable(scope, binding.name, bindingType, node.mutable)) this.report(node, `Símbolo duplicado '${binding.name}'`);
           }
-        } else if (!scope.define(node.name, { kind: "variable", type: expected, mutable: node.mutable })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        } else if (!this.defineVariable(scope, node.name, expected, node.mutable, {}, node)) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
       case "UsingDeclaration": {
@@ -1096,7 +1113,7 @@ export class TypeChecker {
         if (expandedDeclared) this.validateNumericExpression(node.initializer, expandedDeclared);
         if (expected === "void") this.report(node, "Un recurso 'using' no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
-        if (!scope.define(node.name, { kind: "variable", type: expected, mutable: false })) this.report(node, `Símbolo duplicado '${node.name}'`);
+        if (!this.defineVariable(scope, node.name, expected, false)) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
       case "ExportDefaultDeclaration": {
@@ -1126,7 +1143,7 @@ export class TypeChecker {
             const effectiveType = p.optional
               ? (isGenericType(p.type) && genericBase(p.type) === "Optional" ? p.type : genericType("Optional", [p.type]))
               : p.type;
-            if (!local.define(p.name, { kind: "variable", type: effectiveType, mutable: p.out || p.passing === "mut" || this.parameterIsMutableReference(p.type), variadic: p.variadic })) this.report(node, `Parámetro duplicado '${p.name}'`);
+            if (!this.defineVariable(local, p.name, effectiveType, p.out || p.passing === "mut" || this.parameterIsMutableReference(p.type), { variadic: p.variadic }, p)) this.report(node, `Parámetro duplicado '${p.name}'`);
           }
           const previousReturn = this.currentReturn; const previousAsync = this.currentAsync;
           this.currentReturn = node.async && isPromiseType(node.returnType) ? promiseResult(node.returnType) : node.returnType;
@@ -1177,7 +1194,7 @@ export class TypeChecker {
           else elementType = promiseResult(elementType);
         }
         const local = new Scope(scope);
-        if (!local.define(node.binding.name, { kind: "variable", type: elementType, mutable: node.binding.mutable })) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
+        if (!this.defineVariable(local, node.binding.name, elementType, node.binding.mutable)) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
         this.loopDepth++; this.statement(node.body, local); this.loopDepth--; break;
       }
       case "ForInStatement": {
@@ -1188,7 +1205,7 @@ export class TypeChecker {
         else if (isMapType(targetType)) keyType = genericArguments(targetType)[0] ?? "void";
         else { this.report(node.target, `El tipo '${targetType}' no es iterable en for..in`); keyType = "void"; }
         const local = new Scope(scope);
-        if (!local.define(node.binding.name, { kind: "variable", type: keyType, mutable: node.binding.mutable })) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
+        if (!this.defineVariable(local, node.binding.name, keyType, node.binding.mutable)) this.report(node.binding, `Símbolo duplicado '${node.binding.name}'`);
         this.loopDepth++; this.statement(node.body, local); this.loopDepth--; break;
       }
       case "DeleteStatement": {
@@ -1225,8 +1242,8 @@ export class TypeChecker {
     this.withTypeParameters(method.typeParameters ?? [], () => {
       const local = new Scope(scope);
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
-      local.define("this", { kind: "variable", type: ownerType, mutable: true });
-      for (const parameter of method.params) if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type) })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+      this.defineVariable(local, "this", ownerType, true);
+      for (const parameter of method.params) if (!this.defineVariable(local, parameter.name, parameter.type, parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), {}, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
       // V0.3: huella estructural resuelta del método.
       method.resolvedSignature = {
         parameters: method.params.map(p => ({
@@ -1293,7 +1310,7 @@ export class TypeChecker {
             const payloadType = variant?.payload;
             const local = new Scope(scope);
             arm.variantMatch.bindings.forEach((name, index) => {
-              if (payloadType) local.define(name, { kind: "variable", type: payloadType, mutable: false });
+              if (payloadType) this.defineVariable(local, name, payloadType, false);
             });
             // Re-evaluamos el resultado dentro del sub-scope.
             const armResultType = this.expression(arm.result, local, expected);
@@ -1375,7 +1392,7 @@ export class TypeChecker {
         node.params.forEach((parameter, index) => {
           this.validateType(parameter.type, parameter, false, false, local);
           if (expectedParameters?.[index]) this.require(parameter.type, expectedParameters[index], parameter);
-          if (!local.define(parameter.name, { kind: "variable", type: parameter.type, mutable: false })) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+          if (!this.defineVariable(local, parameter.name, parameter.type, false, {}, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
         });
         const declaredResult = node.returnType ?? expectedResult;
         let resultType: TypeName;
