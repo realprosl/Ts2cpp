@@ -859,10 +859,21 @@ export class Parser {
         // el `match`, así que no hace falta consumirlo otra vez.
         result = arrayType(result);
       } else {
-        // T[N]: array de tamaño fijo (pila, std::array). N es literal entero.
-        const tok = this.consume("number", "Se esperaba un literal entero como tamaño del array fijo");
-        this.consume("]", "Se esperaba ']' cerrando el array fijo");
-        result = `${result}[${Number(tok.lexeme)}]`;
+        // T[N]: array de tamaño fijo (pila, std::array). N puede ser literal
+        // entero (`u8[4]`) o identifier (`u8[N]`, donde N es una constante
+        // propagada en el type-checker; V6).
+        if (this.check("number")) {
+          const tok = this.advance();
+          this.consume("]", "Se esperaba ']' cerrando el array fijo");
+          result = `${result}[${Number(tok.lexeme)}]`;
+        } else if (this.check("identifier")) {
+          const tok = this.advance();
+          this.consume("]", "Se esperaba ']' cerrando el array fijo");
+          result = `${result}[${tok.lexeme}]`;
+        } else {
+          const tok = this.peek();
+          this.error(tok, "Se esperaba un literal entero o identificador como tamaño del array fijo");
+        }
       }
     }
     // Sufijo de union: `A | B | C`. Se compone con la sintaxis existente

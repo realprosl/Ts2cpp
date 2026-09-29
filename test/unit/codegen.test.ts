@@ -12,9 +12,10 @@ function cpp(source: string) {
 }
 
 test("codegen: variable simple top-level se emite como static", () => {
-  // Las variables a top-level se emiten como `static double name = value;`
+  // Las variables a top-level se emiten como `static constexpr T name = value;`
+  // cuando son const (V6) o `static T name = value;` cuando son let.
   const out = cpp("const x: number = 42;");
-  assert.match(out, /static\s+double\s+x\s*=\s*42\.0/);
+  assert.match(out, /static\s+(constexpr\s+)?double\s+x\s*=\s*42\.0/);
 });
 
 test("codegen: array literal se emite como std::vector", () => {

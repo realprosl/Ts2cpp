@@ -479,3 +479,32 @@ test("V5: readonly acepta tipo no-primitivo (T[])", () => {
   `);
   assert.ok(checker);
 });
+test("V6: anota constValue en const con literal", () => {
+  const { ast } = check("const N: i32 = 4;");
+  const decl = ast.statements[0];
+  if (decl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  assert.equal(decl.constValue, 4);
+});
+test("V6: NO anota constValue en let", () => {
+  const { ast } = check("let N: i32 = 4;");
+  const decl = ast.statements[0];
+  if (decl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  assert.equal(decl.constValue, undefined);
+});
+test("V6: NO anota constValue en const con expresión no literal", () => {
+  const { ast } = check("const M: i32 = 2 + 2;");
+  const decl = ast.statements[0];
+  if (decl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  assert.equal(decl.constValue, undefined);
+});
+test("V6: propaga tamaño de array fijo desde const", () => {
+  const { ast, checker } = check(`
+    const N: i32 = 4;
+    let buf: u8[N] = [1, 2, 3, 4];
+  `);
+  assert.ok(checker);
+  const bufDecl = ast.statements[1];
+  if (bufDecl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  // El tipo debe haberse reescrito de u8[N] a u8[4] tras la propagación.
+  assert.equal(bufDecl.declaredType, "u8[4]");
+});

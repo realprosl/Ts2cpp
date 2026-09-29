@@ -254,15 +254,38 @@ export class TypeChecker {
   // declara un símbolo local con uno de estos nombres, el codegen lo
   // renombra para evitar colisiones.
   private static readonly RUNTIME_GLOBAL_NAMES = new Set(["console", "fs", "path", "process", "JSON"]);
+  // V6: si `type` es un array fijo `T[N]` con `N` siendo un identificador
+  // ligado a un `const` con valor literal conocido, reescribe el tamaño a
+  // ese valor literal. Si no, devuelve el tipo sin cambios.
+  private propagateConstantArraySize(type: TypeName, scope: Scope): TypeName {
+    const match = type.match(/^([^\s\[\]]+)\[([^\]]+)\]$/);
+    if (!match) return type;
+    const element = match[1];
+    const sizeExpr = match[2];
+    // El lexer parsea N como identifier (no como número). Lo buscamos en el scope.
+    const symbol = scope.resolve(sizeExpr);
+    if (!symbol || symbol.kind !== "variable" || symbol.mutable || !("constValue" in symbol)) return type;
+    const constValue = (symbol as { constValue?: number | string | boolean | null }).constValue;
+    if (typeof constValue !== "number" || !Number.isInteger(constValue) || constValue <= 0) return type;
+    return `${element}[${constValue}]`;
+  }
+
   // V0.2: helper para registrar un símbolo variable. Marca `fromRuntime=true`
   // si el nombre coincide con un singleton del runtime C++; el codegen usa
   // este flag para renombrar y evitar colisiones de identificadores.
   // También anota el AST si el `target` es VariableDeclaration o Parameter.
-  private defineVariable(scope: Scope, name: string, type: TypeName, mutable: boolean, extra: { variadic?: boolean } = {}, target?: { fromRuntime?: boolean }): boolean {
+  private defineVariable(scope: Scope, name: string, type: TypeName, mutable: boolean, extra: { variadic?: boolean; constValue?: number | string | boolean | null } = {}, target?: { fromRuntime?: boolean; constValue?: number | string | boolean | null }): boolean {
     const symbol: import("./symbols.ts").VariableSymbol = { kind: "variable", type, mutable, ...extra };
     if (TypeChecker.RUNTIME_GLOBAL_NAMES.has(name)) {
       symbol.fromRuntime = true;
       if (target) target.fromRuntime = true;
+    }
+    if (extra.constValue !== undefined && target) {
+      // V6: propagamos el valor literal del initializer al symbol para que
+      // las referencias posteriores (tamaños de arrays, branches constantes)
+      // puedan consultarlo en compile-time.
+      target.constValue = extra.constValue;
+      symbol.constValue = extra.constValue;
     }
     return scope.define(name, symbol);
   }
@@ -1066,6 +1089,14 @@ export class TypeChecker {
   private statement(node: Statement, scope: Scope): void {
     switch (node.kind) {
       case "VariableDeclaration": {
+        // V6: si el tipo es `T[N]` con `N` siendo un IdentifierExpression
+        // que referencia un `const` con valor literal conocido, propagamos el
+        // valor antes de validateType (que registra el cache). Sin esto, el
+        // bounds-check y el codegen ven `u8[N]` con `N` simbólico y no
+        // pueden emitir `std::array<T, 4>` constexpr.
+        if (node.declaredType) {
+          node.declaredType = this.propagateConstantArraySize(node.declaredType, scope);
+        }
         const expandedDeclared = node.declaredType ? this.expandType(node.declaredType, scope) : undefined;
         // V4: validateType() registra el array fijo en los caches de
         // type-system.ts ANTES de evaluar el initializer. Sin esto, el
@@ -1086,6 +1117,15 @@ export class TypeChecker {
         }
         if (expected === "void") this.report(node, "Una variable no puede ser de tipo void");
         if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+        // V6: si es `const` y el initializer es un literal puro, anotamos el
+        // valor para que el codegen pueda emitir `constexpr` y propagar el
+        // valor a usos posteriores (tamaños de arrays fijos, branches con
+        // condición constante). Limitación: solo literales simples; no
+        // evaluamos expresiones (eso sería constant folding completo).
+        if (!node.mutable && node.initializer.kind === "LiteralExpression") {
+          const lit = node.initializer;
+          node.constValue = typeof lit.value === "bigint" ? null : lit.value as number | string | boolean | null;
+        }
         if (node.arrayBindings && node.arrayBindings.length > 0) {
           // Destructuring de arrays: cada binding hereda el tipo del elemento
           // del initializer (no del array completo). Si el initializer es
@@ -1103,7 +1143,7 @@ export class TypeChecker {
             }
             if (!this.defineVariable(scope, binding.name, bindingType, node.mutable)) this.report(node, `Símbolo duplicado '${binding.name}'`);
           }
-        } else if (!this.defineVariable(scope, node.name, expected, node.mutable, {}, node)) this.report(node, `Símbolo duplicado '${node.name}'`);
+        } else if (!this.defineVariable(scope, node.name, expected, node.mutable, { constValue: node.constValue }, node)) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
       case "UsingDeclaration": {
