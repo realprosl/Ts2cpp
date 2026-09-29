@@ -374,6 +374,10 @@ export class Parser {
   // V1: `union Outcome<T, E> = Ok(T) | Err(E);`. Tagged unions nativas del
   // dialecto. Cada variante tiene un nombre y opcionalmente un payload
   // (un tipo). Se emite como `std::variant<T1, T2, ...>` con discriminador.
+  // V1.4: además aceptamos object-variants `{ kind: "A"; <bindings> }` o
+  // `{ ok: true; value: T }`. El primer campo debe ser un literal primitivo
+  // y actúa como discriminador. Los campos restantes son bindings (su tipo
+  // forma el payload de la variante).
   private unionDeclaration(keyword: Token, exported = false): Statement {
     const generics = this.typeParameterNames();
     // Si no hay `<` inmediato, el orden es: nombre primero, después `<T, E>`.
@@ -393,18 +397,70 @@ export class Parser {
     this.consume("=", "Se esperaba '=' después del nombre de la unión");
     const variants: UnionVariant[] = [];
     do {
-      const variantName = this.consume("identifier", "Se esperaba el nombre de la variante");
-      let payload: TypeName | undefined;
-      if (this.match("(")) {
-        payload = this.typeName();
-        this.consume(")", "Se esperaba ')' después del payload de la variante");
+      // V1.4: object-variant `{ ... }` se detecta por el `{` inicial.
+      if (this.check("{")) {
+        const variant = this.parseObjectVariant();
+        variants.push(variant);
+      } else {
+        const variantName = this.consume("identifier", "Se esperaba el nombre de la variante");
+        let payload: TypeName | undefined;
+        if (this.match("(")) {
+          payload = this.typeName();
+          this.consume(")", "Se esperaba ')' después del payload de la variante");
+        }
+        variants.push({ name: variantName.lexeme, payload, span: span(variantName.span.start, (this.previous()).span.end) });
       }
-      variants.push({ name: variantName.lexeme, payload, span: span(variantName.span.start, (this.previous()).span.end) });
     } while (this.match("|"));
     const end = this.consume(";", "Se esperaba ';' después de la unión");
     if (!variants.length) this.error(end, "La unión debe tener al menos una variante");
     const node: UnionDeclaration = { kind: "UnionDeclaration", exported, name: name.lexeme, typeParameters, variants, span: span(keyword.span.start, end.span.end) };
     return node;
+  }
+
+  // V1.4: parsea `{ discriminatorField: literal; <bindings> }` como variante.
+  // El primer campo debe ser un literal primitivo (string/number/true/false)
+  // y actúa como discriminador. Los campos restantes son bindings (su tipo
+  // forma el payload). El nombre de la variante se infiere del valor del
+  // discriminador (si es string) o del par (campo, valor) (e.g. `ok:true` → `Ok`).
+  private parseObjectVariant(): UnionVariant {
+    const start = this.peek().span.start;
+    this.advance(); // consume '{'
+    // Primer campo obligatorio: `field: literal`.
+    const discFieldTok = this.consume("identifier", "Se esperaba un campo como primer elemento de la object-variant");
+    this.consume(":", "Se esperaba ':' tras el campo discriminador");
+    const litTok = this.peek();
+    if (litTok.kind !== "string" && litTok.kind !== "number" && litTok.kind !== "true" && litTok.kind !== "false") {
+      this.error(litTok, "El discriminador de una object-variant debe ser un literal (cadena, número o booleano)");
+      return { name: discFieldTok.lexeme, span: span(start, this.peek().span.end) };
+    }
+    this.advance();
+    const discValue: string | number | boolean = litTok.kind === "string" ? litTok.lexeme
+      : litTok.kind === "number" ? Number(litTok.lexeme)
+      : litTok.kind === "true";
+    // Inferir el nombre de la variante:
+    //  - Si el discriminador es un string ("NotFound"), el nombre es ese string.
+    //  - Si el discriminador es booleano en el campo `ok`, el nombre es Ok/Err.
+    //  - En otros casos, usamos el nombre del campo (e.g. `kind: "NotFound"`).
+    let variantName: string;
+    if (typeof discValue === "string") variantName = discValue;
+    else if (typeof discValue === "boolean" && discFieldTok.lexeme === "ok") variantName = discValue ? "Ok" : "Err";
+    else variantName = `${discFieldTok.lexeme}_${String(discValue)}`;
+    const discriminator = { field: discFieldTok.lexeme, value: discValue };
+    // Bindings adicionales: `name: T` separados por `,` o `;`.
+    const bindings = new Map<string, TypeName>();
+    while (this.match(",", ";")) {
+      const bindName = this.consume("identifier", "Se esperaba un identificador como binding");
+      this.consume(":", "Se esperaba ':' tras el binding");
+      const bindType = this.typeName();
+      bindings.set(bindName.lexeme, bindType);
+    }
+    const close = this.consume("}", "Se esperaba '}' cerrando la object-variant");
+    // El payload es la tupla de tipos de los bindings, o un único tipo si
+    // hay exactamente uno, o void si no hay bindings.
+    let payload: TypeName | undefined;
+    if (bindings.size === 1) payload = [...bindings.values()][0];
+    else if (bindings.size > 1) payload = tupleType([...bindings.values()]);
+    return { name: variantName, payload, discriminator, span: span(start, close.span.end) };
   }
 
   private ifStatement(keyword: Token): Statement {
