@@ -1,7 +1,7 @@
 import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
-import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isReadonlyType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, readonlyInner, readonlyType, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -926,6 +926,12 @@ export class TypeChecker {
     }
     if (isUnionType(type)) { for (const member of unionMembers(type)) this.validateType(member, node, interfaceAllowed, primitiveOnly, scope); return type; }
     if (isIntersectionType(type)) { for (const member of intersectionMembers(type)) this.validateType(member, node, true, true, scope); return type; }
+    // V5: readonly<T> es un decorador. Validamos recursivamente el tipo interno.
+    if (isReadonlyType(type)) {
+      const inner = readonlyInner(type);
+      if (inner) this.validateType(inner, node, interfaceAllowed, primitiveOnly, scope);
+      return type;
+    }
     if (isArrayType(type)) {
       const element = arrayElement(type);
       if (element === "void" || this.interfaces.has(element)) this.report(node, `El array necesita un tipo de elemento concreto, no '${element}'`);
@@ -1903,7 +1909,15 @@ export class TypeChecker {
       case "IndexExpression": {
         const objectType = this.expression(node.object, scope);
         this.require(this.expression(node.index, scope, "number"), "number", node.index);
-        if (isArrayType(objectType)) result = arrayElement(objectType);
+        // V5: readonly<T[]> y readonly<T[N]> permiten indexación de solo lectura.
+        // El resultado es readonly del element (no se puede reasignar a través del index).
+        if (isReadonlyType(objectType)) {
+          const inner = readonlyInner(objectType);
+          if (inner && isArrayType(inner)) result = readonlyType(arrayElement(inner));
+          else if (inner && isFixedArrayType(inner)) result = readonlyType(fixedArrayElement(inner)!);
+          else this.report(node.object, `El tipo '${objectType}' no se puede indexar`);
+        }
+        else if (isArrayType(objectType)) result = arrayElement(objectType);
         else if (isFixedArrayType(objectType)) {
           // V4: bounds check en compilación cuando el índice es literal entero.
           // Soportamos tanto `LiteralExpression` (p.ej. `buf[3]`) como
@@ -2211,6 +2225,9 @@ export class TypeChecker {
    * y debe permitirse la asignación a sus campos.
    */
   private parameterIsMutableReference(type: TypeName): boolean {
+    // V5: readonly<T> no es mutable. El wrapper pasa por `const T&`, pero el
+    // contrato es inmutabilidad semántica (el checker rechaza reasignaciones).
+    if (isReadonlyType(type)) return false;
     if (!isGenericType(type)) return false;
     const base = genericBase(type);
     return base === "Mut" || base === "MutRef";

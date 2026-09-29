@@ -1,5 +1,5 @@
 import type { TypeName } from "../ast/nodes.ts";
-import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isTupleType, isUnionType, tupleElements, unionMembers, type ResolvedType } from "../types/type-system.ts";
+import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isReadonlyType, isTupleType, isUnionType, readonlyInner, tupleElements, unionMembers, type ResolvedType } from "../types/type-system.ts";
 import { cppInputType } from "./cpp-parameters.ts";
 
 // TODO Phase 1.A: alias expansion happens in the type-checker (validateType, substituteType)
@@ -39,6 +39,11 @@ export function cppType(type: TypeName | ResolvedType): string {
 
 function cppTypeFromString(type: TypeName): string {
   if (PRIMITIVE_CPP[type]) return PRIMITIVE_CPP[type];
+  // V5: readonly<T> se traduce al tipo base sin decoración; la decoración
+  // `const T&` la añade cppParameterDeclaration cuando el tipo aparece como
+  // parámetro. Eso evita el doble `const const T&&` que se produciría al
+  // wrappear dos veces.
+  if (isReadonlyType(type)) return cppType(readonlyInner(type)!);
   if (isUnionType(type)) return `std::variant<${unionMembers(type).map(cppType).join(", ")}>`;
   if (isArrayType(type)) return `std::vector<${cppType(arrayElement(type))}>`;
   // V4: arrays de tamaño fijo → std::array<T, N> en pila. Consultamos los

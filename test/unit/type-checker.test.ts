@@ -454,3 +454,28 @@ test("V0.2: anota fromRuntime en todos los nombres colisionantes", () => {
     if (stmt.kind === "VariableDeclaration") assert.equal(stmt.fromRuntime, true);
   }
 });
+test("V5: acepta readonly number como tipo", () => {
+  const { checker } = check(`
+    function f(x: readonly number): readonly number { return x; }
+  `);
+  assert.ok(checker);
+});
+test("V5: acepta readonly number[] y permite indexación de lectura", () => {
+  const { checker } = check(`
+    function f(xs: readonly number[]): readonly number { return xs[0]; }
+    let arr: number[] = [1, 2, 3];
+    f(arr);
+  `);
+  assert.ok(checker);
+});
+test("V5: rechaza asignación a elemento de array readonly", () => {
+  expectError(`
+    function f(xs: readonly number[]): void { xs[0] = 99; }
+  `, "No se puede modificar");
+});
+test("V5: readonly acepta tipo no-primitivo (T[])", () => {
+  const { checker } = check(`
+    function f(xs: readonly string[]): void { print(xs[0]); }
+  `);
+  assert.ok(checker);
+});

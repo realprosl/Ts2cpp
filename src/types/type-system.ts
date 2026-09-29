@@ -60,6 +60,22 @@ export function isTupleType(type: TypeName): boolean { return type.startsWith("[
 export function functionType(parameters: TypeName[], result: TypeName): TypeName { return `(${parameters.join(",")})=>${result}`; }
 export function isFunctionType(type: TypeName): boolean { return type.startsWith("(") && matchingFunctionClose(type) >= 0; }
 
+// V5: readonly<T>. Decorador de tipo para tipos no-mutables. Codegen lo
+// traduce a `const T&` para escalares y a referencias constantes para
+// arrays. Representación canónica: `readonly<T>`. Sigue el patrón de
+// FIXED_ARRAY (caches indexados por nombre canónico, no regex sobre el
+// string del tipo).
+const READONLY_INNERS = new Map<string, TypeName>();
+const READONLY_TYPE_CACHE = new Set<string>();
+export function readonlyType(inner: TypeName): TypeName {
+  const key = `readonly<${inner}>`;
+  READONLY_INNERS.set(key, inner);
+  READONLY_TYPE_CACHE.add(key);
+  return key;
+}
+export function isReadonlyType(type: TypeName): boolean { return READONLY_TYPE_CACHE.has(type); }
+export function readonlyInner(type: TypeName): TypeName | null { return READONLY_INNERS.get(type) ?? null; }
+
 export function functionParameters(type: TypeName): TypeName[] {
   const close = matchingFunctionClose(type);
   if (close < 0) return [];
@@ -144,6 +160,22 @@ export function typeMatches(actual: TypeName, expected: TypeName): boolean {
   // (el C++ emite el static_cast correcto en narrowing). Esto permite
   // `let y: i64 = i32(42);` y similares.
   if (isNumericType(actual) && isNumericType(expected)) return true;
+  // V5: readonly<T> acepta un argumento T (covarianza: T es más fuerte que
+  // readonly<T> porque puede mutar). Pero readonly<T> NO acepta T porque
+  // entonces no podríamos garantizar la inmutabilidad.
+  // Si tanto el actual como el expected son readonly<T>, comparamos los
+  // inners recursivamente.
+  if (isReadonlyType(expected) && isReadonlyType(actual)) {
+    const expectedInner = readonlyInner(expected);
+    const actualInner = readonlyInner(actual);
+    if (expectedInner && actualInner) return typeMatches(actualInner, expectedInner);
+    return false;
+  }
+  if (isReadonlyType(expected)) {
+    const inner = readonlyInner(expected);
+    if (inner && typeMatches(actual, inner)) return true;
+    return false;
+  }
   if (expected === actual) return true;
   if (!isUnionType(expected)) return false;
   if (isUnionType(actual)) return unionMembers(actual).every(member => unionMembers(expected).includes(member));

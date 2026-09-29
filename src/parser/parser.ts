@@ -3,7 +3,7 @@ import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
 import type { Token, TokenKind } from "../lexer/token.ts";
-import { arrayType, functionType, genericType, tupleType, typeofType } from "../types/type-system.ts";
+import { arrayType, functionType, genericType, readonlyType, tupleType, typeofType } from "../types/type-system.ts";
 
 const PRECEDENCE: Partial<Record<TokenKind, number>> = { "??": 1, "||": 2, "&&": 3, "==": 4, "!=": 4, "<": 5, "<=": 5, ">": 5, ">=": 5, "instanceof": 5, "|": 6, "&": 6, "^": 6, "<<": 6, ">>": 6, "+": 7, "-": 7, "*": 8, "/": 8, "%": 8 };
 
@@ -807,6 +807,15 @@ export class Parser {
   }
 
   private typeName(): TypeName {
+    // V5: prefijo `readonly` en posición de tipo (p.ej. `let x: readonly T[] = ...`).
+    // Distinguimos por contexto: dentro de ClassField el `readonly` ya se consumió
+    // como modificador del nombre del campo; aquí lo vemos solo cuando aparece
+    // después de `:` o en una expresión de tipo (`as readonly T`). Decoramos el
+    // tipo resultante con `readonlyType(inner)`.
+    if (this.match("readonly")) {
+      const inner = this.typeName();
+      return readonlyType(inner);
+    }
     // `typeof` en posición de tipo: identificador contextual que resuelve al
     // tipo estático del símbolo nombrado. Se trata antes del caso genérico
     // para que `typeof x` no se confunda con un nombre de tipo normal.
