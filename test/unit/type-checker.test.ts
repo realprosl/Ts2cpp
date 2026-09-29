@@ -422,3 +422,35 @@ test("V4: detecta bounds fuera de rango en compilación", () => {
 test("V4: detecta índice negativo fuera de rango", () => {
   expectError("let buf: u8[4] = [1, 2, 3, 4]; let x: u8 = buf[-1];", "fuera de rango");
 });
+test("V0.2: anota fromRuntime=true en variable 'console'", () => {
+  const { ast } = check("let console: number = 42;");
+  const decl = ast.statements[0];
+  assert.equal(decl.kind, "VariableDeclaration");
+  assert.equal(decl.fromRuntime, true);
+});
+test("V0.2: NO anota fromRuntime en variable normal", () => {
+  const { ast } = check("let foo: number = 42;");
+  const decl = ast.statements[0];
+  assert.equal(decl.kind, "VariableDeclaration");
+  assert.equal(decl.fromRuntime, undefined);
+});
+test("V0.2: anota fromRuntime=true en parámetro 'process'", () => {
+  const { ast } = check("function f(process: number): number { return process; }");
+  const fn = ast.statements[0];
+  assert.equal(fn.kind, "FunctionDeclaration");
+  assert.equal(fn.params[0].fromRuntime, true);
+});
+test("V0.2: anota fromRuntime en todos los nombres colisionantes", () => {
+  const { ast } = check(`
+    let console: number = 1;
+    let fs: number = 2;
+    let path: number = 3;
+    let process: number = 4;
+    let JSON: number = 5;
+  `);
+  const names = ast.statements.map(s => s.kind === "VariableDeclaration" ? s.name : null);
+  assert.deepEqual(names, ["console", "fs", "path", "process", "JSON"]);
+  for (const stmt of ast.statements) {
+    if (stmt.kind === "VariableDeclaration") assert.equal(stmt.fromRuntime, true);
+  }
+});

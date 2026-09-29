@@ -34,7 +34,10 @@ export class CppGenerator {
   // (`console`, `fs`, `path`, `process`, `JSON`). Se prefijan con `ets_local_`
   // en C++ para evitar la colisión con `inline ets_path path{}` etc. Las
   // referencias en el código generado se reescriben al pasar por `cppName`.
-  private readonly runtimeGlobals = new Set(["console", "fs", "path", "process", "JSON"]);
+  // V0.2: las colisiones con singletons del runtime (console, fs, path,
+  // process, JSON) se detectan ahora en el type-checker y se anotan en el
+  // AST con `fromRuntime`. El codegen consulta ese flag directamente; este
+  // Set queda eliminado.
   private readonly localRenames = new Map<string, string>();
   // Map de alias introducidos por `export { x as y }` para que el codegen
   // resuelva `y` al símbolo original `x`. Se rellena desde type-checker.
@@ -192,7 +195,7 @@ export class CppGenerator {
       // Si el nombre colisiona con un singleton global del runtime, lo
       // renombramos en C++ y registramos el rename para que las referencias
       // posteriores se emitan con el nombre canónico.
-      const cppName = this.runtimeGlobals.has(variable.name)
+      const cppName = variable.fromRuntime
         ? (this.localRenames.set(variable.name, `ets_local_${variable.name}`), `ets_local_${variable.name}`)
         : variable.name;
       lines.push(`static ${cppType(type)} ${cppName} = ${initializer};`);
@@ -286,7 +289,8 @@ export class CppGenerator {
     const params = fn.params.map((p, i) => {
       const baseType = this.cppParameterType(p.type);
       const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
-      return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined);
+      const cppParamName = p.fromRuntime ? (this.localRenames.set(p.name, `ets_local_${p.name}`), `ets_local_${p.name}`) : undefined;
+      return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
     }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
   }
