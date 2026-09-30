@@ -1,1 +1,6 @@
 agent/inbox/
+# Scratch local del agente y del runner E2E (no commitear).
+.scratch/
+test/scratch/
+# Outputs de la CLI cuando se prueba un ejemplo a mano.
+*.cpp

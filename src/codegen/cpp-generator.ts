@@ -30,6 +30,10 @@ export class CppGenerator {
   private inClassMethod = false;
   private inStaticInit = false;
   private inAsyncFunction = false;
+  // V8.0: tipo declarado del retorno de la función actual. Se setea en
+  // `function()` antes de emitir el cuerpo y se restaura al salir.
+  // `undefined` cuando no estamos dentro de una función.
+  private currentReturn: TypeName | undefined = undefined;
   // Renombrados de variables que colisionan con singletons globales del runtime
   // (`console`, `fs`, `path`, `process`, `JSON`). Se prefijan con `ets_local_`
   // en C++ para evitar la colisión con `inline ets_path path{}` etc. Las
@@ -107,6 +111,27 @@ export class CppGenerator {
   private usesCompilerAst(program: Program): boolean { return /\b(?:validateSyntax|syntaxTreeJson|syntaxTreeRecords|estaticAstRecords|estaticTypedAstJson|estaticTypedAstRecords)\b/.test(JSON.stringify(program)); }
   private usesFilesystem(program: Program): boolean { return /\b(?:fileRead|fileWrite|fileAppend|fileExists|fileCopy|fileMove|fileRemove)\b/.test(JSON.stringify(program)); }
   private usesNetworking(program: Program): boolean { return /\b(?:tcpListen|tcpAccept|tcpConnect|tcpRead|tcpWrite|tcpClose|etsNetSyncEcho|etsNetSyncLarge)\b/.test(JSON.stringify(program)); }
+  // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
+  // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
+  // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
+  // para evitar el `#include` cuando no se usa (los templates no penalizan
+  // tiempo de compilación si quedan sin instanciar, pero los headers
+  // crecen y el include explícito documenta la dependencia).
+  private usesCollections(program: Program): boolean {
+    const target = new Set(["filter", "map", "reduce"]);
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
+      if (obj.kind === "MemberCallExpression" && obj.method && target.has(obj.method)) return true;
+      for (const key of Object.keys(obj)) {
+        const child = obj[key as keyof typeof obj];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
   // V0.3/V4: regex pre-existente para detectar helpers runtime (filesystem/
   // networking). V4 introduce usesFixedArrays por visitor: recorremos las
   // declaraciones de tipo buscando `T[N]` con N literal. NO usamos regex
@@ -213,8 +238,8 @@ export class CppGenerator {
     const base = isGenericType(type) ? genericBase(type) : type;
     return this.unionsMap.get(base);
   }
-  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesIoUringAsync: boolean): string[] {
-    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []), ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : [])];
+  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesCollections: boolean, usesIoUringAsync: boolean): string[] {
+    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCollections ? ["#include \"runtime/ets_collections.hpp\""] : []), ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []), ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : [])];
   }
   generate(program: Program): string {
     // `export default` envuelve una declaración; hacemos unwrap para que el
@@ -235,7 +260,7 @@ export class CppGenerator {
       s.kind !== "UnionDeclaration" &&
       s.kind !== "ExportNamedDeclaration"
     );
-    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesIoUringAsync(program)), ""];
+    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
@@ -294,7 +319,7 @@ export class CppGenerator {
     const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
     const classes = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !!statement.exported);
     const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.exported);
-    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesIoUringAsync(program)), ""];
+    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of classes) lines.push(this.classForward(node));
     if (classes.length) lines.push("");
@@ -550,10 +575,20 @@ export class CppGenerator {
     return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${variantIndexEnum} kind;\n    std::variant<${variantPayloads}> payload;\n};\n${constructorDefs}\n${printerDef}\n${eqDef}`;
   }
   private function(fn: FunctionDeclaration, internal = false): string {
-    const previous = this.inAsyncFunction; this.inAsyncFunction = fn.async;
+    const signature = this.signature(fn, internal, false);
     const appendCoReturn = fn.async && isPromiseType(fn.returnType) && promiseResult(fn.returnType) === "void" && fn.body.statements.at(-1)?.kind !== "ReturnStatement";
-    const output = `${this.signature(fn, internal, false)} ${this.emitBlock(fn.body, appendCoReturn)}`;
-    this.inAsyncFunction = previous; return output;
+    // V8.0: el codegen necesita conocer el tipo declarado del retorno
+    // para envolver automáticamente `return new T()` cuando la firma es
+    // `: Unq<T>`. Lo seteamos como estado temporal y lo restauramos al
+    // salir del cuerpo (soporte de funciones anidadas).
+    const previousReturn = this.currentReturn;
+    const previousAsync = this.inAsyncFunction;
+    this.inAsyncFunction = fn.async;
+    this.currentReturn = fn.async && isPromiseType(fn.returnType) ? promiseResult(fn.returnType) : fn.returnType;
+    const output = `${signature} ${this.emitBlock(fn.body, appendCoReturn)}`;
+    this.currentReturn = previousReturn;
+    this.inAsyncFunction = previousAsync;
+    return output;
   }
   private emitStatement(node: Statement): string {
     switch (node.kind) {
@@ -619,6 +654,20 @@ export class CppGenerator {
           const valueType = this.expressionType(node.value);
           if (valueType && (valueType === "number" || isNumericType(valueType)) && valueType !== this.currentReturn) {
             returnText = `static_cast<${cppType(this.currentReturn)}>(${returnText})`;
+          }
+        }
+        // V8.0: si el tipo declarado del retorno es `Unq<T>` y el valor es
+        // de tipo `T` (sin envolver), envolver automáticamente con
+        // `unSome<T>(...)`. Esto permite `return new Counter(42)` cuando
+        // la firma es `: Unq<Counter>`, sin obligar al usuario a escribir
+        // el envoltorio manualmente. La inferencia es local (un solo nivel):
+        // el usuario sigue necesitando `unSome` explícito si el retorno es
+        // transitivo (e.g. `Unq<Unq<T>>`).
+        if (node.value && this.currentReturn && isGenericType(this.currentReturn)) {
+          const returnBase = genericBase(this.currentReturn);
+          const valueType = this.expressionType(node.value);
+          if ((returnBase === "Unq" || returnBase === "Rc") && valueType && this.classNames.has(valueType) && valueType !== "void") {
+            returnText = `${returnBase === "Unq" ? "unSome" : "rcShare"}<${cppType(valueType)}>(${returnText})`;
           }
         }
         return `${this.pad()}${this.inAsyncFunction ? "co_return" : "return"}${returnText ? " " + returnText : ""};`;
@@ -1258,6 +1307,38 @@ export class CppGenerator {
           }
           return `${method}${callArgs}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
         }
+        // V7.1: fusión AST. Detecta la cadena `arr.filter(p).map(f).reduce(init, op)`
+        // y la reescribe a un único `for`. Conserva semántica: orden estable,
+        // side-effects de `p` y `f` en el orden del array, `init` se respeta si
+        // `arr` está vacío. Si la cadena no es fusible (otro método en medio,
+        // lambdas que capturan state compleja, etc.) cae al path no-fusionado
+        // de V7.0 que llama a las plantillas.
+        if (objectType && isArrayType(objectType)) {
+          const T = arrayElement(objectType);
+          const objStr = this.emitExpression(node.object);
+          const argStrs = node.args.map(arg => this.emitExpression(arg));
+          if (method === "reduce") {
+            // V7.1: ¿el object es `.map(...).filter(...)`?
+            const fused = this.tryFusePipeline(node, T);
+            if (fused) return fused;
+          }
+          if (method === "filter") {
+            return `ets_filter_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "map") {
+            // `U` viene del typeArgument explícito o del `inferredCallTypeArguments`
+            // (que el type-checker puebla a partir del typeArgument del usuario
+            // o del expected de la llamada).
+            const U = typeArguments[0];
+            if (!U) return `${objStr}.map(${argStrs[0]})`;
+            return `ets_map_vec<${cppType(T)}, ${cppType(U)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "reduce") {
+            const U = typeArguments[0];
+            if (!U) return `${objStr}.reduce(${argStrs.join(", ")})`;
+            return `ets_reduce<${cppType(U)}, ${cppType(T)}>(${argStrs[0]}, ${objStr}, ${argStrs[1]})`;
+          }
+        }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {
@@ -1300,4 +1381,75 @@ export class CppGenerator {
     return [node];
   }
   private pad(): string { return "    ".repeat(this.indent); }
+
+  // V7.1: intenta fusionar la cadena `arr.filter(p).map(f).reduce(init, op)` a
+  // un único `for`. Devuelve el código C++ del bucle si la reconoce, o
+  // `undefined` si la cadena no es fusible (cae al path V7.0 con llamadas a
+  // las plantillas).
+  //
+  // Cadena reconocida (en orden estricto):
+  //   reduce( init, op )
+  //     └─ map( f )
+  //          └─ filter( p )
+  //               └─ arr  (cualquier expresión que evalúe a T[])
+  //
+  // Restricciones de fusibilidad:
+  //   - Solo filter → map → reduce (orden estricto, sin elementos intermedios).
+  //   - Cada lambda tiene exactamente 1 parámetro (los predicados/funciones
+  //     de V7.0 ya exigen esto).
+  //   - `arr` debe ser una expresión simple (Identifier, MemberCall que no
+  //     sea filter/map/reduce, o MemberExpression). Si es una llamada
+  //     arbitraria, no fusionamos (podría tener side effects no obvios).
+  private tryFusePipeline(reduceCall: import("../ast/nodes.ts").MemberCallExpression, T: import("../ast/nodes.ts").TypeName): string | undefined {
+    if (reduceCall.method !== "reduce") return undefined;
+    if (reduceCall.args.length !== 2) return undefined;
+    const mapCall = reduceCall.object;
+    if (mapCall.kind !== "MemberCallExpression" || mapCall.method !== "map") return undefined;
+    if (mapCall.args.length !== 1) return undefined;
+    const filterCall = mapCall.object;
+    if (filterCall.kind !== "MemberCallExpression" || filterCall.method !== "filter") return undefined;
+    if (filterCall.args.length !== 1) return undefined;
+    const arr = filterCall.object;
+    // `arr` debe ser simple para evitar side effects raros.
+    if (!this.isFuseableSource(arr)) return undefined;
+    // `T` debe ser primitivo o string/copyable. Para V7.1 solo fusionamos
+    // tipos primitivos (number, string, boolean) — los tipos no triviales
+    // pueden tener destructores y romper la fusión si los movemos dos veces.
+    if (!["number", "string", "boolean", "void"].includes(T)) return undefined;
+    // U viene del typeArgument explícito del `reduce`.
+    const U = reduceCall.typeArguments[0];
+    if (!U) return undefined;
+    const initStr = this.emitExpression(reduceCall.args[0]);
+    const opStr = this.emitExpression(reduceCall.args[1]);
+    const filterLambda = this.emitExpression(filterCall.args[0]);
+    const mapLambda = this.emitExpression(mapCall.args[0]);
+    const arrStr = this.emitExpression(arr);
+    // Emisión C++20: lambda genérico `[]() -> U { ... }()` que itera `arr`,
+    // aplica `filterLambda`/`mapLambda` y acumula con `opLambda`. Usamos `[]`
+    // (sin captura) porque el lambda va dentro de una expresión initializer
+    // estática donde C++ no permite captura por defecto. Las variables
+    // externas que el lambda usa (p.ej. `numbers` global) se acceden por
+    // nombre directamente; las locales se capturan explícitamente en V7.2+.
+    return `[]() -> ${cppType(U)} { ${cppType(U)} _ets_acc = ${initStr}; for (const auto& _ets_item : ${arrStr}) { if (${filterLambda}(_ets_item)) { _ets_acc = (${opStr})(_ets_acc, (${mapLambda})(_ets_item)); } } return _ets_acc; }()`;
+  }
+
+  // V7.1: ¿`expr` es una fuente fusible para `arr.filter(...).map(...).reduce(...)`?
+  // Acepta identificadores, accesos a miembro simples, llamadas a funciones
+  // puras (no filter/map/reduce), y literales de array.
+  private isFuseableSource(expr: import("../ast/nodes.ts").Expression): boolean {
+    switch (expr.kind) {
+      case "IdentifierExpression":
+      case "MemberExpression":
+      case "ArrayLiteralExpression":
+      case "IndexExpression":
+        return true;
+      case "CallExpression":
+      case "MemberCallExpression": {
+        if (expr.kind === "MemberCallExpression") return !["filter", "map", "reduce"].includes(expr.method);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
 }

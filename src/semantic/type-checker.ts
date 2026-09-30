@@ -217,6 +217,19 @@ const SET_METHODS: Record<string, { params: (typeArgs: TypeName[]) => TypeName[]
   forEach: { params: ([T]) => [`(${T})=>void`],                             returnType: () => "void" },
 };
 
+// V7: tabla de métodos sobre `T[]` (arrays). `typeArgs = [T]` (elemento del
+// array). Para `map`/`reduce` se introduce un parámetro de tipo adicional `U`
+// (tipo de retorno o acumulador). El primer typeArgument declarado por el
+// usuario, si lo hay, lo propagamos al codegen vía `inferredCallTypeArguments`
+// para que la llamada C++ se materialice con los tipos correctos. Esto
+// habilita las cadenas `arr.filter(p).map(f).reduce(init, op)` que V7.1
+// fusionará en un único bucle.
+const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn" | "value")[]; returnType: (typeArgs: TypeName[]) => TypeName }> = {
+  filter: { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `${T}[]` },
+  map:    { arity: 1, paramKinds: ["fn"], returnType: () => "void[]" },
+  reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void" },
+};
+
 /** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
  *  borrados o sustituciones para convertir `a` en `b`). Implementación
  *  iterativa con matriz 2D; O(|a|·|b|) tiempo, O(min(|a|,|b|)) espacio. */
@@ -1402,7 +1415,14 @@ export class TypeChecker {
         if (!this.currentReturn) this.report(node, "return solo es válido dentro de una función");
         const actual = node.value ? this.expression(node.value, scope, this.currentReturn) : "void";
         const flattenedAsyncReturn = this.currentAsync === true && isPromiseType(actual) && promiseResult(actual) === this.currentReturn;
-        if (this.currentReturn && !typeMatches(actual, this.currentReturn) && !flattenedAsyncReturn) this.report(node, `La función retorna ${this.currentReturn}, no ${actual}`);
+        // V8.0: si el retorno es `Unq<T>` / `Rc<T>` y el valor es de tipo
+        // `T` (la clase), допускаем como válido — el codegen envolverá con
+        // `unSome<T>` / `rcShare<T>`. La inferencia es intraprocedural.
+        const v8ImplicitWrap = node.value && this.currentReturn && isGenericType(this.currentReturn)
+          && (genericBase(this.currentReturn) === "Unq" || genericBase(this.currentReturn) === "Rc")
+          && this.classes.has(actual)
+          && actual !== "void";
+        if (this.currentReturn && !typeMatches(actual, this.currentReturn) && !flattenedAsyncReturn && !v8ImplicitWrap) this.report(node, `La función retorna ${this.currentReturn}, no ${actual}`);
         break;
       }
     }
@@ -1569,6 +1589,23 @@ export class TypeChecker {
         const previousAsync = this.currentAsync; this.currentAsync = false;
         const previousClosure = this.currentClosure; this.currentClosure = { node, parentScope: scope };
         node.mutatesCapturedState = false;
+        // V10: detectar nombres capturados del scope padre. Recorremos el
+        // cuerpo y anotamos los `IdentifierExpression` que NO estén en el
+        // scope local. Esto habilita al codegen a saber qué variables
+        // externas toca el lambda (útil para captura explícita en C++).
+        const captured = new Set<string>();
+        const collectCaptured = (target: import("../ast/nodes.ts").Expression | import("../ast/nodes.ts").Statement): void => {
+          if (!target || typeof target !== "object") return;
+          const t = target as { kind?: string; name?: string; object?: unknown; left?: unknown; right?: unknown; body?: unknown; operand?: unknown; args?: unknown[]; statements?: unknown[]; initializer?: unknown; elements?: unknown[]; params?: unknown[]; members?: unknown[]; cases?: unknown[]; fields?: unknown[]; methods?: unknown[]; condition?: unknown; thenBranch?: unknown; elseBranch?: unknown; subject?: unknown; arms?: unknown[]; expression?: unknown; target?: unknown; value?: unknown; iterable?: unknown; binding?: unknown; declarations?: unknown[]; declaration?: unknown };
+          if (t.kind === "IdentifierExpression" && typeof t.name === "string" && !local.resolveLocal(t.name) && !node.params.some(p => p.name === t.name)) captured.add(t.name);
+          for (const key of Object.keys(t)) {
+            const child = (t as Record<string, unknown>)[key];
+            if (Array.isArray(child)) { for (const item of child) if (item && typeof item === "object") collectCaptured(item as import("../ast/nodes.ts").Expression); }
+            else if (child && typeof child === "object") collectCaptured(child as import("../ast/nodes.ts").Expression);
+          }
+        };
+        collectCaptured(node.body);
+        node.capturedSymbols = Array.from(captured);
         if (node.body.kind === "BlockStatement") {
           if (!declaredResult) this.report(node, "Una función flecha con bloque necesita tipo de retorno");
           const previous = this.currentReturn; this.currentReturn = declaredResult ?? "void";
@@ -1868,6 +1905,11 @@ export class TypeChecker {
           if (candidates.every(type => type === candidates[0])) return candidates[0];
           return undefined;
         });
+        // V10: marcar lambdas pasadas directamente como argumento. Esto
+        // habilita la emisión inline en C++ sin envolver en `std::function`
+        // cuando el codegen decide hacerlo. La marca se setea antes de
+        // procesar el argumento para que `expression()` la vea al final.
+        node.args.forEach((arg, index) => { if (arg.kind === "ArrowFunctionExpression" && !arg.singleUseSite) arg.singleUseSite = { kind: "CallExpression", argumentIndex: index }; });
         const argumentTypes = node.args.map((arg, index) => this.expression(arg, scope, contextualArgTypes[index]));
         const matches = symbol.overloads.map(signature => this.matchOverload(signature, argumentTypes, node.typeArguments, expected)).filter(match => !!match).sort((a, b) => b.score - a.score);
         if (!matches.length) { this.report(node, `Ninguna sobrecarga de '${node.callee}' acepta (${argumentTypes.join(", ")})`); break; }
@@ -1975,6 +2017,84 @@ export class TypeChecker {
           const typeArgs = genericArguments(objectType);
           if (typeArgs.length !== 1) { this.report(node, `Set espera 1 argumento de tipo, recibió ${typeArgs.length}`); break; }
           result = this.dispatchGenericBuiltin("Set", SET_METHODS, node, scope, typeArgs);
+          break;
+        }
+        // V7: métodos sobre arrays `T[]`. Las firmas se materializan con
+        // `typeArgs = [T]` (elemento del array). Para `map<U>(f)` y
+        // `reduce<U>(init, op)`, el parámetro `U` puede declararse
+        // explícitamente o inferirse del tipo de retorno de la lambda o del
+        // valor `init`; el resultado se guarda en `inferredCallTypeArguments`
+        // para que el codegen emita la llamada C++ con los tipos correctos.
+        if (isArrayType(objectType)) {
+          const method = ARRAY_METHODS[node.method];
+          if (!method) {
+            this.report(node, `El tipo '${objectType}' no declara '${node.method}' (usa ${Object.keys(ARRAY_METHODS).join(", ")})`);
+            node.args.forEach(arg => this.expression(arg, scope));
+            result = "void[]";
+            break;
+          }
+          if (node.args.length !== method.arity) this.report(node, `Array.${node.method} espera ${method.arity} argumento(s), recibió ${node.args.length}`);
+          const T = arrayElement(objectType);
+          if (node.method === "filter") {
+            const expected = functionType([T], "boolean");
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, expected), expected, node.args[0]);
+            result = objectType;
+            break;
+          }
+          if (node.method === "map") {
+            // `arr.map<U>(f)`: `f` debe ser `(T) => U`. `U` se obtiene en
+            // este orden de prioridad: typeArgument explícito, expected
+            // (p.ej. `let r: string[] = arr.map(...)`), tipo de retorno del
+            // lambda. Si nada de eso aplica, dejamos `U = undefined` y el
+            // codegen usará `auto` para el vector de salida (caso raro; lo
+            // común es que el dialecto siempre reciba `expected` por la
+            // anotación del LHS o por el contexto de llamada).
+            const userU = node.typeArguments[0];
+            let U: TypeName | undefined = userU;
+            if (!U && expected && isArrayType(expected)) {
+              const innerExpected = arrayElement(expected);
+              if (innerExpected !== "void") U = innerExpected;
+            }
+            if (!U && node.args[0] && node.args[0].kind === "ArrowFunctionExpression") {
+              // Inferencia desde el retorno del lambda (modo conservativo:
+              // no pasamos `expected` para no contaminar la inferencia del
+              // cuerpo; el usuario debe anotar `U` si la lambda no tiene
+              // un tipo de retorno concreto).
+              const fnType = this.expression(node.args[0], scope);
+              if (fnType && isFunctionType(fnType)) {
+                const r = functionResult(fnType);
+                if (r && r !== "void") U = r;
+              }
+            }
+            const fnExpected = functionType([T], U ?? "void");
+            // V10: la lambda es argumento directo de `.filter` o `.map`,
+            // марка `singleUseSite` para que el codegen la inline.
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            if (U) this.inferredCallTypeArguments.set(node, [U]);
+            result = U ? `${U}[]` : "void[]";
+            break;
+          }
+          if (node.method === "reduce") {
+            // `arr.reduce<U>(init, op)`: `init: U`, `op: (U, T) => U`.
+            // `U` se deduce del typeArgument explícito o del tipo de `init`
+            // (primer argumento). Sin uno de los dos no podemos validar la
+            // firma del operador.
+            const userU = node.typeArguments[0];
+            let U: TypeName | undefined = userU;
+            if (!U && node.args[0]) {
+              const initType = this.expression(node.args[0], scope);
+              if (initType) U = initType;
+            }
+            if (!U) this.report(node.args[0] ?? node, `Array.reduce requiere tipo del acumulador U (anota arr.reduce<U>(init, op) o da un tipo a init)`);
+            const fnExpected = functionType([U ?? "void", T], U ?? "void");
+            // V10: el operador de reduce es argumento directo, марка `singleUseSite`.
+            if (node.args[1] && node.args[1].kind === "ArrowFunctionExpression") node.args[1].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 1 };
+            if (node.args[1]) this.require(this.expression(node.args[1], scope, fnExpected), fnExpected, node.args[1]);
+            if (U) this.inferredCallTypeArguments.set(node, [U]);
+            result = U ?? "void";
+            break;
+          }
           break;
         }
         const resolvedClass = this.resolveClass(objectType);

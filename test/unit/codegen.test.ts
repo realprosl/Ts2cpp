@@ -94,3 +94,96 @@ test("codegen: int main retorna 0", () => {
   const out = cpp("const x: number = 1;");
   assert.match(out, /return\s+0\s*;/);
 });
+
+// ---------------------------------------------------------------------------
+// V7.0: codegen de filter/map/reduce como llamadas a plantillas libres
+// (`ets_filter_vec<T>`, `ets_map_vec<T, U>`, `ets_reduce<U, T>`). El
+// helper runtime vive en `runtime/ets_collections.hpp` y se incluye solo
+// cuando el programa usa al menos uno de los tres métodos.
+// ---------------------------------------------------------------------------
+
+test("codegen V7: arr.filter se emite como ets_filter_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r = arr.filter((x: number): boolean => x > 0);");
+  assert.match(out, /ets_filter_vec<double>\(/);
+});
+
+test("codegen V7: arr.map<U> se emite como ets_map_vec<T, U>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r: string[] = arr.map<string>((x: number): string => \"v\");");
+  assert.match(out, /ets_map_vec<double,\s*std::string>\(/);
+});
+
+test("codegen V7: arr.reduce<U> se emite como ets_reduce<U, T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r: number = arr.reduce<number>(0, (acc: number, x: number): number => acc + x);");
+  assert.match(out, /ets_reduce<double,\s*double>\(/);
+});
+
+test("codegen V7.1: cadena filter → map → reduce se fusiona a un único `for`", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r: number = arr.filter((x: number): boolean => x > 0).map<string>((x: number): string => \"v\").reduce<number>(0, (acc: number, s: string): number => acc + 1);");
+  // V7.1: la cadena se reescribe a un único `for` con el lambda de filter
+  // dentro del `if`. NO debe aparecer `ets_filter_vec`/`ets_map_vec`/
+  // `ets_reduce` para esta cadena (las llamadas no fusionadas los usan).
+  assert.match(out, /for \(const auto& _ets_item : arr\)/);
+  assert.match(out, /_ets_acc\s*=/);
+  // Solo debe aparecer UN bucle `for` para esta expresión (el de la fusión).
+  const forMatches = out.match(/for \(/g) ?? [];
+  assert.equal(forMatches.length, 1, `esperaba 1 bucle, encontré ${forMatches.length}`);
+});
+
+test("codegen V7: ets_collections.hpp se incluye cuando se usan los helpers", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r = arr.filter((x: number): boolean => x > 0);");
+  assert.match(out, /#include\s*"runtime\/ets_collections\.hpp"/);
+});
+
+test("codegen V7: ets_collections.hpp NO se incluye si no se usa", () => {
+  const out = cpp("const x: number = 1;");
+  assert.doesNotMatch(out, /ets_collections\.hpp/);
+});
+
+// V8.0: análisis de escape implícito. Cuando la firma de retorno es
+// `Unq<T>` y el valor es de tipo `T` (por valor), el codegen envuelve
+// automáticamente con `unSome<T>(...)`. Esto permite al usuario escribir
+// `return new Counter(42)` o `return c` sin envolver manualmente.
+test("codegen V8.0: return new T() con firma Unq<T> se envuelve con unSome", () => {
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function make(): Unq<Counter> {
+      return new Counter(42);
+    }
+  `);
+  assert.match(out, /return\s+unSome<Counter>\(Counter\{42\.0\}\)/);
+});
+
+test("codegen V8.0: return x (de tipo T) con firma Unq<T> se envuelve con unSome", () => {
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function make(): Unq<Counter> {
+      let c = new Counter(42);
+      return c;
+    }
+  `);
+  assert.match(out, /return\s+unSome<Counter>\(c\)/);
+});
+
+test("codegen V8.0: return new T() con firma Rc<T> se envuelve con rcShare", () => {
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function share(): Rc<Counter> {
+      return new Counter(42);
+    }
+  `);
+  assert.match(out, /return\s+rcShare<Counter>\(Counter\{42\.0\}\)/);
+});
+
+test("codegen V8.0: let c = new T() sin firma de retorno Unq sigue siendo por valor", () => {
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function use(): void {
+      let c = new Counter(42);
+      print(numberToString(c.value));
+    }
+  `);
+  // V8.0 no toca casos sin escape: `c` sigue siendo `Counter` por valor.
+  assert.match(out, /auto\s+c\s*=\s*Counter\{42\.0\}/);
+  // Y el `print` accede por valor, no por `unValue(c)`.
+  assert.doesNotMatch(out, /unSome<Counter>|rcShare<Counter>/);
+});
