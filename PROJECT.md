@@ -85,20 +85,36 @@ Para faenas con múltiples issues independientes, cargar `skill_view(name='paral
 | **V0.1** ResolvedType AST (intersección en Expression union) | ✅ mergeado | #47 |
 | **V0.2** cppType polimórfico `TypeName \| ResolvedType` | ✅ mergeado | #48 |
 | **V0.3** resolvedSignature en funciones/métodos | ✅ mergeado | #49 |
-| **V0.4** ResolvedRuntimeType en declaraciones top-level | ✅ ABIERTO | #50 |
+| **V0.4** ResolvedRuntimeType en declaraciones top-level | ✅ mergeado | #50 |
 | **V1.1** tagged unions en AST (parser + AST + codegen básico) | ✅ mergeado | #51 |
-| **V1.2** constructores `Union<T>.Variant(args)` + match destructuring básico | ✅ ABIERTO | #52 |
-| V1.3 | `print(union)` + dispatch contextual por discriminador (comparaciones) | pendiente |
-| V2 | tagged unions con exhaustividad en `match` | pendiente |
-| V3-V10 | según `docs/roadmap.md` | pendiente |
+| **V1.2** constructores `Union<T>.Variant(args)` + match destructuring básico | ✅ mergeado | #52 |
+| **V1.3** `print(union)` + dispatch contextual por discriminador | ✅ mergeado | #55 |
+| **V2** tagged unions con exhaustividad en `match` | ✅ mergeado | #57 |
+| **V3** tipos numéricos concretos (i8, i32, f64, ...) | ✅ mergeado | #59 |
+| **V4** arrays de tamaño fijo `T[N]` | ✅ mergeado | #61 |
+| **V5** readonly<T> como tipo | ✅ mergeado | #64 |
+| **V6** constexpr para const + propagación de tamaños | ✅ mergeado | #66 |
+| **V7** fusión automática de operaciones sobre colecciones | ✅ mergeado | #70 |
+| **V8** análisis de escape implícito | ✅ mergeado | #70 |
+| **V9** async nativo (io_uring + corutinas) | ✅ mergeado | #67 |
+| **V10** closures específicas en AST (infraestructura) | ✅ mergeado | #70 |
 
 ### Detalles del Roadmap
 
 - **`docs/roadmap.md`**: lista completa V0-V10 con dependencias.
 - **`docs/v0-detailed-plan.md`**: V0.1-V0.4 con criterios de aceptación.
+- **`docs/v7-detailed-plan.md`**: V7 (filter/map/reduce + fusión).
+- **`docs/v8-detailed-plan.md`**: V8 (escape analysis).
 - **`docs/vision.md`**: filosofía del dialecto Estatic v2.
-- **`docs/demos.html`**: 50 demos de uso.
-- **`LIMITATIONS.md`**: 149 líneas de qué NO funciona aún.
+- **`docs/demos.html`**: demos de uso.
+- **`LIMITATIONS.md`**: qué NO funciona aún.
+
+### Trabajo futuro (issues separadas)
+
+- **V10 optimización real**: eliminar `std::function` en llamadas inline (la infraestructura AST ya está).
+- **Escape interprocedural**: V8.0 es intraprocedural; el interprocedural queda como issue aparte.
+- **Match exhaustivo sobre object-variants**: V2 cubre la sintaxis legacy; las object-variants de V1.4 son un follow-up.
+- **Tests E2E más rigurosos**: hay 2 flaky pre-existentes (`node-api-demo`, `readonly-demo`).
 
 ## 4. Estado técnico del repo (a fecha del último reset)
 

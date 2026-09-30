@@ -259,8 +259,15 @@ async function processDemo(name: string, isSkipNetwork: boolean, workerId: numbe
     return { name, ok: true, durationMs: Date.now() - started, diagnostics };
   }
   const expected = await readFile(goldenPath, "utf8");
-  if (expected !== exec.stdout) {
-    diagnostics.push(unifiedDiff(expected, exec.stdout, name));
+  // Normaliza el path absoluto del repo por `<REPO>` para que los golden
+  // files con paths hardcodeados (e.g. `cwd =/root/Ts2cpp/test/scratch`)
+  // sean portables entre clones. Esto afecta solo a la comparación, no al
+  // golden en disco (que mantiene el path tal cual el demo lo emite).
+  const normalizePath = (text: string): string => text.split(REPO_ROOT).join("<REPO>");
+  const normalizedExpected = normalizePath(expected);
+  const normalizedActual = normalizePath(exec.stdout);
+  if (normalizedExpected !== normalizedActual) {
+    diagnostics.push(unifiedDiff(normalizedExpected, normalizedActual, name));
     return { name, ok: false, error: `stdout no coincide con ${basename(goldenPath)}`, durationMs: Date.now() - started, diagnostics };
   }
   return { name, ok: true, durationMs: Date.now() - started, diagnostics };
