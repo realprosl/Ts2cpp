@@ -137,6 +137,77 @@ export class CppGenerator {
   // declaraciones de tipo buscando `T[N]` con N literal. NO usamos regex
   // sobre el AST — el helper `isFixedArrayType` consulta los caches
   // poblados por el type-checker (type-system.ts), no strings del AST.
+  // V9.1: nuevo visitor `usesIoUringAsync` que detecta llamadas a
+  // `asyncIoUringRead` / `asyncIoUringWrite` (también via visitor, sin regex).
+  // Limitación actual: solo inspecciona expresiones top-level y dentro de
+  // bloques simples. V0.3 ampliará esto cuando los includes migren a visitor
+  // genérico.
+  private usesIoUringAsync(program: Program): boolean {
+    const visitExpr = (node: Expression): boolean => {
+      switch (node.kind) {
+        case "CallExpression":
+          if (node.callee === "asyncIoUringRead" || node.callee === "asyncIoUringWrite") return true;
+          return node.args.some(arg => visitExpr(arg));
+        case "MemberCallExpression":
+          if (node.method === "asyncIoUringRead" || node.method === "asyncIoUringWrite") return true;
+          return visitExpr(node.object) || node.args.some(arg => visitExpr(arg));
+        case "AwaitExpression": return visitExpr(node.operand);
+        case "BinaryExpression": return visitExpr(node.left) || visitExpr(node.right);
+        case "UnaryExpression": return visitExpr(node.operand);
+        case "MemberExpression": return visitExpr(node.object);
+        case "AssignmentExpression": return visitExpr(node.value);
+        case "ArrayLiteralExpression":
+          return node.elements.some(item => item.kind === "SpreadElement" ? visitExpr(item.expression) : visitExpr(item));
+        case "IndexExpression": return visitExpr(node.object) || visitExpr(node.index);
+        case "TemplateLiteralExpression": return node.expressions.some(visitExpr);
+        case "TernaryExpression": return visitExpr(node.condition) || visitExpr(node.thenBranch) || visitExpr(node.elseBranch);
+        case "SatisfiesExpression": return visitExpr(node.operand);
+        case "MatchExpression": return visitExpr(node.subject) || node.arms.some(arm => visitExpr(arm.pattern) || visitExpr(arm.result));
+        default: return false;
+      }
+    };
+    const visitBlock = (block: BlockStatement): boolean => {
+      for (const node of block.statements) {
+        switch (node.kind) {
+          case "ExpressionStatement": if (visitExpr(node.expression)) return true; break;
+          case "VariableDeclaration": if (visitExpr(node.initializer)) return true; break;
+          case "ReturnStatement": if (node.value && visitExpr(node.value)) return true; break;
+          case "IfStatement":
+            if (visitExpr(node.condition)) return true;
+            if (node.thenBranch.kind === "BlockStatement" && visitBlock(node.thenBranch)) return true;
+            if (node.elseBranch && node.elseBranch.kind === "BlockStatement" && visitBlock(node.elseBranch)) return true;
+            break;
+          case "WhileStatement":
+            if (visitExpr(node.condition)) return true;
+            if (node.body.kind === "BlockStatement" && visitBlock(node.body)) return true;
+            break;
+          case "ForStatement":
+            if (node.initializer && visitExpr(node.initializer.kind === "VariableDeclaration" ? node.initializer.initializer : node.initializer.expression)) return true;
+            if (node.condition && visitExpr(node.condition)) return true;
+            if (node.increment && visitExpr(node.increment)) return true;
+            if (node.body.kind === "BlockStatement" && visitBlock(node.body)) return true;
+            break;
+          case "ForOfStatement":
+            if (visitExpr(node.iterable)) return true;
+            if (node.body.kind === "BlockStatement" && visitBlock(node.body)) return true;
+            break;
+          case "ForInStatement":
+            if (visitExpr(node.target)) return true;
+            if (node.body.kind === "BlockStatement" && visitBlock(node.body)) return true;
+            break;
+          case "BlockStatement":
+            if (visitBlock(node)) return true;
+            break;
+          case "FunctionDeclaration":
+            if (visitBlock(node.body)) return true;
+            break;
+          }
+      }
+      return false;
+    };
+    const syntheticProgram: BlockStatement = { kind: "BlockStatement", statements: program.statements, span: program.span };
+    return visitBlock(syntheticProgram);
+  }
   private usesFixedArrays(program: Program): boolean {
     const visit = (type: TypeName): boolean => {
       if (isFixedArrayType(type)) return true;
@@ -167,8 +238,8 @@ export class CppGenerator {
     const base = isGenericType(type) ? genericBase(type) : type;
     return this.unionsMap.get(base);
   }
-  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesCollections: boolean): string[] {
-    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCollections ? ["#include \"runtime/ets_collections.hpp\""] : []), ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : [])];
+  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesCollections: boolean, usesIoUringAsync: boolean): string[] {
+    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCollections ? ["#include \"runtime/ets_collections.hpp\""] : []), ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []), ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : [])];
   }
   generate(program: Program): string {
     // `export default` envuelve una declaración; hacemos unwrap para que el
@@ -189,7 +260,7 @@ export class CppGenerator {
       s.kind !== "UnionDeclaration" &&
       s.kind !== "ExportNamedDeclaration"
     );
-    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program)), ""];
+    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
@@ -248,7 +319,7 @@ export class CppGenerator {
     const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
     const classes = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !!statement.exported);
     const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.exported);
-    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program)), ""];
+    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of classes) lines.push(this.classForward(node));
     if (classes.length) lines.push("");
@@ -1183,6 +1254,11 @@ export class CppGenerator {
           tcpClose:   "etsNetClose",
         };
         const finalCallee = fileCalleeMap[callee] ?? netCalleeMap[callee] ?? callee;
+        // V9.1: awaiters io_uring viven en `ets::` (header runtime/ets_io_uring_async.hpp).
+        if (finalCallee === "asyncIoUringRead" || finalCallee === "asyncIoUringWrite" ||
+            finalCallee === "ioUringRead" || finalCallee === "ioUringWrite") {
+          return `ets::${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        }
         return finalCallee === "print" ? `print(${args.join(", ")})` : `${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {

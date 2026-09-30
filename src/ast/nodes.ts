@@ -47,9 +47,20 @@ export interface EnumDeclaration { kind: "EnumDeclaration"; exported?: boolean; 
 // V1: tagged unions. Una unión discriminada tiene un conjunto de
 // variantes, cada una con su nombre y su payload (un tipo). Se emite en
 // C++ como `std::variant<T1, T2, ...>` con un discriminador (índice).
+// V1.4: `discriminator` se popula cuando la variante se declara como
+// object-literal `{ kind: "A"; <bindings> }`. El campo discriminador y su
+// valor primitivo (string/number/boolean) son los que el narrowing en
+// `if` consulta para estrechar el tipo de la unión.
 export interface UnionVariant {
   name: string;
   payload?: TypeName;
+  /**
+   * V1.4: metadata del discriminador cuando la sintaxis fuente fue un
+   * object-literal `{ field: literal; ... }`. Ausente para la forma
+   * legacy `A(T)` (sin discriminador literal: el discriminador es el
+   * índice de la variante, no un campo del payload).
+   */
+  discriminator?: { field: string; value: string | number | boolean };
   span: Span;
 }
 export interface UnionDeclaration { kind: "UnionDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variants: UnionVariant[]; /** V0.4 */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; span: Span }
