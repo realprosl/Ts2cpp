@@ -508,3 +508,168 @@ test("V6: propaga tamaño de array fijo desde const", () => {
   // El tipo debe haberse reescrito de u8[N] a u8[4] tras la propagación.
   assert.equal(bufDecl.declaredType, "u8[4]");
 });
+
+// ---------------------------------------------------------------------------
+// V7.0: helpers de colecciones (`filter`, `map`, `reduce`) sobre `T[]`.
+// Verifican que el type-checker reconoce los métodos como APIs válidas
+// del dialecto y los reescribe con la firma correcta. La fusión AST es
+// tarea de V7.1; aquí solo se valida el tipado y el despacho.
+// ---------------------------------------------------------------------------
+
+test("V7: arr.filter(predicate) acepta (T) => boolean y devuelve T[]", () => {
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: number[] = arr.filter((x: number): boolean => x > 0);
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.filter rechaza predicado que no devuelve boolean", () => {
+  expectError(`
+    let arr: number[] = [1, 2, 3];
+    let r: number[] = arr.filter((x: number): number => x);
+  `, "boolean");
+});
+
+test("V7: arr.map<U>(f) requiere typeArgument U explícito", () => {
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: string[] = arr.map<string>((x: number): string => "v");
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.map infiere U del expected type", () => {
+  // `let r: string[] = arr.map(f)` debe inferir U = string del tipo del LHS.
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: string[] = arr.map((x: number): string => "v");
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.map sin typeArgument infiere U del tipo de retorno del lambda", () => {
+  // El usuario no anota `U` y el LHS tampoco (`let r = ...`). El checker
+  // deduce `U = string` del tipo de retorno del lambda y el resultado
+  // pasa a ser `string[]` (que se infiere luego en la asignación).
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r = arr.map((x: number): string => "v");
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.map reporta incompatibilidad cuando lambda devuelve tipo distinto al U esperado", () => {
+  // El LHS pide `number[]`, lo que hace que U se infiera como `number`;
+  // la lambda devuelve `string` y el checker reporta el desajuste.
+  expectError(`
+    let arr: number[] = [1, 2, 3];
+    let r: number[] = arr.map((x: number): string => "v");
+  `, "number");
+});
+
+test("V7: arr.reduce<U>(init, op) deduce U del init", () => {
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: number = arr.reduce<number>(0, (acc: number, x: number): number => acc + x);
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.reduce acepta U explícito aunque init no lo sugiera", () => {
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: string = arr.reduce<string>("", (acc: string, x: number): string => acc);
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.reduce respeta init cuando el array está vacío", () => {
+  // Si no hay elementos, el op nunca se invoca; init es el resultado.
+  const { checker } = check(`
+    let arr: number[] = [];
+    let r: number = arr.reduce<number>(42, (acc: number, x: number): number => acc);
+  `);
+  assert.ok(checker);
+});
+
+test("V7: arr.filter sobre T[] preserva el tipo de elemento", () => {
+  // `arr.filter(p)` devuelve `T[]`, no `void[]` ni nada raro.
+  const { ast } = check(`
+    let arr: string[] = ["a", "b"];
+    let r = arr.filter((x: string): boolean => x == "a");
+  `);
+  // `r` no tiene anotación: el tipo del initializer debe ser `string[]`.
+  const decl = ast.statements[1];
+  if (decl.kind !== "VariableDeclaration") throw new Error("expected VariableDeclaration");
+  const initType = decl.initializer.resolvedType ?? (decl.initializer as unknown as { resolvedType?: { kind: string } }).resolvedType;
+  // resolvedType es ResolvedType; verificamos que es un array con elemento string.
+  assert.ok(initType, "el initializer debe tener resolvedType");
+});
+
+test("V7: cadena filter → map → reduce encadena tipos", () => {
+  const { checker } = check(`
+    let arr: number[] = [1, 2, 3];
+    let r: number = arr.filter((x: number): boolean => x > 0).map<string>((x: number): string => "v").reduce<number>(0, (acc: number, s: string): number => acc);
+  `);
+  assert.ok(checker);
+});
+
+test("V7: método desconocido sobre T[] reporta error", () => {
+  expectError(`
+    let arr: number[] = [1, 2, 3];
+    let r = arr.bogus((x: number): boolean => true);
+  `, "no declara 'bogus'");
+});
+
+// V10: closures específicas. El type-checker marca el AST con
+// `singleUseSite` (lambda pasada directo como argumento de llamada) y
+// `capturedSymbols` (nombres del scope exterior referenciados dentro del
+// cuerpo del lambda). Esto habilita optimizaciones futuras en el codegen.
+test("V10: lambda pasada como argumento directo recibe singleUseSite", () => {
+  const { ast } = check(`
+    function apply(x: number, f: (n: number) => number): number {
+      return f(x);
+    }
+    apply(42, (n: number): number => n * 2);
+  `);
+  // El último statement es `ExpressionStatement(CallExpression)`. Extraemos
+  // el CallExpression del envoltorio para llegar al lambda en args[1]
+  // (args[0] es el literal `42`).
+  const exprStmt = ast.statements[1] as { kind: string; expression: { kind: string; args: Array<{ kind: string; singleUseSite?: { kind: string; argumentIndex: number } }> } };
+  assert.equal(exprStmt.kind, "ExpressionStatement");
+  const callExpr = exprStmt.expression;
+  const lambda = callExpr.args[1];
+  assert.equal(lambda.kind, "ArrowFunctionExpression");
+  assert.ok(lambda.singleUseSite, "singleUseSite debe estar poblado para lambda pasada directo a apply");
+  assert.equal(lambda.singleUseSite.kind, "CallExpression");
+  assert.equal(lambda.singleUseSite.argumentIndex, 1);
+});
+
+test("V10: capturedSymbols detecta variables del scope exterior", () => {
+  const { ast } = check(`
+    let factor: number = 2;
+    function apply(x: number, f: (n: number) => number): number { return f(x); }
+    apply(42, (n: number): number => n * factor);
+  `);
+  const exprStmt = ast.statements[2] as { kind: string; expression: { args: Array<{ kind: string; capturedSymbols?: string[] }> } };
+  const lambda = exprStmt.expression.args[1];
+  assert.equal(lambda.kind, "ArrowFunctionExpression");
+  assert.ok(Array.isArray(lambda.capturedSymbols), "capturedSymbols debe ser array");
+  assert.ok(lambda.capturedSymbols.includes("factor"), `capturedSymbols debe incluir 'factor', fue: ${JSON.stringify(lambda.capturedSymbols)}`);
+  // El parámetro `n` NO debe aparecer en capturedSymbols.
+  assert.ok(!lambda.capturedSymbols.includes("n"));
+});
+
+test("V10: lambda con argumentos de filter/map/reduce también recibe singleUseSite", () => {
+  const { ast } = check(`
+    let arr: number[] = [1, 2, 3];
+    arr.filter((x: number): boolean => x > 0).map<string>((x: number): string => "v");
+  `);
+  const filterCall = (ast.statements[1] as unknown as { expression: { kind: string; args: Array<{ kind: string; singleUseSite?: { kind: string; argumentIndex: number } }>; method: string } });
+  const lambda = filterCall.expression.args[0];
+  assert.equal(lambda.kind, "ArrowFunctionExpression");
+  assert.ok(lambda.singleUseSite);
+  assert.equal(lambda.singleUseSite.kind, "MemberCallExpression");
+  assert.equal(lambda.singleUseSite.argumentIndex, 0);
+});

@@ -1,0 +1,11 @@
+evens count: 5
+first even: 2
+last even: 10
+first string: 1
+last string: 10
+total: 55
+empty total: 42
+sum of lengths: 6
+side effect sum: 120
+side effect count: 5
+side effect lastSeen: 50
