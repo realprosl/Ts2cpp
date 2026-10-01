@@ -116,7 +116,7 @@ inline bool ets_every_vec(const std::vector<T>& src, Pred&& pred) {
     return true;
 }
 
-// V11: `ets_slice_vec<T>(src, start, end)` — sub-array desde `start`
+// V14: `ets_slice_vec<T>(src, start, end)` — sub-array desde `start`
 // (inclusivo) hasta `end` (exclusivo). Índices negativos se cuentan
 // desde el final (al estilo JS): -1 = último elemento, -2 = penúltimo.
 template <typename T>
@@ -127,4 +127,36 @@ inline std::vector<T> ets_slice_vec(const std::vector<T>& src, int start, int en
     if (start >= n || start >= end) return {};
     if (end > n) end = n;
     return std::vector<T>(src.begin() + start, src.begin() + end);
+}
+
+// V14: `ets_sort_vec<T>(src, cmp)` — ordena `src` in-place con `cmp(a, b)`
+// y devuelve el mismo vector. El dialecto emite esto para `arr.sort(cmp)`.
+// Importante: el comparator debe implementar **strict weak ordering**.
+// Comparadores como `(a, b) => a - b` son incorrectos para `double` porque
+// la resta puede dar ±0.0 para valores iguales (rompe transitividad). El
+// dialecto convierte el lambda a un comparator seguro automáticamente.
+template <typename T, typename Cmp>
+inline std::vector<T>& ets_sort_vec(std::vector<T>& src, Cmp&& cmp) {
+    std::sort(src.begin(), src.end(), std::forward<Cmp>(cmp));
+    return src;
+}
+
+// V14: `ets_flat_map_vec<T, U>(src, f)` — aplica `f` (que devuelve vector)
+// y concatena los resultados en un solo vector (1 nivel de flattening).
+template <typename T, typename U, typename F>
+inline std::vector<U> ets_flat_map_vec(const std::vector<T>& src, F&& f) {
+    std::vector<U> out;
+    for (const auto& item : src) {
+        auto inner = f(item);
+        for (auto& v : inner) out.push_back(std::move(v));
+    }
+    return out;
+}
+
+// V14: `ets_includes_vec<T>(src, value)` — true si `value` está en `src`.
+// Usa `operator==` sobre T (las clases la definen explícitamente).
+template <typename T>
+inline bool ets_includes_vec(const std::vector<T>& src, const T& value) {
+    for (const auto& item : src) if (item == value) return true;
+    return false;
 }

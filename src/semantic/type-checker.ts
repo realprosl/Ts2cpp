@@ -232,10 +232,18 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   forEach: { arity: 1, paramKinds: ["fn"], returnType: () => "void" },
   // `find` devuelve `T` por ahora; el usuario puede discriminar con `Optional<T>`
   // en un PR futuro. La limitación está documentada en LIMITATIONS.md.
-  find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => T },
+  // V13: `find` devuelve `Optional<T>` (puede no haber resultado).
+  find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `Optional<${T}>` },
   some:    { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
   every:   { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
+  // V14: métodos adicionales.
   slice:   { arity: 2, paramKinds: ["value", "value"], returnType: ([T]) => `${T}[]` },
+  // `sort` muta in-place y devuelve el mismo array (estilo Array.prototype.sort).
+  sort:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `${T}[]` },
+  // `flatMap` aplica una función que devuelve arrays y los concatena (1 nivel).
+  flatMap: { arity: 1, paramKinds: ["fn"], returnType: () => "void[]", userTypeArgument: 0 },
+  // `includes` busca por igualdad.
+  includes: { arity: 1, paramKinds: ["value"], returnType: () => "boolean" },
 };
 
 /** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
@@ -2142,6 +2150,83 @@ export class TypeChecker {
             result = objectType;
             break;
           }
+          // V14: `sort(cmp)` — `cmp: (T, T) => number` (negativo si a<b).
+          if (node.method === "sort") {
+            const fnExpected = functionType([T, T], "number");
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            result = objectType;
+            break;
+          }
+          // V14: `flatMap<U>(f)` — `f: (T) => U[]`, devuelve `U[]`.
+          if (node.method === "flatMap") {
+            const userU = node.typeArguments[0];
+            let U: TypeName | undefined = userU;
+            if (!U && expected && isGenericType(expected) && genericBase(expected).startsWith("U")) U = genericArguments(expected)[0];
+            if (!U) this.report(node, `Array.flatMap requiere tipo U (anota arr.flatMap<U>(f))`);
+            const fnExpected = functionType([T], U ? `${U}[]` : "void[]");
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            if (U) this.inferredCallTypeArguments.set(node, [U]);
+            result = U ? `${U}[]` : "void[]";
+            break;
+          }
+          // V14: `includes(value)` — compara por `operator==`.
+          if (node.method === "includes") {
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, T), T, node.args[0]);
+            result = "boolean";
+            break;
+          }
+          break;
+        }
+        // V14: Optional<T> tiene métodos intrínsecos conocidos por el dialecto
+        // (estilo Rust Option::is_some, Option::unwrap). NO son magia del
+        // compilador: el programador los ve y decide cuándo usarlos. Si
+        // llama `o.value()` sin verificar, aborta — el programador DEBE
+        // gestionar el caso vacío explícitamente.
+        if (objectType && isGenericType(objectType) && genericBase(objectType) === "Optional") {
+          const T = genericArguments(objectType)[0] ?? "void";
+          const method = node.method;
+          if (method === "isPresent" || method === "isEmpty") {
+            if (node.args.length !== 0) this.report(node, `Optional.${method} espera 0 argumentos`);
+            result = "boolean";
+            break;
+          }
+          if (method === "value") {
+            if (node.args.length !== 0) this.report(node, `Optional.value espera 0 argumentos`);
+            result = T;
+            break;
+          }
+          if (method === "valueOr") {
+            if (node.args.length !== 1) this.report(node, `Optional.valueOr espera 1 argumento`);
+            else this.require(this.expression(node.args[0], scope, T), T, node.args[0]);
+            result = T;
+            break;
+          }
+          if (method === "map") {
+            if (node.args.length !== 1) this.report(node, `Optional.map espera 1 argumento`);
+            else {
+              const innerExpected = expected && isGenericType(expected) && genericBase(expected) === "Optional" ? genericArguments(expected)[0] ?? "void" : "void";
+              const fnExpected = functionType([T], innerExpected);
+              this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            }
+            result = expected ?? `Optional<${T}>`;
+            break;
+          }
+          if (method === "andThen") {
+            if (node.args.length !== 1) this.report(node, `Optional.andThen espera 1 argumento`);
+            else this.require(this.expression(node.args[0], scope), functionType([T], `Optional<void>`), node.args[0]);
+            result = expected ?? `Optional<${T}>`;
+            break;
+          }
+          if (method === "orElse") {
+            if (node.args.length !== 1) this.report(node, `Optional.orElse espera 1 argumento`);
+            else this.require(this.expression(node.args[0], scope, objectType), objectType, node.args[0]);
+            result = objectType;
+            break;
+          }
+          this.report(node, `Optional no tiene el método '${method}'`);
+          result = objectType;
           break;
         }
         const resolvedClass = this.resolveClass(objectType);

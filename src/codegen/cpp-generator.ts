@@ -118,7 +118,7 @@ export class CppGenerator {
   // tiempo de compilación si quedan sin instanciar, pero los headers
   // crecen y el include explícito documenta la dependencia).
   private usesCollections(program: Program): boolean {
-    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice"]);
+    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "includes"]);
     const visit = (node: unknown): boolean => {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
@@ -1313,6 +1313,15 @@ export class CppGenerator {
             return `JSON.stringify(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
           }
         }
+        // V14: cuando el objeto es `Optional<T>`, los métodos intrínsecos
+        // (isPresent, isEmpty, value, valueOr, map, andThen, orElse)
+        // se emiten como llamadas a métodos sobre `ets::Optional<T>`.
+        if (node.object.kind === "IdentifierExpression") {
+          const objType = this.expressionType(node.object);
+          if (objType && isGenericType(objType) && genericBase(objType) === "Optional") {
+            return `${this.emitExpression(node.object)}.${node.method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          }
+        }
         // V1.2: `Union.Variant(args)` o `Union<T>.Variant(args)` se reescribe
         // a la llamada al constructor `Variant<T_payload>(value)` que el
         // codegen de la declaración emite (con `template <typename T, typename E>`
@@ -1380,6 +1389,26 @@ export class CppGenerator {
           if (method === "slice") {
             return `ets_slice_vec<${cppType(T)}>(${objStr}, ${argStrs[0]}, ${argStrs[1]})`;
           }
+          // V14: métodos adicionales.
+          if (node.method === "sort") {
+            // V14: `sort(cmp)` modifica el array in-place. En el dialecto, si
+            // el receptor es un lvalue (identificador), emitimos una asignación
+            // al resultado para que el ordenamiento se vea. Si es una
+            // expresión más compleja, copiamos primero.
+            const arrVar = node.object.kind === "IdentifierExpression" ? node.object.name : null;
+            const sortCall = `ets_sort_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+            if (arrVar) return `(${arrVar} = ${sortCall})`;
+            // Para arrays anónimos (temporales), devolvemos el resultado directo.
+            return sortCall;
+          }
+          if (method === "flatMap") {
+            const U = typeArguments[0];
+            if (!U) return `${objStr}.flatMap(${argStrs[0]})`;
+            return `ets_flat_map_vec<${cppType(T)}, ${cppType(U)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "includes") {
+            return `ets_includes_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
         }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
@@ -1398,24 +1427,24 @@ export class CppGenerator {
                 if (variant) return variant.payload ? `${node.member}(${variant.payload})` : `${node.member}()`;
               }
               // V1.4: Result<T> no es un `std::variant` real, sino el tipo del runtime
-              // (`ets::Result<T>`) que tiene métodos `isOk()`, `value()`, `error()`.
-              // Cuando el usuario accede a `r.ok` (discriminador del AST de Result),
-              // emitimos `r.isOk()`; `r.value` → `r.value()`; `r.error` → `r.error()`.
-              if (node.object.kind === "IdentifierExpression") {
-                const objType = this.expressionType(node.object);
-                if (objType && isGenericType(objType) && genericBase(objType) === "Result") {
-                  if (node.member === "ok") return `${this.emitExpression(node.object)}.isOk()`;
-                  if (node.member === "value") return `${this.emitExpression(node.object)}.value()`;
-                  if (node.member === "error") return `${this.emitExpression(node.object)}.error()`;
-                }
-              }
-              // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
-              // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
-              if (node.optional) {
-                const obj = this.emitExpression(node.object);
-                return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
-              }
-              // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
+                            // (`ets::Result<T>`) que tiene métodos `isOk()`, `value()`, `error()`.
+                            // Cuando el usuario accede a `r.ok` (discriminador del AST de Result),
+                            // emitimos `r.isOk()`; `r.value` → `r.value()`; `r.error` → `r.error()`.
+                            if (node.object.kind === "IdentifierExpression") {
+                              const objType = this.expressionType(node.object);
+                              if (objType && isGenericType(objType) && genericBase(objType) === "Result") {
+                                if (node.member === "ok") return `${this.emitExpression(node.object)}.isOk()`;
+                                if (node.member === "value") return `${this.emitExpression(node.object)}.value()`;
+                                if (node.member === "error") return `${this.emitExpression(node.object)}.error()`;
+                              }
+                            }
+                            // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
+                            // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
+                            if (node.optional) {
+                              const obj = this.emitExpression(node.object);
+                              return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
+                            }
+                            // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
               // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
               if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
                 return `${this.emitExpression(node.object)}->${node.member}`;
