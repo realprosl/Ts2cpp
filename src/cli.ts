@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve, basename, extname, dirname } from "node:path";
+import { resolve, basename, extname, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { compileFile } from "./modules/module-loader.ts";
@@ -37,6 +37,9 @@ const positional = args.find(argument => !argument.startsWith("-") && !optionVal
 const config = configPath ? await loadConfig(configPath) : positional ? undefined : await loadConfig();
 if (!positional && !config) usage();
 const input = positional ? resolve(positional) : config!.entry;
+// V15: si el usuario pasa `--multi`, escribe el header + un `.cpp` por módulo.
+const multiFlag = args.indexOf("--multi");
+const multiMode = multiFlag >= 0;
 const outputFlag = args.indexOf("-o");
 const output = resolve(outputFlag >= 0 ? (args[outputFlag + 1] ?? usage()) : (config?.output.cpp ?? basename(input, extname(input)) + ".cpp"));
 
@@ -65,15 +68,49 @@ try {
     if (!verbose) for (const module of result.compiled) console.log(`  Compilado módulo ${module}`);
     process.exit(0);
   }
+  // V15: si el usuario pasa `--multi`, escribimos header + un `.cpp` por módulo.
+  if (multiMode) {
+    await logger?.record("info", "transpile", "started", { input, mode: "multi" });
+    const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases });
+    const outDir = output.endsWith(".cpp") ? dirname(output) : output;
+    await mkdir(outDir, { recursive: true });
+    const headerPath = join(outDir, "estatic_common.hpp");
+    await writeFile(headerPath, result.header, "utf8");
+    for (const module of result.modules) {
+      const safeName = basename(module.name).replace(/\.(ets|ts)$/, "") + ".cpp";
+      await writeFile(join(outDir, safeName), module.cpp, "utf8");
+    }
+    console.log(`Generados ${result.modules.length} módulo(s) en ${outDir} (+ header)`);
+    await logger?.record("info", "transpile", "cpp-generated", { input, modules: result.modules.length, bytes: Buffer.byteLength(result.header) });
+    await logger?.flush();
+    process.exit(0);
+  }
   await logger?.record("info", "transpile", "started", { input, output, unity: true });
+  // V15: para el modo unitario, concatenamos header + módulos en un solo .cpp.
+  // OJO: los módulos individuales emiten `#include "estatic_common.hpp"` que
+  // solo tiene sentido en modo multi (donde el header está en disco). Aquí
+  // tenemos que quitarlos para producir un .cpp monolítico válido.
   const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases });
   await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, result.cpp, "utf8");
+  const headerLines = result.header.split("\n");
+  // En modo unitario (un solo .cpp) el `#pragma once` no tiene sentido.
+  const headerForUnity = headerLines.filter(line => line.trim() !== "#pragma once");
+  const moduleCppLines = result.modules.flatMap((m, i) => {
+    // Quitamos `#include "estatic_common.hpp"` y el include de runtime si está duplicado
+    const cleaned = m.cpp
+      .split("\n")
+      .filter(line => !line.includes('#include "estatic_common.hpp"'))
+      .join("\n");
+    // Insertamos el contenido del módulo (separado por `// --- end of module ---`)
+    return [cleaned];
+  });
+  const unified = [...headerForUnity, ...moduleCppLines].join("\n");
+  await writeFile(output, unified, "utf8");
   console.log(`Generado ${output}`);
-  await logger?.record("info", "transpile", "cpp-generated", { input, output, modules: result.modules, bytes: Buffer.byteLength(result.cpp) });
+  await logger?.record("info", "transpile", "cpp-generated", { input, output, modules: result.modules.length, bytes: Buffer.byteLength(unified) });
   if (config && nativeBuild) {
     await mkdir(dirname(config.output.binary), { recursive: true });
-    const tlsLibraries = result.cpp.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
+    const tlsLibraries = unified.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
     const libraries = config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`);
     // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
     // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero

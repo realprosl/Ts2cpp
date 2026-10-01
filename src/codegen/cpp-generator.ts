@@ -77,7 +77,9 @@ export class CppGenerator {
   private cppName(name: string): string {
     return this.localRenames.get(name) ?? name;
   }
-  private prepare(program: Program): void {
+  /** V15: setup del generador a partir del AST combinado del programa. */
+  prepareModules(program: Program): void { this.prepare(program); }
+  prepare(program: Program): void {
     // `export default` envuelve una declaración; el dialecto es single-
     // translation-unit, así que la declaración se procesa como si fuera
     // top-level directa. Unwrap para que `prepare` la vea igual que las demás.
@@ -319,15 +321,32 @@ export class CppGenerator {
     const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
     const classes = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !!statement.exported);
     const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.exported);
+    // V15: el header debe contener TODAS las definiciones de tipos que
+    // cualquier módulo puede necesitar (no solo las exportadas). Enums y
+    // unions son visibles en todo el programa — si un módulo los declara y
+    // otro los usa, los necesitamos en el header común.
+    const enums = program.statements.filter((statement): statement is EnumDeclaration => statement.kind === "EnumDeclaration");
+    const unions = program.statements.filter((statement): statement is UnionDeclaration => statement.kind === "UnionDeclaration");
+    const allClasses = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration");
     const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
-    for (const node of classes) lines.push(this.classForward(node));
-    if (classes.length) lines.push("");
+    for (const node of enums) lines.push(this.enumDeclaration(node), "");
+    for (const node of unions) lines.push(this.unionDeclaration(node), "");
+    for (const node of allClasses) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
+    if (allClasses.length) lines.push("");
     for (const fn of functions) lines.push(this.signature(fn) + ";");
     if (functions.length) lines.push("");
-    for (const node of classes) lines.push(this.classDeclaration(node), "");
+    for (const node of allClasses) lines.push(this.classDeclaration(node), "");
     for (const fn of functions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
-    for (const variable of variables) lines.push(`extern ${cppType(variable.declaredType ?? this.expressionType(variable.initializer) ?? "void")} ${variable.name};`);
+    // V15: si la variable es `const` con initializer literal, el header
+      // usa `extern const` (no `extern constexpr` — eso requiere definición
+      // inline). La definición en el .cpp usa `constexpr`. Para tipos no
+      // literales usamos solo `extern`.
+      for (const variable of variables) {
+        const isLiteralConst = !variable.mutable && variable.constValue !== undefined && typeof variable.constValue !== "string";
+        const cppT = cppType(variable.declaredType ?? this.expressionType(variable.initializer) ?? "void");
+        lines.push(`extern${isLiteralConst ? " const" : ""} ${cppT} ${variable.name};`);
+      }
     if (variables.length) lines.push("");
     for (const initializer of moduleInitializers) lines.push(`void ${initializer}();`);
     lines.push("");
@@ -345,21 +364,63 @@ export class CppGenerator {
     const privateFunctions = allFunctions.filter(statement => !statement.exported);
     const privateInterfaces = unwrappedProgram.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
     const privateClasses = unwrappedProgram.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
-    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration");
+    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && (!statement.arrayBindings || statement.arrayBindings.length === 0));
     const topLevel = unwrappedProgram.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration" && statement.kind !== "ExportNamedDeclaration");
+    const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
-    for (const node of privateClasses) lines.push(this.classForward(node));
+    for (const node of privateClasses) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
     if (privateClasses.length) lines.push("");
-    for (const fn of privateFunctions) lines.push(this.signature(fn, true) + ";");
+    // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
+    // una vez en C++; van en la definición, no en la forward).
+    for (const fn of privateFunctions) lines.push(this.signature(fn, true, false, false) + ";");
     if (privateFunctions.length) lines.push("");
-    for (const node of privateClasses) lines.push(this.classDeclaration(node), "");
+    // V15: las clases NO se redeclaran en el cpp si ya están en el header
+    // (sería "redefinition"). Solo emitimos las definiciones de clases en el
+    // header y omitimos aquí.
     for (const fn of privateFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn, true), "");
-    for (const variable of variables) lines.push(`${variable.exported ? "" : "static "}${cppType(variable.declaredType ?? this.expressionType(variable.initializer) ?? "void")} ${variable.name}{};`);
+    // V15: las forward decls no repiten el default de template parameters
+    // (eso iría en la definición), pero SÍ incluyen los defaults de los
+    // parámetros de valor (eso es lo que permite llamarlas con menos args
+    // en otros módulos).
+    for (const variable of variables) {
+      // V15: declaramos la top-level variable con su initializer literal
+      // (igual que `generate` hace). Si no tiene initializer literal, usamos
+      // `auto` para que C++ deduzca, y emitimos la asignación en el init.
+      const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
+      const previous = this.inStaticInit; this.inStaticInit = true;
+      let initializerText = this.emitExpression(variable.initializer);
+      if (variable.declaredType && isNumericType(variable.declaredType)) {
+        const initType = this.expressionType(variable.initializer);
+        const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== variable.declaredType);
+        if (needsCast) initializerText = `static_cast<${cppType(variable.declaredType)}>(${initializerText})`;
+      }
+      this.inStaticInit = previous;
+      const cppName = variable.fromRuntime
+        ? (this.localRenames.set(variable.name, `ets_local_${variable.name}`), `ets_local_${variable.name}`)
+        : variable.name;
+      const canBeConstexpr = typeof variable.constValue !== "string" && variable.constValue !== null;
+      // V15: las variables EXPORTADAS se declaran con linkage externo (sin `static`)
+      // para que el header `extern` y esta definición coincidan. Las no exportadas
+      // usan `static` para no contaminar el namespace global entre módulos.
+      const exportLinkage = variable.exported ? "" : "static ";
+      lines.push(`${exportLinkage}${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppType(type)} ${cppName} = ${initializerText};`);
+    }
     if (variables.length) lines.push("");
-    for (const fn of functions) lines.push(this.function(fn, !fn.exported), "");
+    // V15: las funciones EXPORTADAS deben tener linkage externo para que el
+    // header (signature + ";") y esta definición coincidan. Las no exportadas
+    // usan linkage interno (`static`) para evitar choques entre módulos.
+    for (const fn of functions) {
+      const exported = fn.exported;
+      lines.push(this.function(fn, !exported), "");
+    }
     lines.push(`void ${initializer}() {`); this.indent++;
-    for (const variable of variables) lines.push(this.pad() + `${variable.name} = ${this.emitExpression(variable.initializer)};`);
+    // V15: solo reasignamos variables mutables. Las `const` ya están inicializadas
+    // en su declaración (línea 360) y reasignarlas daría error de compilación.
+    for (const variable of variables) {
+      if (variable.mutable) lines.push(this.pad() + `${variable.name} = ${this.emitExpression(variable.initializer)};`);
+    }
+    for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevel) lines.push(this.emitStatement(statement));
     this.indent--; lines.push("}", "");
     if (entryInitializers) {
@@ -370,7 +431,7 @@ export class CppGenerator {
     }
     return lines.join("\n");
   }
-  private signature(fn: FunctionDeclaration, internal = false, includeDefaults = true): string {
+  private signature(fn: FunctionDeclaration, internal = false, includeDefaults = true, includeValueDefaults = true): string {
     const constrained = fn.params.map((p, i) => ({ p, i })).filter(({ p }) => this.interfaceNames.has(p.type));
     // V10.2: si algún parámetro es `(A, B) => R` (tipo función) y NO tiene
     // default value, lo tratamos como plantilla C++ (`F&&` con deducción
@@ -404,7 +465,7 @@ export class CppGenerator {
       const isFunction = isFunctionType(p.type) && !this.interfaceNames.has(p.type);
       const paramType = isFunction ? `F${i}&&` : (this.interfaceNames.has(p.type) ? `T${i}` : effectiveType);
       const cppParamName = p.fromRuntime ? (this.localRenames.set(p.name, `ets_local_${p.name}`), `ets_local_${p.name}`) : undefined;
-      return cppParameterDeclaration(p, paramType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
+      return cppParameterDeclaration(p, paramType, fn.async, includeValueDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
     }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
   }
@@ -429,10 +490,10 @@ export class CppGenerator {
     this.indent--; lines.push("};");
     return lines.join("\n");
   }
-  private classForward(node: ClassDeclaration): string {
+  private classForward(node: ClassDeclaration, includeDefaults = true): string {
     const template = node.typeParameters.length ? `template <${node.typeParameters.map(parameter => {
       const base = `typename ${parameter.name}`;
-      return parameter.default ? `${base} = ${cppType(parameter.default)}` : base;
+      return includeDefaults && parameter.default ? `${base} = ${cppType(parameter.default)}` : base;
     }).join(", ")}>\n` : "";
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     return `${template}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name};`;
