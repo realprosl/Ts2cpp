@@ -1023,6 +1023,27 @@ export class CppGenerator {
         const args = node.typeArguments.map(t => cppType(t)).join(", ");
         return `${node.name}<${args}>`;
       }
+      case "ObjectLiteralExpression": {
+        // V1.4: object literal como constructor inline. Se emite como llamada
+        // al constructor de la variante con el payload. Ej:
+        //   `{ ok: true, value: x }` → `Ok(x)`
+        //   `{ ok: false, error: e }` → `Err(e)`
+        // El type-checker ya validó que el literal coincide con una variante
+        // del union esperado.
+        const type = this.expressionType(node);
+        if (!type) return "{}";
+        const unionName = isGenericType(type) ? genericBase(type) : type;
+        const unionNode = this.unionsMap.get(unionName);
+        if (!unionNode) return "{}";
+        const discProp = node.properties[0];
+        const discValue = discProp.value.kind === "LiteralExpression" ? discProp.value.value : null;
+        const variant = unionNode.variants.find(v => v.discriminator && v.discriminator.field === discProp.key && v.discriminator.value === discValue);
+        if (!variant) return "{}";
+        const bindings = node.properties.slice(1);
+        if (!variant.payload) return `${variant.name}()`;
+        const values = bindings.map(b => this.emitExpression(b.value));
+        return `${variant.name}(${values.join(", ")})`;
+      }
       case "ArrayLiteralExpression": {
         const type = this.expressionType(node);
         if (type && isTupleType(type)) {
