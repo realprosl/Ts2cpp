@@ -224,10 +224,18 @@ const SET_METHODS: Record<string, { params: (typeArgs: TypeName[]) => TypeName[]
 // para que la llamada C++ se materialice con los tipos correctos. Esto
 // habilita las cadenas `arr.filter(p).map(f).reduce(init, op)` que V7.1
 // fusionará en un único bucle.
-const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn" | "value")[]; returnType: (typeArgs: TypeName[]) => TypeName }> = {
+const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn" | "value")[]; returnType: (typeArgs: TypeName[]) => TypeName; userTypeArgument?: number }> = {
   filter: { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `${T}[]` },
-  map:    { arity: 1, paramKinds: ["fn"], returnType: () => "void[]" },
-  reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void" },
+  map:    { arity: 1, paramKinds: ["fn"], returnType: () => "void[]", userTypeArgument: 0 },
+  reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void", userTypeArgument: 0 },
+  // Métodos añadidos en V11: predicados y extracción.
+  forEach: { arity: 1, paramKinds: ["fn"], returnType: () => "void" },
+  // `find` devuelve `T` por ahora; el usuario puede discriminar con `Optional<T>`
+  // en un PR futuro. La limitación está documentada en LIMITATIONS.md.
+  find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => T },
+  some:    { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
+  every:   { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
+  slice:   { arity: 2, paramKinds: ["value", "value"], returnType: ([T]) => `${T}[]` },
 };
 
 /** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
@@ -2103,6 +2111,37 @@ export class TypeChecker {
             result = U ?? "void";
             break;
           }
+          // V11: métodos adicionales sobre arrays. La firma del lambda se
+          // valida según `paramKinds` y el returnType se computa con la
+          // tabla ARRAY_METHODS.
+          if (node.method === "forEach") {
+            const fnExpected = functionType([T], "void");
+            // V10: lambda directa es singleUseSite.
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            result = "void";
+            break;
+          }
+          if (node.method === "find") {
+            const fnExpected = functionType([T], "boolean");
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            result = T; // simplificación: find devuelve T (no Optional<T> todavía)
+            break;
+          }
+          if (node.method === "some" || node.method === "every") {
+            const fnExpected = functionType([T], "boolean");
+            if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
+            result = "boolean";
+            break;
+          }
+          if (node.method === "slice") {
+            if (node.args[0]) this.require(this.expression(node.args[0], scope), "number", node.args[0]);
+            if (node.args[1]) this.require(this.expression(node.args[1], scope), "number", node.args[1]);
+            result = objectType;
+            break;
+          }
           break;
         }
         const resolvedClass = this.resolveClass(objectType);
@@ -2160,7 +2199,9 @@ export class TypeChecker {
             if (activeVariants.length === 1 && activeVariants[0].payload) {
               // Si la unión es genérica (e.g. `Result<T,E>`), sustituimos
               // los type parameters con los argumentos reales del tipo del
-              // identificador narrowado.
+              // identificador narrowado. Si faltan argumentos, usamos el
+              // default declarado en el type parameter (e.g. `E` tiene
+              // default `string` en `Result<T, E>`).
               const exprSymbol = scope.resolve(node.object.name);
               if (exprSymbol && exprSymbol.kind === "variable") {
                 const exprType = exprSymbol.type;
@@ -2168,7 +2209,10 @@ export class TypeChecker {
                   const args = genericArguments(exprType);
                   const params = unionNode.typeParameters;
                   const subs = new Map<string, TypeName>();
-                  params.forEach((p, i) => { if (args[i]) subs.set(p.name, args[i]); });
+                  params.forEach((p, i) => {
+                    if (args[i]) subs.set(p.name, args[i]);
+                    else if (p.default) subs.set(p.name, p.default);
+                  });
                   result = this.substituteType(activeVariants[0].payload, subs);
                   break;
                 }

@@ -84,3 +84,47 @@ template <typename U, typename T>
 inline U ets_reduce(U init, const std::vector<T>& src, const std::function<U(const U&, const T&)>& op) {
     return ets_reduce<U, T, std::function<U(const U&, const T&)>>(init, src, op);
 }
+
+// V11: `ets_for_each_vec<T>(src, fn)` — aplica `fn` a cada elemento
+// sin producir resultado. Equivalente a `for (auto& item : src) fn(item)`.
+template <typename T, typename F>
+inline void ets_for_each_vec(const std::vector<T>& src, F&& fn) {
+    for (const auto& item : src) fn(item);
+}
+
+// V11: `ets_find_vec<T>(src, pred)` — devuelve el primer elemento que
+// cumple `pred`. Si no hay ninguno, devuelve `T{}` (valor por defecto).
+// El usuario debe validar el resultado; en V12 se cambiará a `Optional<T>`.
+template <typename T, typename Pred>
+inline T ets_find_vec(const std::vector<T>& src, Pred&& pred) {
+    for (const auto& item : src) if (pred(item)) return item;
+    return T{};
+}
+
+// V11: `ets_some_vec<T>(src, pred)` — true si AL MENOS UN elemento cumple `pred`.
+template <typename T, typename Pred>
+inline bool ets_some_vec(const std::vector<T>& src, Pred&& pred) {
+    for (const auto& item : src) if (pred(item)) return true;
+    return false;
+}
+
+// V11: `ets_every_vec<T>(src, pred)` — true si TODOS los elementos cumplen `pred`.
+// (Vacío → true, convención JS.)
+template <typename T, typename Pred>
+inline bool ets_every_vec(const std::vector<T>& src, Pred&& pred) {
+    for (const auto& item : src) if (!pred(item)) return false;
+    return true;
+}
+
+// V11: `ets_slice_vec<T>(src, start, end)` — sub-array desde `start`
+// (inclusivo) hasta `end` (exclusivo). Índices negativos se cuentan
+// desde el final (al estilo JS): -1 = último elemento, -2 = penúltimo.
+template <typename T>
+inline std::vector<T> ets_slice_vec(const std::vector<T>& src, int start, int end) {
+    const int n = static_cast<int>(src.size());
+    if (start < 0) start = std::max(0, n + start);
+    if (end < 0) end = n + end;
+    if (start >= n || start >= end) return {};
+    if (end > n) end = n;
+    return std::vector<T>(src.begin() + start, src.begin() + end);
+}

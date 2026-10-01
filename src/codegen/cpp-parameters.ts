@@ -74,6 +74,7 @@ export function cppParameterDeclaration(parameter: Parameter, renderedType: stri
   if (mode === "out" || mode === "mut") type = `${renderedType}&`;
   else if (mode === "move") type = `${renderedType}&&`;
   else if (automaticParameterUsesValue(parameter.type, asynchronous)) type = renderedType;
+  else if (renderedType.endsWith("&&") || renderedType.endsWith("&")) type = renderedType; // V10.2: ya viene como forwarding ref, no envolver.
   else type = `const ${renderedType}&`;
   if (parameter.variadic) {
     if (type.endsWith("&")) type += "...";

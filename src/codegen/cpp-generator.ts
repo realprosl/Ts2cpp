@@ -118,7 +118,7 @@ export class CppGenerator {
   // tiempo de compilación si quedan sin instanciar, pero los headers
   // crecen y el include explícito documenta la dependencia).
   private usesCollections(program: Program): boolean {
-    const target = new Set(["filter", "map", "reduce"]);
+    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice"]);
     const visit = (node: unknown): boolean => {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
@@ -372,13 +372,18 @@ export class CppGenerator {
   }
   private signature(fn: FunctionDeclaration, internal = false, includeDefaults = true): string {
     const constrained = fn.params.map((p, i) => ({ p, i })).filter(({ p }) => this.interfaceNames.has(p.type));
+    // V10.2: si algún parámetro es `(A, B) => R` (tipo función) y NO tiene
+    // default value, lo tratamos como plantilla C++ (`F&&` con deducción
+    // automática). Esto elimina el `std::function` que el codegen normal
+    // añadiría y permite al compilador inlinear la lambda in situ.
+    const functionParams = fn.params.map((p, i) => ({ p, i })).filter(({ p, i }) => isFunctionType(p.type) && !this.interfaceNames.has(p.type));
     const templateParts = [...fn.typeParameters.map(parameter => {
       const base = fn.variadicTypeParameters.includes(parameter.name) ? `typename... ${parameter.name}` : `typename ${parameter.name}`;
       // En C++ los defaults de los parámetros de plantilla solo van en la declaración
       // adelantada; el cuerpo de la función los omite (igual que los defaults de los
       // parámetros de valor). El flag `includeDefaults` controla ambos.
       return includeDefaults && parameter.default ? `${base} = ${cppType(parameter.default)}` : base;
-    }), ...constrained.map(({ p, i }) => `${p.type} T${i}`)];
+    }), ...constrained.map(({ p, i }) => `${p.type} T${i}`), ...functionParams.map(({ i }) => `typename F${i}`)];
     const template = templateParts.length ? `template <${templateParts.join(", ")}>\n` : "";
     const requiresClauses = fn.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`);
     const requires = requiresClauses.length ? `${requiresClauses.join("\n")}\n` : "";
@@ -392,8 +397,14 @@ export class CppGenerator {
     const params = fn.params.map((p, i) => {
       const baseType = this.cppParameterType(p.type);
       const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
+      // V10.2: si el parámetro es una función, usar el template param `F${i}`
+      // (forwarding reference con deducción automática) en lugar del tipo
+      // concreto (que sería `std::function<...>`). Esto permite que el
+      // compilador C++ inline la lambda sin overhead.
+      const isFunction = isFunctionType(p.type) && !this.interfaceNames.has(p.type);
+      const paramType = isFunction ? `F${i}&&` : (this.interfaceNames.has(p.type) ? `T${i}` : effectiveType);
       const cppParamName = p.fromRuntime ? (this.localRenames.set(p.name, `ets_local_${p.name}`), `ets_local_${p.name}`) : undefined;
-      return cppParameterDeclaration(p, this.interfaceNames.has(p.type) ? `T${i}` : effectiveType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
+      return cppParameterDeclaration(p, paramType, fn.async, includeDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
     }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
   }
@@ -1353,36 +1364,64 @@ export class CppGenerator {
             if (!U) return `${objStr}.reduce(${argStrs.join(", ")})`;
             return `ets_reduce<${cppType(U)}, ${cppType(T)}>(${argStrs[0]}, ${objStr}, ${argStrs[1]})`;
           }
+          // V11: métodos adicionales sobre arrays.
+          if (method === "forEach") {
+            return `ets_for_each_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "find") {
+            return `ets_find_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "some") {
+            return `ets_some_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "every") {
+            return `ets_every_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "slice") {
+            return `ets_slice_vec<${cppType(T)}>(${objStr}, ${argStrs[0]}, ${argStrs[1]})`;
+          }
         }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {
-        // Los miembros de un enum se acceden como `Name::Member` en C++ (no `Name.Member`),
-        // porque los enums numéricos se emiten como `enum class` y los de cadena como struct
-        // con miembros estáticos, ninguno de los cuales admite el operador `.` desde fuera.
-        if (node.object.kind === "IdentifierExpression" && this.enumNames.has(node.object.name)) return `${node.object.name}::${node.member}`;
-        // V1.2: las variantes de una unión se acceden como llamadas al constructor
-        // global `Variant()` (no `Name.Variant` ni `Name::Variant`), porque la
-        // declaración emite constructores en el namespace global con el nombre
-        // de la variante. Esto produce `Direction::North()` → `North()`.
-        if (node.object.kind === "IdentifierExpression" && this.unionNames.has(node.object.name)) {
-          const unionNode = this.unionsMap.get(node.object.name);
-          const variant = unionNode?.variants.find(v => v.name === node.member);
-          if (variant) return variant.payload ? `${node.member}(${variant.payload})` : `${node.member}()`;
-        }
-        // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
-        // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
-        if (node.optional) {
-          const obj = this.emitExpression(node.object);
-          return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
-        }
-        // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
-        // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
-        if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
-          return `${this.emitExpression(node.object)}->${node.member}`;
-        }
-        return `${this.emitExpression(node.object)}.${node.member}`;
-      }
+              // Los miembros de un enum se acceden como `Name::Member` en C++ (no `Name.Member`),
+              // porque los enums numéricos se emiten como `enum class` y los de cadena como struct
+              // con miembros estáticos, ninguno de los cuales admite el operador `.` desde fuera.
+              if (node.object.kind === "IdentifierExpression" && this.enumNames.has(node.object.name)) return `${node.object.name}::${node.member}`;
+              // V1.2: las variantes de una unión se acceden como llamadas al constructor
+              // global `Variant()` (no `Name.Variant` ni `Name::Variant`), porque la
+              // declaración emite constructores en el namespace global con el nombre
+              // de la variante. Esto produce `Direction::North()` → `North()`.
+              if (node.object.kind === "IdentifierExpression" && this.unionNames.has(node.object.name)) {
+                const unionNode = this.unionsMap.get(node.object.name);
+                const variant = unionNode?.variants.find(v => v.name === node.member);
+                if (variant) return variant.payload ? `${node.member}(${variant.payload})` : `${node.member}()`;
+              }
+              // V1.4: Result<T> no es un `std::variant` real, sino el tipo del runtime
+              // (`ets::Result<T>`) que tiene métodos `isOk()`, `value()`, `error()`.
+              // Cuando el usuario accede a `r.ok` (discriminador del AST de Result),
+              // emitimos `r.isOk()`; `r.value` → `r.value()`; `r.error` → `r.error()`.
+              if (node.object.kind === "IdentifierExpression") {
+                const objType = this.expressionType(node.object);
+                if (objType && isGenericType(objType) && genericBase(objType) === "Result") {
+                  if (node.member === "ok") return `${this.emitExpression(node.object)}.isOk()`;
+                  if (node.member === "value") return `${this.emitExpression(node.object)}.value()`;
+                  if (node.member === "error") return `${this.emitExpression(node.object)}.error()`;
+                }
+              }
+              // `?.` desazucara a `optionalAndThen(obj, [](auto _e) { return optionalSome(_e.member); })`.
+              // El type-checker garantiza que `obj` es `Optional<T>` y `T` tiene el campo.
+              if (node.optional) {
+                const obj = this.emitExpression(node.object);
+                return `optionalAndThen(${obj}, [](auto _ets_optional_chain) { return optionalSome(_ets_optional_chain.${node.member}); })`;
+              }
+              // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
+              // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
+              if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
+                return `${this.emitExpression(node.object)}->${node.member}`;
+              }
+              return `${this.emitExpression(node.object)}.${node.member}`;
+            }
       case "IndexExpression": {
         const object = this.emitExpression(node.object); const objectType = this.expressionType(node.object);
         const tupleIndex = node.index.kind === "LiteralExpression" && typeof node.index.value === "number" ? String(node.index.value) : this.emitExpression(node.index);
