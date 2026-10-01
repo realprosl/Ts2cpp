@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
 import type { ResolvedConfig } from "../config/project-config.ts";
 import { compileFile, loadModuleGraph } from "../modules/module-loader.ts";
 
@@ -164,10 +164,19 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   if (options.verbose) progress.log(`runtime digest: ${runtimeDigest}, global digest: ${digest}`);
 
   const cppPath = config.output.cpp;
-  const objectPath = join(cacheDir, `app-${digest}.o`);
   const binaryPath = config.output.binary;
-  const manifestPath = join(cacheDir, `app-${digest}.manifest`);
+  const manifestPath = join(cacheDir, `app.manifest`);
+  const globalManifestPath = join(cacheDir, `global.manifest`);
   const headerPath = join(generatedDir, "estatic_common.hpp");
+
+  // Si el digest global (runtime + flags + comando) cambió desde el último
+  // build, hay que invalidar TODO el cache. Lo persistimos en `global.manifest`.
+  const previousGlobalDigest = await readFile(globalManifestPath, "utf8").catch(() => "");
+  const globalDigestChanged = previousGlobalDigest !== digest;
+  if (globalDigestChanged && previousGlobalDigest) {
+    progress.warn(`Cache global invalidado (runtime/flags cambiaron: ${previousGlobalDigest.slice(0, 8)}... → ${digest.slice(0, 8)}...)`);
+  }
+  await writeFile(globalManifestPath, digest, "utf8");
 
   // Cabecera común: estable mientras el digest global no cambie. La
   // reescribimos siempre (es barata) para reflejar el digest actual.
@@ -187,12 +196,12 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   const programFingerprint = programHash.digest("hex").slice(0, 16);
 
   const previousManifest = await readFile(manifestPath, "utf8").catch(() => "");
-  const cacheHit = previousManifest === programFingerprint
-    && await fileExists(objectPath)
-    && await fileExists(binaryPath);
-
-  if (cacheHit) {
-    if (options.verbose) progress.log(`Cache hit: huella coincide, reutilizando ${objectPath}`);
+  // V15: el cache hit ahora es "todos los .o reutilizados". Si llegamos aquí
+  // con `globalDigestChanged=false` y el `app.manifest` (huella de programa)
+  // coincide, podemos reutilizar TODOS los .o sin recompilar nada. En otro
+  // caso, seguimos al pipeline principal que compara por-módulo.
+  if (!globalDigestChanged && previousManifest === programFingerprint) {
+    if (options.verbose) progress.log(`Cache hit: huella del programa coincide, todos los .o reutilizados`);
     return {
       compiled: [],
       reused: graph.modules.map(m => m.file),
@@ -207,13 +216,9 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   // Diagnóstico claro cuando la caché falla por una razón concreta.
   if (previousManifest && previousManifest !== programFingerprint) {
     progress.warn(`Cache miss: huella del programa cambió (anterior ${previousManifest.slice(0, 8)}..., nueva ${programFingerprint.slice(0, 8)}...)`);
-  } else if (!await fileExists(objectPath)) {
-    progress.log(`Cache miss: no existe el objeto cacheado (${objectPath})`);
-  } else if (!await fileExists(binaryPath)) {
-    progress.log(`Cache miss: no existe el binario (${binaryPath})`);
   }
 
-  // 4) Regenerar el `.cpp` mediante el pipeline canónico.
+  // 4) Regenerar el header + `.cpp` por módulo mediante el pipeline canónico.
   //    Esto vuelve a parsear + chequear tipos + emitir código. Cualquier
   //    diagnóstico se propaga como `DiagnosticError` antes de tocar la
   //    caché, así un error de tipos no deja un `.o` a medias.
@@ -223,38 +228,66 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
     aliases: config.aliases,
   });
   await mkdir(dirname(cppPath), { recursive: true });
-  await writeFile(cppPath, result.cpp, "utf8");
-  if (options.verbose) progress.log(`.cpp escrito (${Buffer.byteLength(result.cpp).toLocaleString()} bytes, ${result.modules} módulos)`);
+  // V15: escribimos el header común + un `.cpp` por módulo (modo multi).
+  await writeFile(headerPath, result.header, "utf8");
+  const compiled: string[] = [];
+  const reused: string[] = [];
+  // Cacheamos un .o por módulo. La ruta del cache depende SOLO del hash del
+  // módulo (.cpp generado), no del digest global. Si runtime/flags cambian,
+  // invalidamos TODOS los caches abajo (`globalDigestChanged`).
+  for (const module of result.modules) {
+    const moduleBase = basename(module.name).replace(/\.(ets|ts)$/, "");
+    const moduleCppPath = join(dirname(cppPath), `${moduleBase}.cpp`);
+    const moduleObjectPath = join(cacheDir, `${moduleBase}.o`);
+    const moduleManifestPath = join(cacheDir, `${moduleBase}.manifest`);
+    await writeFile(moduleCppPath, module.cpp, "utf8");
+    if (options.verbose) progress.log(`${moduleBase}.cpp escrito (${Buffer.byteLength(module.cpp).toLocaleString()} bytes)`);
+    const moduleCppHash = createHash("sha256").update(module.cpp).digest("hex").slice(0, 16);
+    const previousModuleManifest = await readFile(moduleManifestPath, "utf8").catch(() => "");
+    const objectExists = await fileExists(moduleObjectPath);
+    // Reutilizamos el .o SOLO si (a) el hash del .cpp no cambió Y (b) el
+    // digest global no cambió. Si runtime o flags cambiaron, todo a la basura.
+    if (!globalDigestChanged && previousModuleManifest === moduleCppHash && objectExists) {
+      reused.push(module.name);
+      if (options.verbose) progress.log(`Reutilizado ${moduleBase}.o (manifest coincide)`);
+      continue;
+    }
+    // Compilamos este módulo a .o.
+    progress.beginPhase(`Compilando ${moduleBase}.cpp → ${moduleBase}.o`);
+    const compileArgs = [
+      ...config.compiler.flags,
+      `-I${config.baseDirectory}`,
+      `-I${compilerRoot}`,
+      `-I${dirname(headerPath)}`,
+      "-c",
+      moduleCppPath,
+      "-o",
+      moduleObjectPath,
+    ];
+    try { await runNative(config.compiler.command, compileArgs); }
+    catch (error) { throw new Error(`Falló la compilación de ${moduleCppPath} a objeto:\n${error instanceof Error ? error.message : String(error)}\nSugerencia: revisa que las flags de compilación en estatic.config.ts sean correctas y que runtime/ esté accesible.`); }
+    await writeFile(moduleManifestPath, moduleCppHash, "utf8");
+    compiled.push(module.name);
+  }
+  if (options.verbose) progress.log(`${compiled.length} módulo(s) compilado(s), ${reused.length} reutilizado(s)`);
 
-  // 5) Compilar a .o.
-  progress.beginPhase(`Compilando a objeto (${config.compiler.command})`);
-  const compileArgs = [
-    ...config.compiler.flags,
-    `-I${config.baseDirectory}`,
-    `-I${compilerRoot}`,
-    `-I${dirname(headerPath)}`,
-    "-c",
-    cppPath,
-    "-o",
-    objectPath,
-  ];
-  try { await runNative(config.compiler.command, compileArgs); }
-  catch (error) { throw new Error(`Falló la compilación de ${cppPath} a objeto:\n${error instanceof Error ? error.message : String(error)}\nSugerencia: revisa que las flags de compilación en estatic.config.ts sean correctas y que runtime/ esté accesible.`); }
-
-  // 6) Enlazar. Si el digest global no cambió y el binario ya existe, el
-  // enlace se puede reutilizar; en cualquier otro caso re-enlazamos.
+  // 5) Enlazar TODOS los .o al binario. Si ya tenemos un binario cacheado
+  // válido (mismo fingerprint del programa entero), podríamos reusarlo, pero
+  // por simplicidad siempre re-enlazamos cuando hay cambios.
   const linkFlagsChanged = previousManifest !== "" && previousManifest !== programFingerprint;
   let linked = false;
   const binaryExists = await fileExists(binaryPath);
-  if (!binaryExists || linkFlagsChanged) {
+  const allObjects = result.modules.map(module => {
+    const moduleBase = basename(module.name).replace(/\.(ets|ts)$/, "");
+    return join(cacheDir, `${moduleBase}.o`);
+  });
+  if (!binaryExists || linkFlagsChanged || compiled.length > 0) {
     progress.beginPhase(`Enlazando binario (${config.compiler.command})`);
-    // Si la salida incluye la cabecera TLS, hay que enlazar libssl/libcrypto.
-    // En modo incremental esto se deduce del .cpp que escribimos arriba.
-    const needsTls = result.cpp.includes("runtime/ets_tls.hpp");
+    const needsTls = result.header.includes("runtime/ets_tls.hpp") || result.modules.some(m => m.cpp.includes("runtime/ets_tls.hpp"));
     const tlsLibraries = needsTls ? ["-lssl", "-lcrypto"] : [];
     const linkArgs = [
       ...config.compiler.flags.filter(flag => flag !== "-c" && flag !== "-flto" && !flag.startsWith("-Wl,")),
-      objectPath,
+      ...allObjects,
       "-o", binaryPath,
       ...config.compiler.linkFlags,
       ...config.linkLibraries.map(lib => lib.startsWith("-") ? lib : `-l${lib}`),
@@ -276,12 +309,12 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   if (options.verbose) progress.log(`Binario: ${binaryPath} (${binarySize.toLocaleString()} bytes)`);
 
   return {
-    compiled: graph.modules.map(m => m.file),
-    reused: [],
+    compiled,
+    reused,
     linked,
     binary: binaryPath,
     header: headerPath,
     durationMs: progress.totalElapsed(),
-    cacheResult: "miss",
+    cacheResult: compiled.length === 0 && !linked ? "hit" : (reused.length > 0 ? "partial" : "miss"),
   };
 }

@@ -1,16 +1,32 @@
 import { readFile, realpath } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
-import { compile, parse, type CompilationResult } from "../compiler.ts";
+import { createHash } from "node:crypto";
+import { dirname, extname, resolve, basename } from "node:path";
+import { parse, analyze } from "../compiler.ts";
+import { CppGenerator } from "../codegen/cpp-generator.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { validateModuleVisibility } from "./module-visibility.ts";
+import type { Program, Statement } from "../ast/nodes.ts";
 
 const IMPORT_LINE = /^(\s*)import\s+(?:\{([^}]*)\}\s+from\s+)?["']([^"']+)["']\s*;\s*$/;
 
-export interface ModuleCompilationResult extends CompilationResult { modules: string[] }
+/** V15: nombre de init estable basado en el nombre del archivo. Si el
+ * módulo cambia su contenido, el init mantiene el mismo nombre — así
+ * `main.cpp` no se invalida cada vez que una dependencia cambia. */
+function stableInitName(moduleFile: string): string {
+  const base = basename(moduleFile).replace(/\.(ets|ts)$/, "").replace(/[^A-Za-z0-9_]/g, "_");
+  return `ets_init_${base}`;
+}
+
+export interface ModuleCompilationResult {
+  ast: import("../ast/nodes.ts").Program;
+  header: string;
+  modules: { name: string; cpp: string }[];
+  moduleNames: string[];
+}
 export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string> }
 
 export interface ModuleImport { names: string[]; dependency: string; line: number }
-export interface LoadedModule { file: string; source: string; dependencies: string[]; imports: ModuleImport[] }
+export interface LoadedModule { file: string; source: string; dependencies: string[]; imports: ModuleImport[]; hash: string }
 export interface ModuleGraph { entry: string; modules: LoadedModule[] }
 
 async function resolveSourceFile(requested: string): Promise<string | undefined> {
@@ -66,9 +82,15 @@ export async function loadModuleGraph(entry: string, options: ModuleLoaderOption
       imports.push({ names, dependency: resolvedDependency, line: lineNumber });
       stripped.push("");
     }
+    const strippedSource = stripped.join("\n");
+    // V15: nombre de inicializador estable (basado en el nombre del archivo,
+    // no en un hash del source). Así, si un módulo cambia su source, su init
+    // mantiene el mismo nombre y main.cpp no se invalida. El init solo cambia
+    // si el módulo se RENOMBRA o se AÑADE uno nuevo.
+    const moduleHash = createHash("sha256").update(strippedSource).digest("hex").slice(0, 16);
     visiting.pop();
     visited.add(file);
-    ordered.push({ file, source: stripped.join("\n"), dependencies, imports });
+    ordered.push({ file, source: strippedSource, dependencies, imports, hash: moduleHash });
     return file;
   };
 
@@ -99,8 +121,39 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
     nextLine += count;
   }
   try {
-    const result = compile(chunks.join("\n"));
-    return { ...result, modules: ordered.map(module => module.file) };
+    // V15: parseamos el AST combinado UNA VEZ (para que el type-checker
+    // resuelva imports correctamente), pero el codegen emite header + un
+    // `.cpp` por módulo (cada uno solo con su código). El header tiene
+    // todas las declaraciones que cualquier módulo puede necesitar.
+    const ast = parse(chunks.join("\n"));
+    const { checker } = analyze([ast]);
+    const generator = new CppGenerator(
+      expression => checker.typeOf(expression),
+      expression => checker.isVariadic(expression),
+      expression => checker.typeArgumentsOf(expression),
+    );
+    generator.prepareModules(ast);
+    const headerName = "estatic_common.hpp";
+    const moduleInitializers = ordered.map(module => stableInitName(module.file));
+    const header = generator.generateHeader(ast, moduleInitializers);
+    // V15: en vez de parsear cada módulo por separado (lo que produce ASTs
+  // distintos que el type-checker no reconoce), filtramos el AST combinado
+  // por rango de líneas del módulo. Así los nodos que `generateModule`
+  // recibe SON los del AST combinado, y `expressionType` (que es un
+  // callback al type-checker del AST combinado) los reconoce.
+  const modules = ordered.map((module, index) => {
+    const range = ranges[index];
+    const moduleStatementsFromCombined = (ast.statements as Statement[]).filter(stmt => {
+      const line = stmt.span.start.line;
+      return line >= range.start && line <= range.end;
+    });
+    const moduleAst: Program = { kind: "Program", statements: moduleStatementsFromCombined, span: { start: ast.span.start, end: ast.span.end } };
+    return {
+      name: module.file,
+      cpp: generator.generateModule(moduleAst, ast, headerName, stableInitName(module.file), index === ordered.length - 1 ? moduleInitializers : undefined),
+    };
+  });
+    return { ast, header, modules, moduleNames: ordered.map(m => m.file) };
   } catch (error) {
     if (!(error instanceof DiagnosticError)) throw error;
     const diagnostics: Diagnostic[] = error.diagnostics.map(diagnostic => {

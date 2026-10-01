@@ -5,6 +5,14 @@ import { CppGenerator } from "./codegen/cpp-generator.ts";
 import type { Program } from "./ast/nodes.ts";
 
 export interface CompilationResult { ast: Program; cpp: string }
+/** V15: resultado del pipeline por módulos. El header contiene todas las
+ * declaraciones que cualquier módulo puede necesitar (forward declarations
+ * de clases, firmas de funciones exportadas, etc.). Cada entry de `modules`
+ * es el `.cpp` que contiene SOLO el código de ese módulo (incluye el header). */
+export interface ModuleCompilation {
+  header: string;
+  modules: { name: string; cpp: string }[];
+}
 
 export function parse(source: string): Program {
   return new Parser(new Lexer(source).tokenize()).parseProgram();
