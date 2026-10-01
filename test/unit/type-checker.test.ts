@@ -777,3 +777,46 @@ test("V2: match exhaustivo reporta variante inexistente", () => {
     }
   `, "no tiene variante");
 });
+
+// V14: Optional<T> estilo Rust. Métodos intrínsecos, sin magia.
+test("V14: Optional.isPresent/isEmpty retornan boolean", () => {
+  const { ast } = check(`
+    const o: Optional<number> = optionalSome(42);
+    const a: boolean = o.isPresent();
+    const b: boolean = o.isEmpty();
+  `);
+  assert.equal(ast.statements.length, 3);
+});
+
+test("V14: Optional.valueOr(default) devuelve el tipo interno", () => {
+  const { ast } = check(`
+    const o: Optional<number> = optionalSome(42);
+    const v: number = o.valueOr(-1);
+  `);
+  assert.equal(ast.statements.length, 2);
+});
+
+test("V14: Optional.value sin verificar aborta en runtime", () => {
+  // El type-checker acepta `o.value()` (devuelve T), pero el runtime aborta
+  // si el Optional está vacío. Es responsabilidad del programador verificar.
+  // NO hay un type-checker que fuerce isPresent() antes (eso sería magia).
+  check(`
+    const o: Optional<number> = optionalSome(42);
+    const v: number = o.value();
+  `);
+});
+
+test("V14: Optional.map con inferencia del tipo interno", () => {
+  const { ast } = check(`
+    const o: Optional<number> = optionalSome(21);
+    const doubled: Optional<number> = o.map((n: number): number => n * 2);
+  `);
+  assert.equal(ast.statements.length, 2);
+});
+
+test("V14: Optional con método inexistente reporta error", () => {
+  expectError(`
+    const o: Optional<number> = optionalSome(42);
+    o.foo();
+  `, "no tiene el método");
+});

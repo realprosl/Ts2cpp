@@ -878,7 +878,43 @@ O directamente con `npm start -- examples/<nombre>.ets -o <salida>.cpp` y luego 
 ## Dirección del proyecto
 
 - [`docs/vision.md`](./docs/vision.md) — la filosofía del dialecto: escribir como TypeScript, conocerlo todo en compilación, pagar en ejecución como C++.
-- [`docs/roadmap.md`](./docs/roadmap.md) — el plan de ejecución derivado: V0 (cimiento semántico) hasta V10 (closures específicas), con dependencias y criterios de done.
+- [`docs/roadmap.md`](./docs/roadmap.md) — el plan de ejecución derivado: V0 (cimiento semántico) hasta V14 (métodos de arrays + Optional estilo Rust).
+
+## Features del dialecto (resumen V0–V14)
+
+**Tipos y narrowing:**
+- Primitivos: `number`, `boolean`, `string`, `void`, `null`
+- Genéricos: `Array<T>`, `Optional<T>`, `Result<T>`, `Unq<T>`, `Rc<T>`, `Mut<T>`, `MutRef<T>`, `Map<K,V>`, `Set<T>`
+- Tagged unions: `union X = A(payload) | B(payload);` con narrowing automático y match exhaustivo
+- Discriminated unions con object-literal variants (V1.4)
+
+**Colecciones (V7–V14):**
+- `filter(pred)`, `map<U>(f)`, `reduce((acc, x) => U)`, `forEach(f)`
+- `find(pred)` → `Optional<T>`, `some(pred)`, `every(pred)`
+- `slice(start, end)` con negativos, `sort(cmp)`, `flatMap<U>(f)`, `includes(value)`
+
+**Optional<T> estilo Rust:**
+- `o.isPresent()`, `o.isEmpty()`, `o.value()` (aborta si vacío)
+- `o.valueOr(default)`, `o.map<U>(f)`, `o.andThen<U>(f)`, `o.orElse(f)`
+- `??` desazucara a `o.valueOr(x)`, `o?.field` desazucara a `optionalAndThen`
+
+**Async:** `async function`, `await`, `notify(event)` (io_uring)
+
+**Memory:** `Unq<T>` move-only, `Rc<T>` shared, escape implícito V8 (Unq→Rc cuando es necesario)
+
+**Closures (V10):**
+- Captura explícita `[x]` (V10.1): solo se capturan las variables usadas
+- Forwarding references (V10.2): `template <typename F> auto fn(F&& f)` cuando es posible (evita `std::function`)
+
+## Tests
+
+- **Unit (type-checker, parser, lexer, codegen, tipos C++):** 166 tests verde
+- **E2E (golden tests sobre ejemplos `examples/*.ets`):** 69/69 verde
+
+```bash
+node --experimental-strip-types --no-warnings --test test/unit/*.test.ts
+node --experimental-strip-types --no-warnings test/runner.ts
+```
 
 ## Licencia
 
