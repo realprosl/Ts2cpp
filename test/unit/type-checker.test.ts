@@ -712,3 +712,68 @@ test("V10: lambda con argumentos de filter/map/reduce también recibe singleUseS
   assert.equal(lambda.singleUseSite.kind, "MemberCallExpression");
   assert.equal(lambda.singleUseSite.argumentIndex, 0);
 });
+
+// V2: match exhaustivo sobre tagged unions.
+test("V2: match exhaustivo acepta cuando todas las variantes están cubiertas", () => {
+  // No debe reportar error.
+  check(`
+    union Color = Red(string) | Green(string) | Blue(string);
+    function name(c: Color): string {
+      return match (c) {
+        case { kind: "Red", r }: "red";
+        case { kind: "Green", g }: "green";
+        case { kind: "Blue", b }: "blue";
+      };
+    }
+  `);
+});
+
+test("V2: match exhaustivo acepta con wildcard", () => {
+  // No debe reportar error.
+  check(`
+    union Color = Red(string) | Blue(string);
+    function name(c: Color): string {
+      return match (c) {
+        case { kind: "Red", r }: "red";
+        case _: "other";
+      };
+    }
+  `);
+});
+
+test("V2: match exhaustivo reporta variantes sin cubrir", () => {
+  expectError(`
+    union Color = Red(string) | Green(string) | Blue(string);
+    function name(c: Color): string {
+      return match (c) {
+        case { kind: "Red", _ }: "red";
+      };
+    }
+  `, "no es exhaustivo");
+});
+
+test("V2: match exhaustivo reporta variantes duplicadas", () => {
+  expectError(`
+    union Color = Red(string) | Blue(string);
+    function name(c: Color): string {
+      return match (c) {
+        case { kind: "Red", _ }: "red";
+        case { kind: "Red", _ }: "red2";
+        case { kind: "Blue", _ }: "blue";
+      };
+    }
+  `, "ya estaba cubierta");
+});
+
+test("V2: match exhaustivo reporta variante inexistente", () => {
+  expectError(`
+    union Color = Red(string) | Blue(string);
+    function name(c: Color): string {
+      return match (c) {
+        case { kind: "Red", _ }: "red";
+        case { kind: "Yellow", _ }: "yellow";
+        case { kind: "Blue", _ }: "blue";
+      };
+    }
+  `, "no tiene variante");
+});
