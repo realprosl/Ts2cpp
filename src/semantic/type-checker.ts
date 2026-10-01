@@ -1605,7 +1605,15 @@ export class TypeChecker {
           }
         };
         collectCaptured(node.body);
-        node.capturedSymbols = Array.from(captured);
+        // V10.1: filtrar capturas que sean top-level (accesibles directamente
+        // desde cualquier lambda sin necesidad de captura explícita en C++,
+        // porque el codegen las declara como `static`/globales). Solo nos
+        // interesan las variables que viven en un scope intermedio y que
+        // realmente requieren captura en C++.
+        const rootScope = scope.root();
+        const isGlobalSymbol = (name: string): boolean => !!rootScope.resolveLocal(name);
+        const capturedList = Array.from(captured).filter(name => !isGlobalSymbol(name));
+        node.capturedSymbols = capturedList;
         if (node.body.kind === "BlockStatement") {
           if (!declaredResult) this.report(node, "Una función flecha con bloque necesita tipo de retorno");
           const previous = this.currentReturn; this.currentReturn = declaredResult ?? "void";

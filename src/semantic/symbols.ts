@@ -19,4 +19,12 @@ export class Scope {
     for (const key of this.symbols.keys()) yield key;
     if (this.parent) yield* this.parent.names();
   }
+  /** V10.1: true si este scope es el raíz (no tiene padre). */
+  isRoot(): boolean { return this.parent === undefined; }
+  /** V10.1: sube por la cadena de scopes y devuelve el scope raíz. */
+  root(): Scope {
+    let current: Scope = this;
+    while (current.parent !== undefined) current = current.parent;
+    return current;
+  }
 }
