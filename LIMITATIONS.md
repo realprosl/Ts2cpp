@@ -57,12 +57,36 @@ Lista no exhaustiva — ver `README.md`, `examples/` y los nodos AST en
 - `delete` sobre propiedades dinámicas de Map/Set.
 - `await` y `async function` (compilados a corutinas C++20).
 - `for await (const x of Promise<T>[])` para iterar arrays de promesas.
+- **Narrowing de tagged unions** (V1.4): si `if (r.ok == true)` marca la
+  expresión como narrowada y `r.value` resuelve al tipo del payload sin
+  cast explícito. Funciona con la sintaxis object-variant
+  `{ ok: true; value: T } | { ok: false; error: E }` (V1.4) y con unions
+  nombradas (V1.2+).
+- **Escape implícito** (V8.0): si la firma de retorno es `Unq<T>` o
+  `Rc<T>`, `return new T()` o `return x` se envuelve automáticamente con
+  `unSome<T>(...)` o `rcShare<T>(...)`. El usuario no tiene que
+  escribir el envoltorio manualmente.
 
 ### Strings y literales
 
 - String literals con escapes (`\n`, `\t`, `\"`, etc.).
 - **Template literals con interpolación** `` `Hola ${name}` `` y anidamiento.
 - Multi-línea literal.
+
+### Colecciones
+
+- **`arr.filter((x: T) => boolean): T[]`** sobre arrays `T[]`. Se emite a
+  `ets_filter_vec<T>` (V7.0).
+- **`arr.map<U>((x: T) => U): U[]`** — transforma cada elemento. Se emite
+  a `ets_map_vec<T, U>` (V7.0).
+- **`arr.reduce<U>(init: U, op: (acc: U, x: T) => U): U`** — pliega el
+  array respetando `init` si está vacío. Se emite a `ets_reduce<U, T>` (V7.0).
+- **Fusión AST** (V7.1): la cadena `arr.filter(p).map(f).reduce(init, op)`
+  se reescribe a un único `for` cuando todos los tipos son primitivos
+  y la fuente es simple. Sin asignaciones intermedias.
+- `arr.length` (alias del builtin `length(arr)`).
+- **No hay** `forEach`, `find`, `some`, `every`, `sort`, `slice`,
+  `concat`, `flatMap` — pendiente.
 
 ### Operadores
 
@@ -144,9 +168,8 @@ que el dialecto aún no implementa. **Se aceptan contribuciones** en estas
 - `infer U` en conditional types.
 - Variadic tuple types (`[...T, ...U]`).
 - Tuples con spread variádico (`[T, ...U]`).
-- Narrowing por flujo de control (`if (typeof x === "string") { x.toUpperCase() }`).
-- Discriminated unions (`type Shape = { kind: "circle" } | { kind: "square" }`).
-- Exhaustiveness checking con `never`.
+- `if (typeof x === "string") { x.toUpperCase() }` — narrowing por tipo (cubierto por V1.4 para tagged unions con discriminador literal).
+- Exhaustiveness checking con `never` — el dialecto no valida la rama `_ =>` por cobertura exhaustiva; sigue siendo pattern matching por igualdad.
 - Type predicates `x is T`.
 
 ### Clases y objetos
