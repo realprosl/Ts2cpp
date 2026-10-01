@@ -647,6 +647,48 @@ test("V10: lambda pasada como argumento directo recibe singleUseSite", () => {
 });
 
 test("V10: capturedSymbols detecta variables del scope exterior", () => {
+  // V10.1: 'factor' es un parámetro de la función envolvente, NO es top-level,
+  // así que debe aparecer en capturedSymbols. Si fuera top-level (declarado con
+  // `let`/`const` fuera de toda función), se filtra porque el codegen ya lo
+  // declara como `static` global.
+  const { ast } = check(`
+    function apply(x: number, factor: number, f: (n: number) => number): number { return f(x) + factor; }
+    apply(5, 2, (n: number): number => n);
+  `);
+  const exprStmt = ast.statements[1] as { kind: string; expression: { args: Array<{ kind: string; capturedSymbols?: string[] }> } };
+  const lambda = exprStmt.expression.args[2];
+  assert.equal(lambda.kind, "ArrowFunctionExpression");
+  assert.ok(Array.isArray(lambda.capturedSymbols), "capturedSymbols debe ser array");
+  // `factor` es un parámetro de la función envolvente `apply`. Aunque está
+  // en el scope raíz del programa (apply es top-level), está en el `params`
+  // de apply, NO en `body`. El type-checker lo trata como captura del scope
+  // padre del lambda.
+  // NOTA: aquí la lambda está dentro de `apply`, que es top-level. El scope
+  // del lambda es el body de apply; subir al root encuentra 'factor' como
+  // param de apply (top-level), así que se filtra.
+  // Para que aparezca, necesitamos que la lambda esté en una función
+  // anidada que capture algo local. Lo validamos con `makeMultiplier`.
+  const ast2 = check(`
+    function apply(x: number, f: (n: number) => number): number { return f(x); }
+    function makeMultiplier(factor: number): (n: number) => number {
+      return (n: number): number => n * factor;
+    }
+  `);
+  const makeMult = ast2.ast.statements[1] as unknown as { body: { statements: Array<{ value: { kind: string; capturedSymbols?: string[] } }> } };
+  const innerLambda = makeMult.body.statements[0].value;
+  assert.equal(innerLambda.kind, "ArrowFunctionExpression");
+  assert.ok(Array.isArray(innerLambda.capturedSymbols), "capturedSymbols debe ser array");
+  assert.ok(innerLambda.capturedSymbols!.includes("factor"), `capturedSymbols debe incluir 'factor', fue: ${JSON.stringify(innerLambda.capturedSymbols)}`);
+  // El parámetro `n` NO debe aparecer en capturedSymbols.
+  assert.ok(!innerLambda.capturedSymbols!.includes("n"));
+});
+
+test("V10.1: top-level variables NO aparecen en capturedSymbols", () => {
+  // Las variables declaradas a nivel de archivo (`let`, `const`) se emiten
+  // como `static` en C++ y son accesibles directamente desde cualquier lambda
+  // sin necesidad de captura. El type-checker las filtra de capturedSymbols
+  // para que el codegen emita `[]` (sin captura) en lugar de capturar
+  // estáticas (que es un warning de GCC).
   const { ast } = check(`
     let factor: number = 2;
     function apply(x: number, f: (n: number) => number): number { return f(x); }
@@ -655,10 +697,7 @@ test("V10: capturedSymbols detecta variables del scope exterior", () => {
   const exprStmt = ast.statements[2] as { kind: string; expression: { args: Array<{ kind: string; capturedSymbols?: string[] }> } };
   const lambda = exprStmt.expression.args[1];
   assert.equal(lambda.kind, "ArrowFunctionExpression");
-  assert.ok(Array.isArray(lambda.capturedSymbols), "capturedSymbols debe ser array");
-  assert.ok(lambda.capturedSymbols.includes("factor"), `capturedSymbols debe incluir 'factor', fue: ${JSON.stringify(lambda.capturedSymbols)}`);
-  // El parámetro `n` NO debe aparecer en capturedSymbols.
-  assert.ok(!lambda.capturedSymbols.includes("n"));
+  assert.deepEqual(lambda.capturedSymbols ?? [], [], "capturedSymbols debe estar vacío porque 'factor' es top-level");
 });
 
 test("V10: lambda con argumentos de filter/map/reduce también recibe singleUseSite", () => {

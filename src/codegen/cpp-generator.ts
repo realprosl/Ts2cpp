@@ -1073,10 +1073,25 @@ export class CppGenerator {
         // y dependeremos de `mutatesCapturedState` para forzar `mutable` si hace falta.
         // Si la closure muta estado capturado, capturamos por referencia (`[&]`) para
         // que las mutaciones sean visibles fuera de la lambda.
-        const capture = this.inStaticInit ? "[]"
-          : this.inClassMethod ? "[=, this]"
-          : node.mutatesCapturedState ? "[&]"
-          : "[=]";
+        // V10: si el type-checker marcó `capturedSymbols`, emitimos captura
+        // explícita solo de esos nombres en lugar de `[=]`. Esto permite al
+        // optimizador de C++ inlinificar el lambda con menos carga (las variables
+        // que no se usan no entran en el closure object). Si `capturedSymbols`
+        // está vacío, la lambda no captura nada: usamos `[]`.
+        let capture: string;
+        if (this.inStaticInit) capture = "[]";
+        else if (this.inClassMethod) capture = "[=, this]";
+        else if (node.capturedSymbols !== undefined) {
+          // Captura explícita solo de los símbolos externos que la lambda usa.
+          // La sintaxis de captura explícita en C++ es solo el nombre: `[x, y]`
+          // (sin el `=`; el `=` solo se usa para captura-por-defecto de TODAS).
+          // Si `mutatesCapturedState` está activo, capturamos por referencia
+          // usando `[&]` con la lista; si no, por copia usando `[]` con la lista.
+          if (node.capturedSymbols.length === 0) capture = "[]";
+          else if (node.mutatesCapturedState) capture = `[&${node.capturedSymbols.join(", ")}]`;
+          else capture = `[${node.capturedSymbols.join(", ")}]`;
+        }
+        else capture = node.mutatesCapturedState ? "[&]" : "[=]";
         const mutable = node.mutatesCapturedState ? " mutable" : "";
         if (node.body.kind === "BlockStatement") return `${capture}(${params})${mutable} -> ${cppType(result)} ${this.emitBlock(node.body)}`;
         return `${capture}(${params})${mutable} -> ${cppType(result)} { return ${this.emitExpression(node.body)}; }`;
