@@ -92,13 +92,13 @@ inline void ets_for_each_vec(const std::vector<T>& src, F&& fn) {
     for (const auto& item : src) fn(item);
 }
 
-// V11: `ets_find_vec<T>(src, pred)` — devuelve el primer elemento que
-// cumple `pred`. Si no hay ninguno, devuelve `T{}` (valor por defecto).
-// El usuario debe validar el resultado; en V12 se cambiará a `Optional<T>`.
+// V13: `ets_find_vec<T>(src, pred)` — devuelve `Optional<T>` con el
+// primer elemento que cumple `pred`, o vacío si ninguno. El usuario
+// discrimina con `?.`, `match` o `value()` (que aborta si vacío).
 template <typename T, typename Pred>
-inline T ets_find_vec(const std::vector<T>& src, Pred&& pred) {
-    for (const auto& item : src) if (pred(item)) return item;
-    return T{};
+inline ets::Optional<T> ets_find_vec(const std::vector<T>& src, Pred&& pred) {
+    for (const auto& item : src) if (pred(item)) return ets::Optional<T>::some(item);
+    return ets::Optional<T>::none();
 }
 
 // V11: `ets_some_vec<T>(src, pred)` — true si AL MENOS UN elemento cumple `pred`.

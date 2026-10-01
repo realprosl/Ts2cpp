@@ -230,9 +230,9 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void", userTypeArgument: 0 },
   // Métodos añadidos en V11: predicados y extracción.
   forEach: { arity: 1, paramKinds: ["fn"], returnType: () => "void" },
-  // `find` devuelve `T` por ahora; el usuario puede discriminar con `Optional<T>`
-  // en un PR futuro. La limitación está documentada en LIMITATIONS.md.
-  find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => T },
+  // V13: `find` devuelve `Optional<T>` (puede no haber resultado). El usuario
+  // debe discriminar con `?.`, `match` o `value()` (que aborta si vacío).
+  find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `Optional<${T}>` },
   some:    { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
   every:   { arity: 1, paramKinds: ["fn"], returnType: () => "boolean" },
   slice:   { arity: 2, paramKinds: ["value", "value"], returnType: ([T]) => `${T}[]` },
@@ -1581,6 +1581,55 @@ export class TypeChecker {
         }
         break;
       }
+      case "ObjectLiteralExpression": {
+        // V1.4: object literal como constructor inline de object-variant.
+        // El primer property debe ser el discriminador (literal primitivo);
+        // los demás son bindings del payload. Necesitamos `expected` apuntando
+        // a la unión declarada para resolver la variante.
+        if (!expected || !this.unions.has(genericBase(expected))) {
+          this.report(node, "El object literal solo se admite como constructor de una object-variant; el contexto no provee una unión esperada");
+          result = "void";
+          break;
+        }
+        const unionType = genericBase(expected);
+        const unionNode = this.unions.get(unionType)!;
+        if (node.properties.length === 0) {
+          this.report(node, "El object literal debe tener al menos el discriminador");
+          result = expected;
+          break;
+        }
+        const discProp = node.properties[0];
+        if (discProp.value.kind !== "LiteralExpression") {
+          this.report(discProp.value, "El primer campo de un object literal debe ser el discriminador (literal primitivo)");
+          result = expected;
+          break;
+        }
+        const discValue = discProp.value.value;
+        // Buscar la variante cuyo discriminador coincide con `discProp.key = discValue`.
+        const variant = unionNode.variants.find(v => v.discriminator && v.discriminator.field === discProp.key && v.discriminator.value === discValue);
+        if (!variant) {
+          this.report(discProp.value, `'${unionType}' no tiene variante con discriminador ${discProp.key} = ${JSON.stringify(discValue)}`);
+          result = expected;
+          break;
+        }
+        // Validar el resto de propiedades como bindings del payload.
+        // El payload de la variante es `T` (si un solo binding) o `tupleType([...])` (varios).
+        // Para object-variants, el payload es `T` (un solo binding) o `void` (sin bindings).
+        const bindings = node.properties.slice(1);
+        if (variant.payload === "void" || !variant.payload) {
+          if (bindings.length > 0) this.report(node, `La variante '${variant.name}' no espera bindings`);
+        } else if (bindings.length === 1 && !isTupleType(variant.payload)) {
+          const bindingValue = bindings[0].value;
+          this.require(this.expression(bindingValue, scope, variant.payload), variant.payload, bindingValue);
+        } else {
+          // Tupla de tipos — debe coincidir con bindings.length.
+          const tupleItems = tupleElements(variant.payload);
+          if (tupleItems.length !== bindings.length) this.report(node, `La variante '${variant.name}' espera ${tupleItems.length} bindings, recibió ${bindings.length}`);
+          else bindings.forEach((b, i) => this.require(this.expression(b.value, scope, tupleItems[i]), tupleItems[i], b.value));
+        }
+        result = expected;
+        break;
+      }
       case "ArrowFunctionExpression": {
         if (node.params.some(parameter => parameter.passing === "mut")) this.report(node, "Los parámetros mut en closures necesitan un tipo de función con efectos; use una función declarada");
         const expectedParameters = expected && isFunctionType(expected) ? functionParameters(expected) : undefined;
@@ -2126,7 +2175,7 @@ export class TypeChecker {
             const fnExpected = functionType([T], "boolean");
             if (node.args[0] && node.args[0].kind === "ArrowFunctionExpression") node.args[0].singleUseSite = { kind: "MemberCallExpression", argumentIndex: 0 };
             if (node.args[0]) this.require(this.expression(node.args[0], scope, fnExpected), fnExpected, node.args[0]);
-            result = T; // simplificación: find devuelve T (no Optional<T> todavía)
+            result = `Optional<${T}>`;
             break;
           }
           if (node.method === "some" || node.method === "every") {

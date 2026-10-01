@@ -853,6 +853,22 @@ export class Parser {
       const close = this.consume("]", "Se esperaba ']' después del literal");
       return { kind: "ArrayLiteralExpression", elements, span: span(token.span.start, close.span.end) };
     }
+    // V1.4: object literal `{ ok: true, value: x, error: "..." }` se usa
+    // como constructor inline de una object-variant. Cada propiedad es
+    // un par `field: value`; el primer campo debe ser el discriminador
+    // (literal primitivo). El type-checker conecta el literal con la
+    // unión esperada en el contexto.
+    if (token.kind === "{") {
+      const properties: { key: string; value: Expression }[] = [];
+      if (!this.check("}")) do {
+        const keyTok = this.consume("identifier", "Se esperaba el nombre de la propiedad");
+        this.consume(":", "Se esperaba ':' después del nombre de la propiedad");
+        const value = this.expression();
+        properties.push({ key: keyTok.lexeme, value });
+      } while (this.match(","));
+      const close = this.consume("}", "Se esperaba '}' para cerrar el object literal");
+      return { kind: "ObjectLiteralExpression", properties, span: span(token.span.start, close.span.end) };
+    }
     if (token.kind === "number") return { kind: "LiteralExpression", value: Number(token.lexeme.replace(/_/g, "")), literalType: "number", raw: token.lexeme, span: token.span };
     if (token.kind === "string") return { kind: "LiteralExpression", value: token.lexeme, literalType: "string", span: token.span };
     if (token.kind === "true" || token.kind === "false") return { kind: "LiteralExpression", value: token.kind === "true", literalType: "boolean", span: token.span };
