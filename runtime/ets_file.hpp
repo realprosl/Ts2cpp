@@ -19,7 +19,7 @@ inline std::string systemError(const std::string& operation, const std::string& 
 inline bool writeAll(int descriptor, const std::string& contents, const std::string& path, std::string& error) noexcept {
     std::size_t offset = 0;
     while (offset < contents.size()) {
-        const auto written = ::write(descriptor, contents.data() + offset, contents.size() - offset);
+        const ssize_t written = ::write(descriptor, static_cast<const void*>(contents.data() + offset), contents.size() - offset);
         if (written > 0) { offset += static_cast<std::size_t>(written); continue; }
         if (written < 0 && errno == EINTR) continue;
         error = systemError("Error durante la escritura", path);

@@ -4,6 +4,17 @@ import { cppParameterDeclaration } from "./cpp-parameters.ts";
 import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, tupleElements, unionMembers } from "../types/type-system.ts";
 import { HELPER_METADATA } from "../semantic/helpers.ts";
 
+// V16: nombres de funciones runtime que requieren `ets_runtime_full.hpp`
+// (cualquier programa que las use debe arrastrar `ets_async.hpp` y
+// posiblemente `ets_net.hpp`). El codegen decide incluir el header
+// completo cuando detecta uno de estos símbolos en el AST.
+const ASYNC_NETWORK_FUNCTIONS = new Set([
+  "spawn", "sleep", "cancel", "cancellationToken",
+  "createCancellation", "isCancelled", "ioUringAvailable",
+  "tcpListen", "tcpAccept", "tcpConnect", "tcpRead", "tcpWrite", "tcpClose",
+  "readTcp", "readTcpUntil", "writeTcp", "writeTcpUntil", "acceptTcp", "acceptTcpUntil", "listenTcp", "closeTcp",
+]);
+
 // Genera el lado derecho de una cláusula `requires`: `Concept<P>` (intersección ->
 // `Concept1<P> && Concept2<P>`). Las restricciones concept siempre se aplican al
 // parámetro declarado, no a un `T` fijo.
@@ -27,6 +38,10 @@ export class CppGenerator {
   private readonly expressionType: (node: Expression) => TypeName | undefined;
   private readonly expressionIsVariadic: (node: Expression) => boolean;
   private readonly callTypeArguments: (node: Expression) => TypeName[];
+  // V16: en modo minimal (`--minimal`), el codegen no incluye
+  // `ets_io.hpp` en el header. El usuario es responsable de usar
+  // `std::cout` directamente o incluir el header por su cuenta.
+  public minimal = false;
   private inClassMethod = false;
   private inStaticInit = false;
   private inAsyncFunction = false;
@@ -109,10 +124,51 @@ export class CppGenerator {
     this.exportAliases.clear();
     for (const stmt of unwrapped) if (stmt.kind === "ExportNamedDeclaration") for (const spec of stmt.specifiers) if (spec.alias) this.exportAliases.set(spec.alias, spec.name);
   }
-  private usesTls(program: Program): boolean { return /\b(?:TlsContext|TcpConnection|createTlsServer|acceptTls|readTls|writeTls|closeTls)\b/.test(JSON.stringify(program)); }
-  private usesCompilerAst(program: Program): boolean { return /\b(?:validateSyntax|syntaxTreeJson|syntaxTreeRecords|estaticAstRecords|estaticTypedAstJson|estaticTypedAstRecords)\b/.test(JSON.stringify(program)); }
-  private usesFilesystem(program: Program): boolean { return /\b(?:fileRead|fileWrite|fileAppend|fileExists|fileCopy|fileMove|fileRemove)\b/.test(JSON.stringify(program)); }
-  private usesNetworking(program: Program): boolean { return /\b(?:tcpListen|tcpAccept|tcpConnect|tcpRead|tcpWrite|tcpClose|etsNetSyncEcho|etsNetSyncLarge)\b/.test(JSON.stringify(program)); }
+  // V16: visitor genérico que detecta si el programa contiene un
+  // `CallExpression` o `MemberCallExpression` cuyo nombre (callee o
+  // método) está en `targets`. Reemplaza las antiguas detecciones basadas
+  // en regex sobre `JSON.stringify(program)`, que eran propensas a falsos
+  // positivos por literales de string conteniendo esos nombres.
+  private usesAnyCall(program: Program, targets: Set<string>): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; callee?: unknown; method?: unknown };
+      if ((obj.kind === "CallExpression" && typeof obj.callee === "string" && targets.has(obj.callee)) ||
+          (obj.kind === "MemberCallExpression" && typeof obj.method === "string" && targets.has(obj.method))) return true;
+      for (const key of Object.keys(node)) {
+        if (key === "callee" || key === "method") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
+  private usesTls(program: Program): boolean {
+    return this.usesAnyCall(program, new Set([
+      "createTlsServer", "acceptTls", "readTls", "writeTls", "closeTls",
+      "TlsContext", "TcpConnection",
+    ]));
+  }
+  private usesCompilerAst(program: Program): boolean {
+    return this.usesAnyCall(program, new Set([
+      "validateSyntax", "syntaxTreeJson", "syntaxTreeRecords",
+      "estaticAstRecords", "estaticTypedAstJson", "estaticTypedAstRecords",
+    ]));
+  }
+  private usesFilesystem(program: Program): boolean {
+    return this.usesAnyCall(program, new Set([
+      "fileRead", "fileWrite", "fileAppend", "fileExists",
+      "fileCopy", "fileMove", "fileRemove",
+    ]));
+  }
+  private usesNetworking(program: Program): boolean {
+    return this.usesAnyCall(program, new Set([
+      "tcpListen", "tcpAccept", "tcpConnect", "tcpRead", "tcpWrite", "tcpClose",
+      "etsNetSyncEcho", "etsNetSyncLarge",
+    ]));
+  }
   // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
   // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
   // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
@@ -240,8 +296,96 @@ export class CppGenerator {
     const base = isGenericType(type) ? genericBase(type) : type;
     return this.unionsMap.get(base);
   }
-  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesCollections: boolean, usesIoUringAsync: boolean): string[] {
-    return ["#include <iostream>", "#include <string>", "#include <vector>", "#include <tuple>", "#include <functional>", "#include <cmath>", "#include <concepts>", "#include <utility>", ...(usesFixedArrays ? ["#include <array>"] : []), ...(usesUnions ? ["#include <variant>", "#include <type_traits>"] : []), "#include \"runtime/ets_runtime.hpp\"", ...(usesCollections ? ["#include \"runtime/ets_collections.hpp\""] : []), ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []), ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []), ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []), ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []), ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : [])];
+  // V16: detecta si el programa usa APIs estilo Node que viven en
+  // `ets_runtime_full.hpp` (filesystem struct, process struct, path
+  // struct, JSON, async/Task/Result, net). Activan la inclusión de
+  // `ets_runtime_full.hpp` para arrastrar ets_async.hpp, ets_file.hpp,
+  // ets_net.hpp, etc.
+  private usesNodeGlobals(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; object?: unknown; callee?: unknown; method?: unknown; type?: unknown; declaredType?: unknown; returnType?: unknown; elementType?: unknown; expressions?: unknown[]; name?: unknown };
+      const objName = (n: unknown): string | undefined => {
+        if (typeof n === "string") return n;
+        if (n && typeof n === "object") {
+          const o = n as { kind?: string; name?: unknown };
+          if (o.kind === "IdentifierExpression" && typeof o.name === "string") return o.name;
+        }
+        return undefined;
+      };
+      // `process.argv()`, `fs.readFile(...)`, `path.join(...)`,
+      // `JSON.stringify(...)` se emiten como MemberCallExpression con
+      // `object` siendo un IdentifierExpression (no string).
+      if (obj.kind === "MemberCallExpression" || obj.kind === "MemberExpression") {
+        const name = objName(obj.object);
+        if (name === "fs" || name === "process" || name === "path" || name === "JSON" || name === "console") return true;
+      }
+      // `console.log(...)` también requiere el header completo (usa `ets_console`).
+      if (obj.kind === "MemberCallExpression" && objName(obj.object) === "console") return true;
+      // `await` implica runtime async (Task, spawn, sleep).
+      if (obj.kind === "AwaitExpression") return true;
+      // Llamadas a funciones async conocidas (spawn, sleep, cancel,
+      // cancellationToken, acceptTcp, readTcp, writeTcp, listenTcp,
+      // closeTcp, etc.) requieren ets_async.hpp.
+      if (obj.kind === "CallExpression" && typeof obj.callee === "string" && ASYNC_NETWORK_FUNCTIONS.has(obj.callee)) return true;
+      // Tipos que requieren ets_async.hpp: Task<T>, Result<T>, Promise<T>,
+      // CancellationToken, TcpListener, TcpStream, IpcStream. El
+      // type-checker expone `nodeType`/`declaredType`/`returnType` con
+      // strings como "Task<double>", "Result<int>".
+      const typeStr = (obj.type ?? obj.declaredType ?? obj.returnType ?? obj.elementType) as unknown;
+      if (typeof typeStr === "string" && /^(?:Task|Result|Promise|CancellationToken|TcpListener|TcpStream|IpcStream)<.*>$/.test(typeStr)) return true;
+      for (const key of Object.keys(node)) {
+        if (key === "object") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
+  // V16: includes selectivos. Solo se incluyen los headers que el programa
+  // realmente necesita (detectados por visitor). Los headers base
+  // (`<iostream>`, `<string>`, `<vector>`) se incluyen casi siempre porque
+  // `print` y `console.log` son muy comunes. `<functional>` se incluye
+  // cuando hay lambdas (closures, captures) o colecciones que las usan.
+  private includes(usesTls: boolean, usesCompilerAst: boolean, usesFilesystem: boolean, usesNetworking: boolean, usesUnions: boolean, usesFixedArrays: boolean, usesCollections: boolean, usesIoUringAsync: boolean, usesNodeGlobals: boolean, usesFunctional: boolean): string[] {
+    return [
+      "#include <iostream>",
+      "#include <string>",
+      "#include <vector>",
+      ...(usesCollections || usesFilesystem || usesNodeGlobals ? ["#include <functional>"] : []),
+      ...(usesFunctional && !usesCollections && !usesFilesystem && !usesNodeGlobals ? ["#include <functional>"] : []),
+      ...(usesCollections ? ["#include <cmath>"] : []),
+      ...(usesUnions ? ["#include <concepts>", "#include <variant>", "#include <type_traits>"] : []),
+      ...(usesFixedArrays ? ["#include <array>"] : []),
+      ...(usesFilesystem || usesNetworking ? ["#include <tuple>"] : []),
+      ...(usesNetworking ? ["#include <utility>"] : []),
+      usesNodeGlobals ? "#include \"runtime/ets_runtime_full.hpp\"" : (this.minimal ? "#include \"runtime/ets_runtime_minimal.hpp\"" : "#include \"runtime/ets_runtime.hpp\""),
+      ...(usesCollections ? ["#include \"runtime/ets_collections.hpp\""] : []),
+      ...(usesCompilerAst ? ["#include \"runtime/ets_ast.hpp\""] : []),
+      ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []),
+      ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []),
+      ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []),
+      ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
+    ];
+  }
+  // V16: detecta si el programa tiene alguna lambda (FunctionType, captura,
+  // closures). Esto fuerza la inclusión de `<functional>`.
+  private usesFunctional(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; type?: unknown; capturedSymbols?: unknown[]; singleUseSite?: unknown };
+      if (obj.kind === "FunctionType" || obj.kind === "LambdaExpression" || obj.kind === "ClosureExpression") return true;
+      if (Array.isArray(obj.capturedSymbols) && obj.capturedSymbols.length > 0) return true;
+      for (const key of Object.keys(node)) {
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
   }
   generate(program: Program): string {
     // `export default` envuelve una declaración; hacemos unwrap para que el
@@ -262,7 +406,7 @@ export class CppGenerator {
       s.kind !== "UnionDeclaration" &&
       s.kind !== "ExportNamedDeclaration"
     );
-    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
+    const lines = ["// Generated by estatic-ts-cpp. Do not edit.", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program), this.usesNodeGlobals(program), this.usesFunctional(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
@@ -328,7 +472,7 @@ export class CppGenerator {
     const enums = program.statements.filter((statement): statement is EnumDeclaration => statement.kind === "EnumDeclaration");
     const unions = program.statements.filter((statement): statement is UnionDeclaration => statement.kind === "UnionDeclaration");
     const allClasses = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration");
-    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program)), ""];
+    const lines = ["// Generated declarations. Do not edit.", "#pragma once", ...this.includes(this.usesTls(program), this.usesCompilerAst(program), this.usesFilesystem(program), this.usesNetworking(program), this.usesUnions(program), this.usesFixedArrays(program), this.usesCollections(program), this.usesIoUringAsync(program), this.usesNodeGlobals(program), this.usesFunctional(program)), ""];
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
@@ -1361,7 +1505,48 @@ export class CppGenerator {
           tcpWrite:   "etsNetWrite",
           tcpClose:   "etsNetClose",
         };
+        // V16: helpers async y de cancelación viven en el namespace `ets::`
+        // (definidos en `runtime/ets_async.hpp`). Sin el prefijo, el linker
+        // no los encuentra.
+        const asyncCalleeMap: Record<string, string> = {
+          spawn:               "ets::spawn",
+          sleep:               "ets::sleep",
+          cancel:              "ets::cancel",
+          cancellationToken:   "ets::cancellationToken",
+          createCancellation:  "ets::createCancellation",
+          isCancelled:         "ets::isCancelled",
+          ioUringAvailable:    "ets::ioUringAvailable",
+        };
+        // V16: las funciones de red del dialecto (`listenTcp`, `acceptTcp`,
+        // `readTcp`, `writeTcp`, `closeTcp`) viven en `ets::` (definidas en
+        // `runtime/ets_net.hpp`). Sin el prefijo el linker no las encuentra.
+        const etsNetworkCalleeMap: Record<string, string> = {
+          listenTcp:      "ets::listenTcp",
+          acceptTcp:      "ets::acceptTcp",
+          acceptTcpUntil: "ets::acceptTcpUntil",
+          readTcp:        "ets::readTcp",
+          readTcpUntil:   "ets::readTcpUntil",
+          writeTcp:       "ets::writeTcp",
+          writeTcpUntil:  "ets::writeTcpUntil",
+          closeTcp:       "ets::closeTcp",
+        };
+        // V16: constructores `ok<T>(t)` / `err<T>(e)` viven en `ets::`.
+        const resultCalleeMap: Record<string, string> = {
+          ok:  "ets::ok",
+          err: "ets::err",
+        };
         const finalCallee = fileCalleeMap[callee] ?? netCalleeMap[callee] ?? callee;
+        if (asyncCalleeMap[finalCallee]) {
+          return `${asyncCalleeMap[finalCallee]}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        }
+        if (resultCalleeMap[finalCallee]) {
+          const ta = typeArguments.length ? typeArguments.map(cppType).join(", ") : "void";
+          return `${resultCalleeMap[finalCallee]}<${ta}>(${args.join(", ")})`;
+        }
+        // V16: emitir `listenTcp(...)` como `ets::listenTcp(...)`.
+        if (etsNetworkCalleeMap[finalCallee]) {
+          return `${etsNetworkCalleeMap[finalCallee]}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        }
         // V9.1: awaiters io_uring viven en `ets::` (header runtime/ets_io_uring_async.hpp).
         if (finalCallee === "asyncIoUringRead" || finalCallee === "asyncIoUringWrite" ||
             finalCallee === "ioUringRead" || finalCallee === "ioUringWrite") {

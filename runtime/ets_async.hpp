@@ -91,12 +91,18 @@ public:
             posted_.push_back(handle);
         }
         const unsigned char signal = 1;
-        const auto ignored = ::write(wakePipe_[1], &signal, sizeof(signal));
+        ssize_t ignored = -1;
+        while (ignored < 0 && errno == EINTR) {
+            ignored = ::write(wakePipe_[1], static_cast<const void*>(&signal), sizeof(signal));
+        }
         (void)ignored;
     }
     void notify() noexcept {
         const unsigned char signal = 1;
-        const auto ignored = ::write(wakePipe_[1], &signal, sizeof(signal));
+        ssize_t ignored = -1;
+        while (ignored < 0 && errno == EINTR) {
+            ignored = ::write(wakePipe_[1], static_cast<const void*>(&signal), sizeof(signal));
+        }
         (void)ignored;
     }
 
