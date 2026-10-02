@@ -40,6 +40,10 @@ const input = positional ? resolve(positional) : config!.entry;
 // V15: si el usuario pasa `--multi`, escribe el header + un `.cpp` por módulo.
 const multiFlag = args.indexOf("--multi");
 const multiMode = multiFlag >= 0;
+// V16: `--minimal` omite el header de IO básico (`ets_io.hpp` con print,
+// console, Math, Date) para binarios ultra-ligeros. El usuario debe usar
+// `std::cout` directamente si no incluye `ets_io.hpp`.
+const minimalMode = args.indexOf("--minimal") >= 0;
 const outputFlag = args.indexOf("-o");
 const output = resolve(outputFlag >= 0 ? (args[outputFlag + 1] ?? usage()) : (config?.output.cpp ?? basename(input, extname(input)) + ".cpp"));
 
@@ -70,8 +74,8 @@ try {
   }
   // V15: si el usuario pasa `--multi`, escribimos header + un `.cpp` por módulo.
   if (multiMode) {
-    await logger?.record("info", "transpile", "started", { input, mode: "multi" });
-    const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases });
+    await logger?.record("info", "transpile", "started", { input, mode: "multi", minimal: minimalMode });
+    const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases, minimal: minimalMode });
     const outDir = output.endsWith(".cpp") ? dirname(output) : output;
     await mkdir(outDir, { recursive: true });
     const headerPath = join(outDir, "estatic_common.hpp");
@@ -80,7 +84,7 @@ try {
       const safeName = basename(module.name).replace(/\.(ets|ts)$/, "") + ".cpp";
       await writeFile(join(outDir, safeName), module.cpp, "utf8");
     }
-    console.log(`Generados ${result.modules.length} módulo(s) en ${outDir} (+ header)`);
+    console.log(`Generados ${result.modules.length} módulo(s) en ${outDir} (+ header)${minimalMode ? " [minimal]" : ""}`);
     await logger?.record("info", "transpile", "cpp-generated", { input, modules: result.modules.length, bytes: Buffer.byteLength(result.header) });
     await logger?.flush();
     process.exit(0);
@@ -90,7 +94,7 @@ try {
   // OJO: los módulos individuales emiten `#include "estatic_common.hpp"` que
   // solo tiene sentido en modo multi (donde el header está en disco). Aquí
   // tenemos que quitarlos para producir un .cpp monolítico válido.
-  const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases });
+  const result = await compileFile(input, { moduleRoots: config?.moduleRoots, aliases: config?.aliases, minimal: minimalMode });
   await mkdir(dirname(output), { recursive: true });
   const headerLines = result.header.split("\n");
   // En modo unitario (un solo .cpp) el `#pragma once` no tiene sentido.

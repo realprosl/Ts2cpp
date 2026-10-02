@@ -23,7 +23,7 @@ export interface ModuleCompilationResult {
   modules: { name: string; cpp: string }[];
   moduleNames: string[];
 }
-export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string> }
+export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string>; minimal?: boolean }
 
 export interface ModuleImport { names: string[]; dependency: string; line: number }
 export interface LoadedModule { file: string; source: string; dependencies: string[]; imports: ModuleImport[]; hash: string }
@@ -132,6 +132,10 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
       expression => checker.isVariadic(expression),
       expression => checker.typeArgumentsOf(expression),
     );
+    // V16: si el usuario quiere minimal, el header `estatic_common.hpp` no
+    // incluye `ets_io.hpp`. El usuario es responsable de usar `std::cout`
+    // directamente o añadir su propio include.
+    generator.minimal = options.minimal ?? false;
     generator.prepareModules(ast);
     const headerName = "estatic_common.hpp";
     const moduleInitializers = ordered.map(module => stableInitName(module.file));

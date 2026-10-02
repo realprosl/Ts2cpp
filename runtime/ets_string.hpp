@@ -11,13 +11,8 @@ namespace ets {
 
 // Concatena cualquier número de partes heterogéneas en un único `std::string`.
 // Usa `operator<<` para que partes como `double`/`bool` se conviertan vía su
-// sobrecarga de stream (necesario para soportar template literals con números).
-template <typename... Parts>
-std::string concat(const Parts&... parts) {
-    std::ostringstream oss;
-    (oss << ... << parts);
-    return oss.str();
-}
+// `ets::concat` ahora vive en `ets_core.hpp` (es muy usado por el codegen).
+// Este header solo aporta `length`, `numberToString`, etc.
 
 } // namespace ets
 
