@@ -22,6 +22,9 @@ export interface ModuleCompilationResult {
   header: string;
   modules: { name: string; cpp: string }[];
   moduleNames: string[];
+  /** V18: link flags y headers externos detectados por decoradores. */
+  linkFlags: string[];
+  externalHeaders: string[];
 }
 export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string>; minimal?: boolean }
 
@@ -157,7 +160,7 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
       cpp: generator.generateModule(moduleAst, ast, headerName, stableInitName(module.file), index === ordered.length - 1 ? moduleInitializers : undefined),
     };
   });
-    return { ast, header, modules, moduleNames: ordered.map(m => m.file) };
+    return { ast, header, modules, moduleNames: ordered.map(m => m.file), linkFlags: generator.linkFlags, externalHeaders: generator.externalHeaders };
   } catch (error) {
     if (!(error instanceof DiagnosticError)) throw error;
     const diagnostics: Diagnostic[] = error.diagnostics.map(diagnostic => {

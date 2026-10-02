@@ -4,7 +4,12 @@ export type PrimitiveType = "number" | "string" | "boolean" | "void" | "undefine
 export type TypeName = string;
 export type ParameterPassing = "automatic" | "mut" | "out" | "move";
 export interface Program { kind: "Program"; statements: Statement[]; span: Span }
-export type Statement = VariableDeclaration | FunctionDeclaration | InterfaceDeclaration | ClassDeclaration | BlockStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement | BreakStatement | ContinueStatement | ReturnStatement | TypeAliasDeclaration | EnumDeclaration | UnionDeclaration | SwitchStatement | ForOfStatement | ForInStatement | DeleteStatement | UsingDeclaration | ExportDefaultDeclaration | ExportNamedDeclaration;
+// V18: declaración de cabecera de archivo para `.lib.ets`. Un `.lib.ets`
+// empieza por cero o más declaraciones `ModuleHeader` (decoradores
+// como `@link("-lraylib")` o `@include("raylib.h")` a nivel de archivo).
+// El codegen los extrae en `prepare()` y los aplica al binario final.
+export interface ModuleHeaderDeclaration { kind: "ModuleHeaderDeclaration"; decorators: Decorator[]; span: Span }
+export type Statement = VariableDeclaration | FunctionDeclaration | InterfaceDeclaration | ClassDeclaration | BlockStatement | ExpressionStatement | IfStatement | WhileStatement | ForStatement | BreakStatement | ContinueStatement | ReturnStatement | TypeAliasDeclaration | EnumDeclaration | UnionDeclaration | SwitchStatement | ForOfStatement | ForInStatement | DeleteStatement | UsingDeclaration | ExportDefaultDeclaration | ExportNamedDeclaration | ModuleHeaderDeclaration;
 export interface VariableDeclaration { kind: "VariableDeclaration"; exported?: boolean; mutable: boolean; name: string; declaredType?: TypeName; initializer: Expression; arrayBindings?: ArrayBinding[]; span: Span; /** V0.2: anotación opcional que el type-checker escribe si el nombre colisiona con un singleton del runtime. El codegen lo consulta para renombrar el símbolo en C++. */ fromRuntime?: boolean; /** V6: si el initializer es un literal, el checker anota el valor aquí. El codegen lo usa para emitir `constexpr` y propagar el valor a usos posteriores (p.ej. tamaño de array fijo). */ constValue?: number | string | boolean | null }
 // `using name = expr;` (TC39 stage 3): declara un recurso cuyo destructor se
 // invoca al salir del bloque. En el dialecto es syntactic sugar sobre
@@ -22,9 +27,9 @@ export interface ExportNamedDeclaration { kind: "ExportNamedDeclaration"; specif
 // (`arr[0]`, `arr[1]`) cuando hace falta más azúcar.
 export interface ArrayBinding { name: string; declaredType?: TypeName; defaultValue?: Expression }
 export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; optional?: boolean; /** V0.1: tipo resuelto adjuntado por el semantic checker. */ resolvedType?: import("../types/type-system.ts").ResolvedType; /** V0.2: el type-checker anota si el nombre del parámetro colisiona con un singleton del runtime. */ fromRuntime?: boolean; span: Span }
-export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; /** V0.3: huella estructural resuelta por el semantic checker. */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; span: Span }
-export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; span: Span }
-export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; /** V0.4: tipo concreto en runtime C++. */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; span: Span }
+export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; /** V0.3: huella estructural resuelta por el semantic checker. */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; /** V18: decoradores (`@cpp_name(...)`, `@cpp_header(...)`, etc.) */ decorators?: Decorator[]; span: Span }
+export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; /** V18 */ decorators?: Decorator[]; span: Span }
+export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; /** V0.4: tipo concreto en runtime C++. */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; /** V18: decoradores sobre la interface en sí (`@cpp_type(...)`). */ decorators?: Decorator[]; span: Span }
 export type Decorator = { name: string; args: Expression[] };
 
 export interface ClassField { name: string; type: TypeName; readonly?: boolean; decorators?: Decorator[]; span: Span }

@@ -101,6 +101,11 @@ try {
   const headerLines = result.header.split("\n");
   // En modo unitario (un solo .cpp) el `#pragma once` no tiene sentido.
   const headerForUnity = headerLines.filter(line => line.trim() !== "#pragma once");
+    // V18: headers externos solicitados por `@include("stdio.h")` en un
+    // `.lib.ets`. El codegen ya los entrega como `#include "stdio.h"` listos
+    // para insertar. Se añaden tras el header (que ya trae `<iostream>` etc.)
+    // y antes del cuerpo del módulo, en orden de aparición.
+    const externalIncludes = (result.externalHeaders ?? []);
   const moduleCppLines = result.modules.flatMap((m, i) => {
     // Quitamos `#include "estatic_common.hpp"` y el include de runtime si está duplicado
     const cleaned = m.cpp
@@ -110,7 +115,7 @@ try {
     // Insertamos el contenido del módulo (separado por `// --- end of module ---`)
     return [cleaned];
   });
-  const unified = [...headerForUnity, ...moduleCppLines].join("\n");
+  const unified = [...headerForUnity, ...externalIncludes, "", ...moduleCppLines].join("\n");
   await writeFile(output, unified, "utf8");
   console.log(`Generado ${output}`);
   await logger?.record("info", "transpile", "cpp-generated", { input, output, modules: result.modules.length, bytes: Buffer.byteLength(unified) });
@@ -143,7 +148,12 @@ try {
     }
     const pchFlag = existsSync(pchFile) ? ["-include", pchFile] : [];
     const tlsLibraries = unified.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
-    const libraries = config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`);
+    const libraries = [
+      ...config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`),
+      // V18: link flags declarados en el .lib.ets vía `@cpp_link("...")`.
+      // El codegen los extrae durante `prepare()` y los expone aquí.
+      ...(result.linkFlags ?? []),
+    ];
     // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
     // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
     // el objeto para resolver símbolos externos en las libs.

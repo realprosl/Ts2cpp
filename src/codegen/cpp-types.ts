@@ -2,6 +2,22 @@ import type { TypeName } from "../ast/nodes.ts";
 import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isReadonlyType, isTupleType, isUnionType, readonlyInner, tupleElements, unionMembers, type ResolvedType } from "../types/type-system.ts";
 import { cppInputType } from "./cpp-parameters.ts";
 
+// V18: alias de tipos CPP externos (decorador `@cpp_type("Vector2")`).
+// El CppGenerator exporta su `externalTypesMap` y se inyecta aquí. Si el
+// dialecto tiene un tipo declarado como `@cpp_type("X")`, el codegen
+// sustituye "X" en lugar del nombre del dialecto. Esto permite que el
+// usuario escriba `Vector2` y el codegen lo mapee al tipo que viven en
+// la librería enlazada.
+const externalTypeNames = new Map<string, string>();
+/** V18: registra los alias CPP externos poblados por decoradores. */
+export function registerExternalType(name: string, cppType: string): void {
+  externalTypeNames.set(name, cppType);
+}
+/** V18: limpia el registro entre compilaciones (por-programa). */
+export function clearExternalTypes(): void {
+  externalTypeNames.clear();
+}
+
 // TODO Phase 1.A: alias expansion happens in the type-checker (validateType, substituteType)
 // before reaching cppType. If a raw alias name ever reaches here, it falls through to the
 // passthrough branch and will appear as `Name` in C++ output. This should not happen in practice.
@@ -39,6 +55,10 @@ export function cppType(type: TypeName | ResolvedType): string {
 
 function cppTypeFromString(type: TypeName): string {
   if (PRIMITIVE_CPP[type]) return PRIMITIVE_CPP[type];
+  // V18: tipo CPP externo (decorador `@cpp_type("Vector2")`). Si el
+  // codegen tiene un mapa con este nombre, devolvemos el alias tal cual.
+  const external = externalTypeNames.get(type);
+  if (external) return external;
   // V5: readonly<T> se traduce al tipo base sin decoración; la decoración
   // `const T&` la añade cppParameterDeclaration cuando el tipo aparece como
   // parámetro. Eso evita el doble `const const T&&` que se produciría al
