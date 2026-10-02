@@ -1,5 +1,5 @@
 import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
-import { cppType, collectTypeParameterNames } from "./cpp-types.ts";
+import { cppType, collectTypeParameterNames, registerExternalType, clearExternalTypes } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
 import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, tupleElements, unionMembers } from "../types/type-system.ts";
 import { HELPER_METADATA } from "../semantic/helpers.ts";
@@ -42,6 +42,12 @@ export class CppGenerator {
   // `ets_io.hpp` en el header. El usuario es responsable de usar
   // `std::cout` directamente o incluir el header por su cuenta.
   public minimal = false;
+  // V18: librería(s) C++ externa(s) que el CLI pasará a g++.
+  // Configurable desde `estatic.config.ts` con `libraries: { raylib: { link: "-lraylib" } }`
+  // o desde decoradores `@cpp_link("-lraylib")` en el .lib.ets.
+  public linkFlags: string[] = [];
+  // V18: headers externos solicitados por decoradores/config (ej. `#include "raylib.h"`).
+  public externalHeaders: string[] = [];
   // V17: Set dinámico de headers requeridos por los nodos AST emitidos.
   // Cada nodo que necesita un include (lambda → <functional>, union →
   // <variant>, lambda captura → <functional>, etc.) lo añade aquí. Al
@@ -49,6 +55,19 @@ export class CppGenerator {
   // adivinarlos globalmente. Esto permite un binario más pequeño porque
   // un programa con un Optional<T> no paga por todo <variant>/<concepts>.
   private readonly _requiredHeaders = new Set<string>();
+  // V18: nombre CPP exacto al que se traduce un símbolo del dialecto. Se
+  // puebla desde los decoradores `@cpp_name("InitWindow")` que aparecen
+  // sobre funciones, métodos o variables del programa o del header.
+  private readonly _cppNames = new Map<string, string>();
+  // V18: alias de tipos CPP (`@cpp_type("Vector2")`).
+  private readonly _cppTypes = new Map<string, string>();
+  // V18: link flags adicionales (decorador `@cpp_link("-lraylib")` o
+  // `libraries` en el config). El CLI los añade al comando g++.
+  private readonly _linkFlags = new Set<string>();
+  // V18: headers adicionales solicitados por declaraciones decoradas.
+  // Igual que `_requiredHeaders` pero para los que aporta el config de
+  // librerías o el decorador `@cpp_header("raylib.h")`.
+  private readonly _externalHeaders = new Set<string>();
   private requiredIncludes() { return this._requiredHeaders; }
   // Helper para registrar un header (idempotente, lo añade al set). El
   // valor guardado es la forma completa `#include <xxx>` para que la
@@ -127,10 +146,23 @@ export class CppGenerator {
   }
   private resolveAlias(name: string): string { return this.exportAliases.get(name) ?? name; }
   private cppName(name: string): string {
+    // V18: si el nombre tiene un alias CPP externo (decorador
+    // `@cpp_name("InitWindow")`), resolvemos al nombre C++ exacto.
+    // Si no, caemos al renombre local (de colisión con runtime).
+    const aliased = this._cppNames.get(name);
+    if (aliased) return aliased;
     return this.localRenames.get(name) ?? name;
   }
   /** V15: setup del generador a partir del AST combinado del programa. */
-  prepareModules(program: Program): void { this.prepare(program); }
+  prepareModules(program: Program): void {
+    // V18: el primer prepare (llamado una sola vez por `compileFile`) limpia
+    // los sets de link/include para empezar de cero. Las llamadas internas
+    // (desde `generateHeader`/`generateModule`) NO limpian — preservan los
+    // `@link`/`@include` recogidos del AST combinado.
+    this._linkFlags.clear();
+    this._externalHeaders.clear();
+    this.prepare(program);
+  }
   prepare(program: Program): void {
     // `export default` envuelve una declaración; el dialecto es single-
     // translation-unit, así que la declaración se procesa como si fuera
@@ -156,6 +188,68 @@ export class CppGenerator {
       }
     }
     this.indent = 0;
+    // V18: pre-pasada de decoradores para popular `_cppNames`, `_cppTypes`,
+    // `_linkFlags` y `_externalHeaders`. Esto se hace en prepare() para que
+    // `generate()` y `generateHeader()` consulten los mapas al emitir.
+    // NO limpiamos los sets aquí — `prepare()` se llama múltiples veces
+    // (una por `generateModule()`, más una por el header). Si limpiamos
+    // cada vez, perdemos los `@include`/`@link` de los `.lib.ets` que no
+    // son el módulo actual. En su lugar, el primer `prepare()` los limpia
+    // (eso es `prepareModules`).
+    this._cppNames.clear();
+    this._cppTypes.clear();
+    clearExternalTypes();
+    const argValue = (decorator: { name: string; args: Expression[] }, index: number): string | undefined => {
+      const arg = decorator.args[index];
+      if (!arg || arg.kind !== "LiteralExpression" || arg.literalType !== "string") return undefined;
+      const v = (arg as Extract<Expression, { kind: "LiteralExpression" }>).value;
+      return typeof v === "string" ? v : undefined;
+    };
+    for (const stmt of unwrapped) {
+      if (stmt.kind === "FunctionDeclaration" && stmt.decorators) {
+        for (const dec of stmt.decorators) {
+          const v = argValue(dec, 0);
+          if (dec.name === "cpp_name" && v) this._cppNames.set(stmt.name, v);
+        }
+      }
+      if (stmt.kind === "ModuleHeaderDeclaration" && stmt.decorators) {
+        // V18: el `.lib.ets` declara a nivel de archivo qué librería C/C++
+        // estamos enlazando. Cada archivo `.lib.ets` representa UNA librería,
+        // así que `@link`/`@include` se declaran una sola vez en el header
+        // del archivo, no por función.
+        for (const dec of stmt.decorators) {
+          const v = argValue(dec, 0);
+          if (dec.name === "link" && v) this._linkFlags.add(v);
+          if (dec.name === "include" && v) {
+            // Si el usuario puso `<stdio.h>` o `"stdio.h"` lo respetamos;
+            // si puso `stdio.h` sin delimitadores, asumimos `<stdio.h>`
+            // (header estándar) y lo emitimos como `#include <stdio.h>`.
+            let header = v.trim();
+            if (!header.startsWith("<") && !header.startsWith('"')) header = `<${header}>`;
+            if (!header.startsWith("#include")) header = `#include ${header}`;
+            this._externalHeaders.add(header);
+          }
+        }
+      }
+      if (stmt.kind === "InterfaceDeclaration" && stmt.decorators) {
+        for (const dec of stmt.decorators) {
+          const v = argValue(dec, 0);
+          if (dec.name === "cpp_type" && v) { this._cppTypes.set(stmt.name, v); registerExternalType(stmt.name, v); }
+        }
+        // Decoradores a nivel método (alias de funciones de la interface).
+        for (const method of stmt.methods) {
+          if (!method.decorators) continue;
+          for (const dec of method.decorators) {
+            const v = argValue(dec, 0);
+            if (dec.name === "cpp_name" && v) this._cppNames.set(`${stmt.name}.${method.name}`, v);
+          }
+        }
+      }
+    }
+    // V18: vuelco los sets al final de la pre-pasada para que el CLI/builder
+    // pueda leer `linkFlags` y `externalHeaders` tras `prepare()`.
+    this.linkFlags = Array.from(this._linkFlags);
+    this.externalHeaders = Array.from(this._externalHeaders);
     // Escaneamos el programa para detectar alias de export (`export { x as y }`)
     // y registrarlos en `exportAliases` para que el codegen los resuelva.
     this.exportAliases.clear();
@@ -499,7 +593,12 @@ export class CppGenerator {
       lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppType(type)} ${cppName} = ${initializer};`);
     }
     if (simpleTopLevel.length) lines.push("");
-    for (const fn of functions) lines.push(this.function(fn), "");
+    // V18: las funciones con `@cpp_name` se emiten como `extern "C"` en lugar
+    // de con cuerpo (linker resuelve contra la librería enlazada).
+    const externalFunctions = functions.filter(fn => fn.decorators?.some(d => d.name === "cpp_name"));
+    const regularFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
+    for (const fn of externalFunctions) lines.push(this.function(fn), "");
+    for (const fn of regularFunctions) lines.push(this.function(fn), "");
     lines.push("int main(int argc, char** argv) {"); this.indent++;
     lines.push(this.pad() + "ets_argc = argc;");
     lines.push(this.pad() + "ets_argv = argv;");
@@ -531,10 +630,14 @@ export class CppGenerator {
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
     for (const node of allClasses) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
     if (allClasses.length) lines.push("");
-    for (const fn of functions) lines.push(this.signature(fn) + ";");
-    if (functions.length) lines.push("");
+    // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
+    // externamente). El cpp emite `extern "C" <sig>;` y el linker las
+    // resuelve contra la librería.
+    const headerFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
+    for (const fn of headerFunctions) lines.push(this.signature(fn) + ";");
+    if (headerFunctions.length) lines.push("");
     for (const node of allClasses) lines.push(this.classDeclaration(node), "");
-    for (const fn of functions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
+    for (const fn of headerFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
     // V15: si la variable es `const` con initializer literal, el header
       // usa `extern const` (no `extern constexpr` — eso requiere definición
       // inline). La definición en el .cpp usa `constexpr`. Para tipos no
@@ -607,7 +710,12 @@ export class CppGenerator {
     // V15: las funciones EXPORTADAS deben tener linkage externo para que el
     // header (signature + ";") y esta definición coincidan. Las no exportadas
     // usan linkage interno (`static`) para evitar choques entre módulos.
-    for (const fn of functions) {
+    // V18: si la función tiene `@cpp_name`, solo emitimos el `extern "C"`
+    // (no el cuerpo). El linker resolverá contra la librería enlazada.
+    const externalFunctions = functions.filter(fn => fn.decorators?.some(d => d.name === "cpp_name"));
+    const regularFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
+    for (const fn of externalFunctions) lines.push(this.function(fn), "");
+    for (const fn of regularFunctions) {
       const exported = fn.exported;
       lines.push(this.function(fn, !exported), "");
     }
@@ -628,7 +736,22 @@ export class CppGenerator {
     }
     return lines.join("\n");
   }
-  private signature(fn: FunctionDeclaration, internal = false, includeDefaults = true, includeValueDefaults = true): string {
+  // V18: mapa de tipos C estándar para declaraciones con `@cpp_name`. El
+  // dialecto no puede garantizar que `int32_t` coincida con `int` en libc
+  // (depende de la plataforma: en algunas es `long`). Para evitar errores
+  // de conflicto con `<cstdio>` y similares, usamos los tipos C exactos en
+  // las forward declarations externas.
+  private static readonly C_LINKAGE_TYPES: Record<string, string> = {
+    i8: "char", i16: "short", i32: "int", i64: "long long",
+    u8: "unsigned char", u16: "unsigned short", u32: "unsigned int", u64: "unsigned long long",
+    f32: "float", f64: "double",
+    number: "double", boolean: "bool", string: "const char*",
+  };
+  private signature(fn: FunctionDeclaration, internal = false, includeDefaults = true, includeValueDefaults = true, useCLinkageTypes = false): string {
+    // V18: cuando se emite la firma de una declaración externa
+    // (`@cpp_name`), usamos los tipos C estándar en lugar de los tipos
+    // del dialecto. p.ej., `i32` → `int` (no `int32_t`).
+    const typeFor = (type: TypeName): string => useCLinkageTypes ? (CppGenerator.C_LINKAGE_TYPES[type] ?? cppType(type)) : cppType(type);
     const constrained = fn.params.map((p, i) => ({ p, i })).filter(({ p }) => this.interfaceNames.has(p.type));
     // V10.2: si algún parámetro es `(A, B) => R` (tipo función) y NO tiene
     // default value, lo tratamos como plantilla C++ (`F&&` con deducción
@@ -653,18 +776,27 @@ export class CppGenerator {
     // `Mut<T>` → T* (puntero mutable), `MutRef<T>` → T& (referencia mutable).
     // `Un<T>` y `Rc<T>` mantienen su envoltorio (tienen semántica de ownership).
     const params = fn.params.map((p, i) => {
-      const baseType = this.cppParameterType(p.type);
-      const effectiveType = p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType);
+      // V18: en modo C-linkage, los parámetros usan tipos C exactos (sin
+      // `const&` automático, sin `ets::Optional<...>`). Para mantener
+      // la paridad con la firma C esperada.
+      const baseType = useCLinkageTypes ? typeFor(p.type) : this.cppParameterType(p.type);
+      const effectiveType = useCLinkageTypes ? baseType : (p.optional && !(isGenericType(p.type) && genericBase(p.type) === "Optional") ? `ets::Optional<${cppType(p.type)}>` : (this.interfaceNames.has(p.type) ? `T${i}` : baseType));
       // V10.2: si el parámetro es una función, usar el template param `F${i}`
       // (forwarding reference con deducción automática) en lugar del tipo
       // concreto (que sería `std::function<...>`). Esto permite que el
       // compilador C++ inline la lambda sin overhead.
       const isFunction = isFunctionType(p.type) && !this.interfaceNames.has(p.type);
       const paramType = isFunction ? `F${i}&&` : (this.interfaceNames.has(p.type) ? `T${i}` : effectiveType);
+      // V18: en modo C-linkage, emitimos `int c` (sin `const&`). La librería C
+      // tiene su propia firma; no añadimos modificadores de paso del dialecto.
+      if (useCLinkageTypes) {
+        const pName = p.fromRuntime ? (this.localRenames.set(p.name, `ets_local_${p.name}`), `ets_local_${p.name}`) : p.name;
+        return `${typeFor(p.type)} ${pName}`;
+      }
       const cppParamName = p.fromRuntime ? (this.localRenames.set(p.name, `ets_local_${p.name}`), `ets_local_${p.name}`) : undefined;
       return cppParameterDeclaration(p, paramType, fn.async, includeValueDefaults && p.defaultValue ? this.emitExpression(p.defaultValue) : undefined, cppParamName);
     }).join(", ");
-    return `${template}${requires}${internal ? "static " : ""}${cppType(fn.returnType)} ${fn.name}(${params})`;
+    return `${template}${requires}${internal ? "static " : ""}${typeFor(fn.returnType)} ${fn.name}(${params})`;
   }
   private classDeclaration(node: ClassDeclaration): string {
     const templatePart = node.typeParameters.length ? `template <${node.typeParameters.map(parameter => {
@@ -844,6 +976,18 @@ export class CppGenerator {
     return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${variantIndexEnum} kind;\n    std::variant<${variantPayloads}> payload;\n};\n${constructorDefs}\n${printerDef}\n${eqDef}`;
   }
   private function(fn: FunctionDeclaration, internal = false): string {
+    // V18: si la función está mapeada a un símbolo C/C++ externo
+    // (decorador `@cpp_name("InitWindow")`), emitimos solo la declaración
+    // sin cuerpo, con linkage externo. El dialecto **siempre** usa
+    // `extern "C"` para `.lib.ets` (un archivo de declaraciones siempre
+    // mapea a una librería C o C++, no a código del programa).
+    if (fn.decorators?.some(d => d.name === "cpp_name")) {
+      const cppName = this._cppNames.get(fn.name) ?? fn.name;
+      // V18: usaCLinkageTypes=true → tipos C estándar (int, double, void),
+      // no `int32_t`/etc. Esto evita conflictos con `<cstdio>` y similares.
+      const sig = this.signature(fn, internal, false, true, true);
+      return `extern "C" ${sig.replace(fn.name + "(", cppName + "(")};`;
+    }
     const signature = this.signature(fn, internal, false);
     const appendCoReturn = fn.async && isPromiseType(fn.returnType) && promiseResult(fn.returnType) === "void" && fn.body.statements.at(-1)?.kind !== "ReturnStatement";
     // V8.0: el codegen necesita conocer el tipo declarado del retorno

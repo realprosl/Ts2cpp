@@ -15,12 +15,36 @@ export class Parser {
 
   parseProgram(): Program {
     const statements: Statement[] = [];
+    // V18: los `.lib.ets` empiezan con cero o más declaraciones `ModuleHeader`.
+    // El bloque ModuleHeader agrupa SOLO `@link` / `@include` (declaraciones
+    // a nivel de archivo). Otros decoradores (`@cpp_name`, `@cpp_type`)
+    // pertenecen al statement siguiente y NO se acumulan aquí.
+    //
+    // Para distinguirlos sin consumir, "espiamos" el nombre del decorador
+    // (primer identificador tras `@`) sin avanzar y solo consumimos si es
+    // un header decorator.
+    const headerDecorators: Decorator[] = [];
+    while (this.check("@")) {
+      const nameToken = this.peekAt(1);
+      if (!nameToken || nameToken.kind !== "identifier" || (nameToken.lexeme !== "link" && nameToken.lexeme !== "include")) break;
+      // Consumimos UN solo decorador (`@link(...)` o `@include(...)`) sin
+      // consumir los siguientes. Para ello llamamos a una versión "single"
+      // de parseDecorators: lee el `@`, el nombre y los args, sin buclear.
+      headerDecorators.push(this.parseSingleDecorator());
+    }
+    if (headerDecorators.length > 0) {
+      const lastToken = this.tokens[this.current - 1] ?? headerDecorators.at(-1)!;
+      statements.push({ kind: "ModuleHeaderDeclaration", decorators: headerDecorators, span: span(this.tokens[0].span.start, lastToken.span.end) });
+    }
     while (!this.check("eof")) statements.push(this.statement(true));
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
     return { kind: "Program", statements, span: span(this.tokens[0].span.start, this.peek().span.end) };
   }
 
   private statement(topLevel = false): Statement {
+    // V18: decoradores (`@cpp_name(...)`) pueden ir ANTES o DESPUÉS de `export`.
+    // Probamos ambas posiciones; el que consuma tokens primero gana.
+    const leadingDecorators = this.parseDecorators();
     const exported = this.match("export");
     if (exported && !topLevel) this.error(this.previous(), "'export' solo es válido en el nivel superior de un módulo");
     if (this.match("let", "const")) return this.variable(this.previous(), exported);
@@ -28,12 +52,11 @@ export class Parser {
     if (this.match("async")) {
       const keyword = this.previous();
       this.consume("function", "'async' solo puede preceder a una función");
-      return this.functionDeclaration(keyword, true, exported);
+      return this.functionDeclaration(keyword, true, exported, leadingDecorators);
     }
-    if (this.match("function")) return this.functionDeclaration(this.previous(), false, exported);
-    if (this.match("interface")) return this.interfaceDeclaration(this.previous(), exported);
-    if (this.match("class")) return this.classDeclaration(false, exported);
-    if (this.check("@")) return this.classDeclaration(true, exported);
+    if (this.match("function")) return this.functionDeclaration(this.previous(), false, exported, leadingDecorators);
+    if (this.match("interface")) return this.interfaceDeclaration(this.previous(), exported, leadingDecorators);
+    if (this.match("class")) return this.classDeclaration(false, exported, leadingDecorators);
     if (this.match("type")) return this.typeAliasDeclaration(this.previous(), exported);
     if (this.match("enum")) return this.enumDeclaration(this.previous(), exported);
     if (this.match("union")) return this.unionDeclaration(this.previous(), exported);
@@ -130,7 +153,11 @@ export class Parser {
     return { kind: "UsingDeclaration", exported, name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
   }
 
-  private functionDeclaration(keyword: Token, isAsync: boolean, exported = false): Statement {
+  private functionDeclaration(keyword: Token, isAsync: boolean, exported = false, leadingDecorators: Decorator[] = []): Statement {
+    // V18: decoradores pueden venir antes de la palabra clave (consumidos
+    // en `statement()`) o justo aquí. Se concatenan con los leading.
+    const inlineDecorators = this.parseDecorators();
+    const decorators = [...leadingDecorators, ...inlineDecorators];
     const name = this.consume("identifier", "Se esperaba el nombre de la función");
     const generics = this.typeParameterNames();
     this.consume("(", "Se esperaba '('");
@@ -150,16 +177,34 @@ export class Parser {
     this.consume(")", "Se esperaba ')' después de los parámetros");
     this.consume(":", "La función necesita un tipo de retorno");
     const returnType = this.typeName();
+    // V18: declaración sin cuerpo (forward declaration estilo `.d.ts`).
+    // Si la firma va seguida de `;` en lugar de `{`, emitimos un body
+    // sintético vacío y marcamos el nodo para que el codegen NO genere
+    // cuerpo (solo `extern` cuando tenga decorador `@cpp_name`).
+    if (this.match(";")) {
+      const semi = this.previous();
+      const emptyBody: BlockStatement = { kind: "BlockStatement", statements: [], span: span(semi.span.start, semi.span.end) };
+      const node: Statement = { kind: "FunctionDeclaration", exported, name: name.lexeme, async: isAsync, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, params, returnType, body: emptyBody, decorators, span: span(keyword.span.start, semi.span.end) };
+      // El codegen consultará `decorators` para emitir `extern` si la
+      // declaración estaba asociada a una librería externa.
+      return node;
+    }
     const open = this.consume("{", "Se esperaba el cuerpo de la función");
     const body = this.block(open);
-    return { kind: "FunctionDeclaration", exported, name: name.lexeme, async: isAsync, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, params, returnType, body, span: span(keyword.span.start, body.span.end) };
+    return { kind: "FunctionDeclaration", exported, name: name.lexeme, async: isAsync, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, params, returnType, body, decorators, span: span(keyword.span.start, body.span.end) };
   }
 
-  private interfaceDeclaration(keyword: Token, exported = false): Statement {
+  private interfaceDeclaration(keyword: Token, exported = false, leadingDecorators: Decorator[] = []): Statement {
+    // V18: `@cpp_type("Vector2")` antes de la interface. Decoradores
+    // pueden venir antes (leading) o aquí (inline).
+    const inlineDecorators = this.parseDecorators();
+    const decorators = [...leadingDecorators, ...inlineDecorators];
     const name = this.consume("identifier", "Se esperaba el nombre de la interfaz");
     const open = this.consume("{", "Las interfaces son estructurales y no admiten herencia; se esperaba '{'");
     const methods: InterfaceMethod[] = [];
     while (!this.check("}") && !this.check("eof")) {
+      // V18: `@cpp_name(...)` por método de la interface.
+      const methodDecorators = this.parseDecorators();
       const methodName = this.consume("identifier", "Se esperaba el nombre del método");
       this.consume("(", "Se esperaba '('");
       const params: Parameter[] = [];
@@ -178,10 +223,10 @@ export class Parser {
       this.consume(":", "El método necesita un tipo de retorno");
       const returnType = this.typeName();
       const end = this.consume(";", "Se esperaba ';' después del método");
-      methods.push({ name: methodName.lexeme, params, returnType, span: span(methodName.span.start, end.span.end) });
+      methods.push({ name: methodName.lexeme, params, returnType, decorators: methodDecorators, span: span(methodName.span.start, end.span.end) });
     }
     const close = this.consume("}", "Se esperaba '}' después de la interfaz");
-    return { kind: "InterfaceDeclaration", exported, name: name.lexeme, methods, span: span(keyword.span.start, close.span.end) };
+    return { kind: "InterfaceDeclaration", exported, name: name.lexeme, methods, decorators, span: span(keyword.span.start, close.span.end) };
   }
 
   private classDeclaration(keywordAlreadyConsumed: boolean, exported = false): Statement {
@@ -242,6 +287,16 @@ export class Parser {
    * Si el token `@` no aparece, devuelve `[]`. Los decoradores se aplican
    * al siguiente elemento (clase, método o campo) que se parsee.
    */
+  private parseSingleDecorator(): Decorator {
+    this.advance(); // consume `@`
+    const name = this.consume("identifier", "Se esperaba el nombre del decorador tras '@'");
+    const args: Expression[] = [];
+    if (this.match("(")) {
+      if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
+      this.consume(")", "Se esperaba ')' después de los argumentos del decorador");
+    }
+    return { name: name.lexeme, args };
+  }
   private parseDecorators(): Decorator[] {
     const decorators: Decorator[] = [];
     while (this.check("@")) {
