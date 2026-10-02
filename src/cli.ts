@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve, basename, extname, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { compileFile } from "./modules/module-loader.ts";
 import { DiagnosticError, formatDiagnostic } from "./core/diagnostic.ts";
 import { loadConfig } from "./config/project-config.ts";
@@ -114,13 +116,39 @@ try {
   await logger?.record("info", "transpile", "cpp-generated", { input, output, modules: result.modules.length, bytes: Buffer.byteLength(unified) });
   if (config && nativeBuild) {
     await mkdir(dirname(config.output.binary), { recursive: true });
+    // V17: pre-compiled headers. Compilamos `ets_runtime.hpp` (o
+    // `ets_runtime_minimal.hpp` en modo --minimal) una sola vez a .gch y
+    // luego lo inyectamos en cada compilación con `-include`. El .gch se
+    // invalida cuando el hash del header runtime cambia (guardado en
+    // build/.estatic/pch/runtime.hash).
+    const pchDir = join(dirname(config.output.binary), ".estatic.pch");
+    await mkdir(pchDir, { recursive: true });
+    const runtimeHeader = minimalMode ? "ets_runtime_minimal.hpp" : "ets_runtime.hpp";
+    const pchFile = join(pchDir, `runtime-${minimalMode ? "minimal" : "full"}.gch`);
+    const hashFile = join(pchDir, `runtime-${minimalMode ? "minimal" : "full"}.hash`);
+    const runtimeSourcePath = join(compilerRoot, "runtime", runtimeHeader);
+    let runtimeSha = "";
+    try { runtimeSha = createHash("sha256").update(await readFile(runtimeSourcePath)).digest("hex"); } catch { /* ignore */ }
+    let cachedSha = "";
+    try { cachedSha = await readFile(hashFile, "utf8"); } catch { /* ignore */ }
+    if (runtimeSha !== cachedSha || !existsSync(pchFile)) {
+      console.log(`[PCH] Generando ${pchFile}...`);
+      try {
+        await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-x", "c++-header", runtimeSourcePath, "-o", pchFile], logger);
+        await writeFile(hashFile, runtimeSha, "utf8");
+      } catch (e) {
+        // Si la generación del PCH falla, seguimos sin él.
+        console.warn(`[PCH] Aviso: no se pudo generar PCH (${e}). Continuando sin pre-compiled header.`);
+      }
+    }
+    const pchFlag = existsSync(pchFile) ? ["-include", pchFile] : [];
     const tlsLibraries = unified.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
     const libraries = config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`);
     // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
     // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
     // el objeto para resolver símbolos externos en las libs.
-    await command(config.compiler.command, [...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...libraries, ...tlsLibraries], logger);
-    console.log(`Compilado ${config.output.binary}`);
+    await command(config.compiler.command, [...pchFlag, ...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...libraries, ...tlsLibraries], logger);
+    console.log(`Compilado ${config.output.binary}${existsSync(pchFile) ? " (con PCH)" : ""}`);
   }
   await logger?.record("info", "transpile", "finished", { output, binary: nativeBuild ? config?.output.binary : undefined });
   await logger?.flush();
