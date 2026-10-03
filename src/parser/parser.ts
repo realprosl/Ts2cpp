@@ -60,6 +60,11 @@ export class Parser {
     if (this.match("type")) return this.typeAliasDeclaration(this.previous(), exported);
     if (this.match("enum")) return this.enumDeclaration(this.previous(), exported);
     if (this.match("union")) return this.unionDeclaration(this.previous(), exported);
+    // V22-gap-#1: `import type { Foo } from "..."` se trata como un
+    // statement vacío. El módulo-loader extrae los símbolos por regex
+    // antes de mandar al parser, así que el AST no necesita preservar
+    // la información de imports. Solo necesitamos consumir los tokens.
+    if (this.match("import")) return this.importStatement();
     if (exported) {
       if (this.match("default")) return this.exportDefaultDeclaration();
       if (this.match("{")) return this.exportNamedDeclaration();
@@ -379,6 +384,41 @@ export class Parser {
 
   // `export { name1, name2 as alias2, ... };`. Marca los bindings como
   // exportados sin generar código nuevo (ya están declarados arriba).
+  // V22-gap-#1: `import type { ... } from "..."` — consumido como statement vacío.
+  // El módulo-loader extrae los símbolos por regex sobre el texto fuente,
+  // así que el AST no necesita preservar los símbolos importados.
+  private importStatement(): Statement {
+    const start = this.previous().span.start;
+    // Sintaxis permitida:
+    //   import { Foo, Bar } from "baz";
+    //   import type { Foo, Bar } from "baz";
+    //   import { Foo, Bar as Alias } from "baz";
+    //   import "baz";   (side-effect import, lo permitimos por compatibilidad)
+    this.match("type");
+    if (this.match("{")) {
+      while (!this.check("}") && !this.check("eof")) {
+        this.match("type");
+        if (this.match("identifier")) {
+          // Soporta `Foo as Alias`.
+          if (this.peek().kind === "identifier" && this.peek().lexeme === "as") {
+            this.advance(); // consume `as`
+            if (this.check("identifier")) this.advance();
+          }
+        } else if (!this.check(",")) {
+          break;
+        }
+        this.match(",");
+      }
+      this.match("}");
+      // Soporta `from "..."`.
+      if (this.check("identifier") && this.peek().lexeme === "from") this.advance();
+    }
+    if (this.check("string")) this.advance();
+    this.match(";");
+    const end = this.previous().span.end;
+    return { kind: "ExpressionStatement", expression: { kind: "LiteralExpression", value: 0, literalType: "number", span: { start, end } }, span: { start, end } };
+  }
+
   private exportNamedDeclaration(): ExportNamedDeclaration {
     const start = this.previous().span.start;
     const specifiers: ExportSpecifier[] = [];

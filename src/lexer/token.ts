@@ -8,7 +8,9 @@ export type TokenKind =
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
   | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "eof"
   // V19: modificadores de encapsulación.
-  | "private" | "public" | "protected";
+  | "private" | "public" | "protected"
+  // V22-gap-#1: `import type` en el parser (consume solo los tokens).
+  | "import";
 
 export interface Token { kind: TokenKind; lexeme: string; span: Span }
 
@@ -16,6 +18,9 @@ export const KEYWORDS: Readonly<Record<string, TokenKind>> = Object.assign(Objec
   let: "let", const: "const", function: "function", interface: "interface", class: "class", new: "new", return: "return", if: "if", else: "else",
   while: "while", for: "for", break: "break", continue: "continue", extends: "extends", export: "export", true: "true", false: "false", mut: "mut", out: "out", async: "async", await: "await", using: "using", number: "type", string: "type", boolean: "type", void: "type", type: "type", satisfies: "satisfies",
   enum: "enum", switch: "switch", case: "case", default: "default", of: "of", in: "in", delete: "delete", instanceof: "instanceof", typeof: "typeof", readonly: "readonly", match: "match", when: "when", union: "union",
+  // V22-gap-#1: `import` se reconoce como keyword para soportar
+  // `import type { ... } from "..."`.
+  import: "import",
   // V19: modificadores de encapsulación.
   private: "private", public: "public", protected: "protected",
 });

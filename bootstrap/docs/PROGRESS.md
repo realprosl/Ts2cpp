@@ -30,9 +30,12 @@ bootstrap/
 │   │   └── *.cpp (69 archivos)     # ~103 KB total
 │   └── benchmark/
 │       └── TS-baseline.json        # Tiempos baseline
+├── core/                           # Wave 1 migraciones
+│   ├── span.ets
+│   └── diagnostic.ets
 ```
 
-### Métricas
+### Métricas Wave 0
 
 - **Total LOC migrables**: 7,207
 - **Tiempo baseline**: 25.30s (suma mediana, 69 ejemplos)
@@ -42,38 +45,77 @@ bootstrap/
 
 ### Gaps detectados (6)
 
-1. `import type` (alta) — bloquea Wave 1
-2. `array.push()` (alta) — bloquea cualquier código con collections
-3. Object spread (media) — bloquea codegen con object literals
-4. Generic constraint completo (media) — bloquea type-system con bounds
+1. `import type` (alta) — cerrado en PR #89
+2. `array.push()` (alta) — cerrado en PR #89
+3. Object spread (media) — pendiente
+4. Generic constraint completo (media) — verificado que ya funcionaba
 5. Union con payload (baja) — tenemos alternativa (`Result<T>`)
-6. Self-hosting falla por gap #1 (probado compilando `src/codegen/cpp-generator.ts`)
-
-### Decisiones tomadas
-
-- Estructura `bootstrap/` paralela a `src/` con subcarpetas por dominio
-- Cada archivo migrado tiene cabecera mínima + notas (`.ets` + `.notes.md`)
-- Golden tests con hash SHA-256 + JSON canonicalizado
-- Verificación bit-by-bit como mecanismo de regresión
-- Documentar gaps con prioridad + workaround
+6. Self-recursive interfaces (baja) — pendiente
 
 ---
 
-## Wave 1 — Hojas: core, ast, lexer (PENDIENTE)
+## Wave 0.5 — Cerrar gaps bloqueantes ✅
 
-**Bloqueada por**: Gap #1 (`import type`)
+**Status**: COMPLETADO
 
-### Pre-requisitos
+### Gaps cerrados
 
-Cerrar gaps antes de empezar:
-- [ ] Soporte `import type` en parser (15 min)
-- [ ] `array.push()` como built-in (1 hora)
-- [ ] Generic constraint completo (2-3 horas)
+- **#1 — `import type`** (issue #86): parser consume `import [type] { ... } from "..."`.
+- **#2 — `array.push()` y `array.length`** (issue #87): push añadido a ARRAY_METHODS, codegen emite `push_back()` y `size()`.
+- **#4 — `<T extends Foo>`** (issue #88): verificado que ya funcionaba.
 
-### Tareas
+### Tests
 
-- [ ] Migrar `core/diagnostic.ts` (84 LOC)
-- [ ] Migrar `ast/nodes.ts` (93 LOC)
-- [ ] Migrar `lexer/lexer.ts` (137 LOC)
-- [ ] Verificar con golden tests
-- [ ] Medir rendimiento del lexer Estatic vs TS
+- 166/166 unit verde
+- E2E con push + length funcionando
+
+### Commits
+
+- PR #89 con los 3 fixes.
+
+---
+
+## Wave 1 — Hojas: span, diagnostic ✅ parcial
+
+**Status**: EN PROGRESO (W1.1 cerrado, W1.2/W1.3 aplazados)
+
+### W1.1 — `core/span.ts` + `core/diagnostic.ts` ✅
+
+**Archivos migrados**:
+
+- `bootstrap/core/span.ets` (28 LOC) — `Position`, `Span`, `span()`.
+- `bootstrap/core/diagnostic.ets` (200 LOC) — `Diagnostic`, `DiagnosticError`, `formatDiagnostic`, `formatDiagnostics`.
+
+**Cambios del dialecto documentados**:
+
+- `interface X { fields }` → `class X { fields }` (interfaces solo métodos).
+- `string.length` → `length(str)` built-in.
+- `string.split('\n')` → manual con `splitLines()`.
+- `Number → String` cast → `numberToString(n)` built-in.
+- `process.env.X` → eliminado (se devuelve false siempre en `useColors()`).
+- `extends Error` → wrapper manual (sin herencia).
+- `out` keyword → `result`.
+- `X as Type` cast → eliminado.
+- `??` y `||` funcionan igual.
+
+**Pendiente de migrar**:
+
+- **W1.2 — `ast/nodes.ts`** (129 LOC): aplazado. El archivo tiene 30+ interfaces con campos `TypeName[]`, `Parameter[]`, etc. y uniones string-literal. Requiere decisiones de diseño.
+- **W1.3 — `lexer/lexer.ts`** (137 LOC): aplazado hasta tener `ast/nodes.ets` migrado (depende de los tipos `Token`, `TokenKind`).
+
+**Decisión**: Wave 1 queda en este estado. Wave 2 (migración del parser) replanteará las prioridades: si el parser es difícil de migrar por las dependencias de tipos AST, paramos y volvemos a `ast/nodes.ts`.
+
+---
+
+## Wave 2 — Parser (PENDIENTE)
+
+Bloqueada por decisión de diseño en `ast/nodes.ts`.
+
+---
+
+## Hitos alcanzados
+
+- ✅ Estructura `bootstrap/` creada.
+- ✅ Golden tests 100% estables.
+- ✅ 3 gaps cerrados (#1, #2, #4).
+- ✅ `core/span.ets` y `core/diagnostic.ets` migrados y compilando.

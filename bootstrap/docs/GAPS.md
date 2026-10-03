@@ -103,3 +103,32 @@ el checker no sabe que `T extends Addable`.
 **Workaround**: usar `class` con discriminated enums (`Result<T>` ya está implementado).
 
 **Prioridad**: baja (tenemos alternativa).
+
+## Re-test: gap #4 cerrado (2026-10-02)
+
+El test original usaba `interface Addable { add(v: Addable): Addable }` — 
+self-reference en interface — que es OTRO gap (self-recursive interface types),
+no el gap #4.
+
+Test real (sin self-reference):
+```ets
+interface Addable {
+  value(): number;
+}
+function getValue<T extends Addable>(items: T[]): number {
+  return items[0].value();
+}
+```
+
+Compila + ejecuta correctamente. El gap #4 ya estaba implementado (vía
+`activeTypeConstraints.get(objectType)` en type-checker líneas 2099 y 2316).
+
+### Gap nuevo detectado: self-recursive interface types
+
+**Problema**: `interface Foo { bar(x: Foo): Foo }` falla con
+"Tipo no definido o no permitido 'Foo'".
+
+**Workaround**: usar class en lugar de interface, o reescribir sin self-reference.
+
+**Prioridad**: baja (no bloquea Wave 1-2; el codegen TS no usa self-recursive
+interfaces en sus archivos críticos).
