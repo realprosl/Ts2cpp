@@ -230,6 +230,14 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void", userTypeArgument: 0 },
   // Métodos añadidos en V11: predicados y extracción.
   forEach: { arity: 1, paramKinds: ["fn"], returnType: () => "void" },
+  // V22-gap-#2: `push` añade un elemento al final del array (muta in-place).
+  // Devuelve `void` (estilo JS, aunque TS lo tipa como `number` opcional).
+  // El elemento es del mismo tipo que el array.
+  push:    { arity: 1, paramKinds: ["value"], returnType: () => "void" },
+  // V22-gap-#2: `length` es propiedad, no método. La manejamos aquí
+  // por compatibilidad — el codegen emitirá `obj.size()` en C++.
+  // Devuelve `number`.
+  // (Ver dispatch en cpp-generator para esta rama.)
 // V13: `find` devuelve `Optional<T>` (puede no haber resultado). El usuario
 // debe discriminar con `?.`, `match` o `value()` (que aborta si vacío).
   find:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `Optional<${T}>` },
@@ -2462,6 +2470,12 @@ export class TypeChecker {
           const variant = unionNode.variants.find(v => v.name === node.member);
           if (variant) { result = objectType; break; }
           this.report(node, `La unión '${objectType}' no tiene variante '${node.member}'`);
+          break;
+        }
+        // V22-gap-#2: `length` es propiedad virtual sobre `Array<T>` / `T[]`.
+        // Devuelve `number` y se compila a `obj.size()` en C++.
+        if (node.member === "length" && (objectType.endsWith("[]") || (isGenericType(objectType) && genericBase(objectType) === "Array"))) {
+          result = "number";
           break;
         }
         if (!owner) this.report(node.object, `El tipo '${objectType}' no es una clase concreta`);

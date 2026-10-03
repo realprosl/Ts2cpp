@@ -307,7 +307,7 @@ export class CppGenerator {
   // tiempo de compilación si quedan sin instanciar, pero los headers
   // crecen y el include explícito documenta la dependencia).
   private usesCollections(program: Program): boolean {
-    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "includes"]);
+    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "includes", "push"]);
     const visit = (node: unknown): boolean => {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
@@ -1895,6 +1895,12 @@ export class CppGenerator {
           if (method === "includes") {
             return `ets_includes_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
           }
+          // V22-gap-#2: `push` muta in-place. Como std::vector ya tiene
+          // `push_back`, lo emitimos directamente. No es necesario un helper
+          // de runtime porque la sintaxis coincide.
+          if (method === "push") {
+            return `${objStr}.push_back(${argStrs[0]})`;
+          }
         }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
@@ -1934,6 +1940,16 @@ export class CppGenerator {
               // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
               if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
                 return `${this.emitExpression(node.object)}->${node.member}`;
+              }
+              // V22-gap-#2: `xs.length` (propiedad) sobre `Array<T>` se mapea a
+              // `xs.size()` en std::vector. Detectamos que el objeto es array
+              // mirando su tipo (debe terminar en `[]` o ser `GenericType` con
+              // base `Array`).
+              if (node.member === "length") {
+                const objType = this.expressionType(node.object);
+                if (objType && (objType.endsWith("[]") || (isGenericType(objType) && genericBase(objType) === "Array"))) {
+                  return `${this.emitExpression(node.object)}.size()`;
+                }
               }
               return `${this.emitExpression(node.object)}.${node.member}`;
             }

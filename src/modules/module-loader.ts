@@ -7,7 +7,11 @@ import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { validateModuleVisibility } from "./module-visibility.ts";
 import type { Program, Statement } from "../ast/nodes.ts";
 
-const IMPORT_LINE = /^(\s*)import\s+(?:\{([^}]*)\}\s+from\s+)?["']([^"']+)["']\s*;\s*$/;
+// V22-gap-#1: soporta `import type { Foo } from "..."` (forma TS).
+// También soporta `import { Foo } from "..."` (forma estándar).
+// El flag `type` se ignora a nivel módulo: el dialecto emite los tipos
+// en runtime igualmente, así que el comportamiento es idéntico.
+const IMPORT_LINE = /^(\s*)import\s+(?:type\s+)?(?:\{([^}]*)\}\s+from\s+)?["']([^"']+)["']\s*;\s*$/;
 
 /** V15: nombre de init estable basado en el nombre del archivo. Si el
  * módulo cambia su contenido, el init mantiene el mismo nombre — así
