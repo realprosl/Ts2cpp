@@ -272,6 +272,10 @@ export class TypeChecker {
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
   private inConstructor = false;
+  // V19: nombre de la clase/método actual para detectar accesos privados.
+  // El checker usa esto para enforzar `private` y `protected`.
+  private currentClass: string | undefined;
+  private currentMethod: string | undefined;
   private readonly interfaces = new Map<string, InterfaceDeclaration>();
   private readonly classes = new Map<string, ClassDeclaration>();
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
@@ -1324,7 +1328,13 @@ export class TypeChecker {
       case "InterfaceDeclaration": break;
       case "TypeAliasDeclaration": break;
       case "ClassDeclaration": {
+        // V19: registramos la clase actual. Cuando visitamos los métodos,
+        // `currentClass` les permite enforzar `private`/`protected` sobre
+        // accesos a campos/métodos de la misma clase.
+        const previousClass = this.currentClass;
+        this.currentClass = node.name;
         this.withTypeParameters(node.typeParameters, () => { for (const method of node.methods) this.classMethod(method, node, scope); });
+        this.currentClass = previousClass;
         break;
       }
       case "EnumDeclaration": break;
@@ -1449,6 +1459,19 @@ export class TypeChecker {
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       this.defineVariable(local, "this", ownerType, true);
       for (const parameter of method.params) if (!this.defineVariable(local, parameter.name, parameter.type, parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), {}, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+      // V20: parameter properties. Si el parámetro del constructor tiene
+      // modificador (acceso o readonly), también lo añadimos como campo
+      // accesible en `this.x`. Lo hacemos después de los params para no
+      // colisionar.
+      if (method.name === "constructor") {
+        for (const p of method.params) {
+          if (p.access !== undefined || p.readonly === true) {
+            // `this.x` debe estar disponible; no necesitamos definirlo en el
+            // scope (accesos son `this.x` no `x`). Pero el campo debe ser
+            // reconocido por el acceso a miembros.
+          }
+        }
+      }
       // V0.3: huella estructural resuelta del método.
       method.resolvedSignature = {
         parameters: method.params.map(p => ({
@@ -1463,7 +1486,11 @@ export class TypeChecker {
         async: false,
       };
       const previous = this.currentReturn; const previousAsync = this.currentAsync; const previousCtor = this.inConstructor;
+      // V19: registramos la clase/método actual para enforzar encapsulación.
+      // Usamos el nombre del field `this.currentClass` de la closure padre
+      // (este método está dentro de un classStatement).
       this.currentReturn = method.returnType; this.currentAsync = false; this.inConstructor = method.name === "constructor";
+      this.currentMethod = method.name;
       this.statement(method.body, local);
       this.currentReturn = previous; this.currentAsync = previousAsync; this.inConstructor = previousCtor;
     });
@@ -2283,6 +2310,22 @@ export class TypeChecker {
         const methods = owner?.methods.filter(candidate => candidate.name === node.method) ?? [];
         if (!owner) this.report(node.object, `El tipo '${objectType}' no tiene métodos`);
         else if (!methods.length) this.report(node, `El tipo '${objectType}' no declara '${node.method}'`);
+        // V19: encapsulación de métodos. Si el método es `private` y el
+        // acceso viene desde fuera de la clase, error. Solo se chequea
+        // si el owner es un ClassDeclaration (las interfaces son públicas
+        // por contrato).
+        const methodOwnerName = owner && "name" in owner ? owner.name : undefined;
+        const offendingMethod = methods.find(m => "access" in m) as ClassMethod | undefined;
+        if (offendingMethod?.access === "private" && methodOwnerName !== this.currentClass) {
+          this.report(node, `El método '${node.method}' es privado en '${methodOwnerName}' y no se puede llamar desde fuera`);
+          result = "void";
+          break;
+        }
+        if (offendingMethod?.access === "protected" && methodOwnerName !== this.currentClass) {
+          this.report(node, `El método '${node.method}' es protegido en '${methodOwnerName}' y no se puede llamar desde fuera`);
+          result = "void";
+          break;
+        }
         const argumentTypes = node.args.map(arg => this.expression(arg, scope));
         const classSubstitutions = resolvedClass?.substitutions ?? new Map<string, TypeName>();
         const matches = methods.map(method => {
@@ -2422,7 +2465,35 @@ export class TypeChecker {
           break;
         }
         if (!owner) this.report(node.object, `El tipo '${objectType}' no es una clase concreta`);
-        else if (!field) this.report(node, `La clase '${objectType}' no declara el campo '${node.member}'`);
+        // V19: chequeo de encapsulación. Si el campo es `private` y el
+        // acceso viene desde fuera de la clase, error.
+        const ownerName = owner?.name;
+        if (field && field.access === "private" && ownerName !== this.currentClass) {
+          this.report(node, `El campo '${node.member}' es privado en '${ownerName}' y no se puede acceder desde fuera`);
+          result = "void";
+          break;
+        }
+        if (field && field.access === "protected" && ownerName !== this.currentClass) {
+          // V19: protected sin herencia todavía = equivalente a private.
+          // Cuando llegue herencia (#29), se aflojará la restricción.
+          this.report(node, `El campo '${node.member}' es protegido en '${ownerName}' y no se puede acceder desde fuera`);
+          result = "void";
+          break;
+        }
+        // V20: parameter properties — si el campo no está declarado pero hay
+        // un parámetro del constructor con ese nombre + modificador, también
+        // se considera un campo válido (implícito).
+        if (!field && owner) {
+          const ctor = owner.methods.find(m => m.name === "constructor");
+          if (ctor) {
+            const paramProp = ctor.params.find(p => p.name === node.member && (p.access !== undefined || p.readonly === true));
+            if (paramProp) {
+              result = this.substituteType(paramProp.type, resolved?.substitutions ?? new Map());
+              break;
+            }
+          }
+          this.report(node, `La clase '${objectType}' no declara el campo '${node.member}'`);
+        }
         if (field) result = this.substituteType(field.type, resolved?.substitutions ?? new Map());
         break;
       }
@@ -2472,6 +2543,27 @@ export class TypeChecker {
         const resolved = this.resolveClass(node.className); const owner = resolved?.owner;
         if (!owner) { this.report(node, `Clase no definida '${node.className}'`); node.args.forEach(arg => this.expression(arg, scope)); break; }
         if (owner.typeParameters.length && !isGenericType(node.className)) this.report(node, `La clase genérica '${owner.name}' necesita ${owner.typeParameters.length} argumentos de tipo`);
+        // V19: si la clase tiene constructor explícito, el `new T(...)` llama
+        // al constructor (no aggregate-init). El número de args debe
+        // coincidir con los params del constructor.
+        const hasConstructor = owner.methods.some(m => m.name === "constructor");
+        if (hasConstructor) {
+          const ctor = owner.methods.find(m => m.name === "constructor")!;
+          // Validamos args contra los params del constructor (sin defaults).
+          const requiredParams = ctor.params.filter(p => p.defaultValue === undefined).length;
+          if (node.args.length < requiredParams) this.report(node, `'${node.className}' espera al menos ${requiredParams} argumento(s) en el constructor, recibió ${node.args.length}`);
+          // Validamos tipos de cada argumento contra el param.
+          const classSubstitutions = resolved?.substitutions ?? new Map();
+          node.args.forEach((arg, i) => {
+            const param = ctor.params[i];
+            if (!param) return;
+            const expected = this.substituteType(param.type, classSubstitutions);
+            const actual = this.expression(arg, scope, expected);
+            this.require(actual, expected, arg);
+          });
+          result = node.className;
+          break;
+        }
         if (node.args.length !== owner.fields.length) this.report(node, `'${node.className}' espera ${owner.fields.length} valores de composición, recibió ${node.args.length}`);
         node.args.forEach((arg, i) => { const field = owner.fields[i]; const expectedType = field ? this.substituteType(field.type, resolved?.substitutions ?? new Map()) : undefined; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
         result = node.className; break;

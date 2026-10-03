@@ -806,14 +806,18 @@ export class CppGenerator {
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     const header = `${templatePart}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name} {`;
     const lines = [header]; this.indent++;
-    // C++ no permite reasignar campos `const` en el cuerpo del constructor.
-    // Si la clase declara un constructor, los `readonly` se emiten SIN `const`
-    // y el semantic checker rechaza asignaciones fuera del constructor. Si no
-    // hay constructor, los `readonly` se emiten como `const` (solo se pueden
-    // inicializar aggregate-style).
-    const hasConstructor = node.methods.some(method => method.name === "constructor");
+    // V20: parameter properties — los parámetros del constructor que tengan
+    // modificador de acceso o readonly se convierten en campos implícitos
+    // de la clase. Si el user ya declaró el campo aparte, NO lo duplicamos.
+    const constructor = node.methods.find(m => m.name === "constructor");
+    const paramProps = constructor ? constructor.params.filter(p => p.access !== undefined || p.readonly === true) : [];
+    const existingFieldNames = new Set(node.fields.map(f => f.name));
+    const newFields = paramProps.filter(p => !existingFieldNames.has(p.name));
+    const hasConstructor = !!constructor;
     for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
-    if (node.fields.length && node.methods.length) lines.push("");
+    // V20: emitimos los campos implícitos de parameter properties.
+    for (const p of newFields) lines.push(`${this.pad()}${cppType(p.type)}${p.readonly ? "" : ""} ${p.name};`);
+    if ((node.fields.length || newFields.length) && node.methods.length) lines.push("");
     for (const method of node.methods) lines.push(this.pad() + this.classMethod(method), "");
     if (lines.at(-1) === "") lines.pop();
     this.indent--; lines.push("};");
@@ -830,7 +834,19 @@ export class CppGenerator {
   private classMethod(method: ClassMethod): string {
     const declaration: FunctionDeclaration = { kind: "FunctionDeclaration", name: method.name, async: false, typeParameters: method.typeParameters ?? [], variadicTypeParameters: [], params: method.params, returnType: method.returnType, body: method.body, span: method.span };
     const previous = this.inClassMethod; this.inClassMethod = true;
-    const body = this.emitBlock(method.body);
+    let body = this.emitBlock(method.body);
+    // V20: parameter properties — al inicio del constructor, emitimos
+    // automáticamente `(*this).x = x;` por cada parámetro con modificador
+    // (acceso o readonly). El usuario no necesita escribirlo.
+    if (method.name === "constructor") {
+      const paramProps = method.params.filter(p => p.access !== undefined || p.readonly === true);
+      if (paramProps.length > 0) {
+        const assignments = paramProps.map(p => `(*this).${p.name} = ${p.name};`).join("\n");
+        const openBrace = body.indexOf("{");
+        const afterBrace = body.indexOf("\n", openBrace) + 1;
+        body = body.slice(0, afterBrace) + assignments + "\n" + body.slice(afterBrace);
+      }
+    }
     const deprecated = this.decoratorWarning(method.decorators, method.name);
     // `deprecated` se inyecta inmediatamente después de `{` del cuerpo, no entre
     // la firma y el `{`. Para eso, troceamos el bloque en dos.
@@ -862,7 +878,13 @@ export class CppGenerator {
     // Emitimos `std::cerr << "WARN: ...\n";` al principio del cuerpo.
     return `std::cerr << "WARN: '${memberName}' is deprecated: ${message}\\n"; `;
   }
-  private methodMutates(method: ClassMethod): boolean { return method.body.statements.some(statement => this.statementMutatesThis(statement)); }
+  private methodMutates(method: ClassMethod): boolean {
+    // V20: parameter properties en el constructor implican asignación
+    // automática a `this.x`. Eso es una mutación de `this`, así que el
+    // constructor nunca es const.
+    if (method.name === "constructor" && method.params.some(p => p.access !== undefined || p.readonly === true)) return true;
+    return method.body.statements.some(statement => this.statementMutatesThis(statement));
+  }
   private statementMutatesThis(node: Statement): boolean {
     switch (node.kind) {
       case "VariableDeclaration": return this.expressionMutatesThis(node.initializer);

@@ -240,12 +240,19 @@ export class Parser {
     const startSpan = decorators[0]?.args[0]?.span.start ?? name.span.start;
     while (!this.check("}") && !this.check("eof")) {
       const memberDecorators = this.parseDecorators();
+      // V19: modificador de encapsulación opcional (private/public/protected).
+      // Va antes de readonly y antes del nombre. Si se omite, default = public.
+      const access: "private" | "public" | "protected" | undefined =
+        this.match("private") ? "private"
+        : this.match("public") ? "public"
+        : this.match("protected") ? "protected"
+        : undefined;
       const readonly = this.match("readonly");
       const member = this.consume("identifier", "Se esperaba un campo o método");
       if (this.match(":")) {
         const type = this.typeName();
         const end = this.consume(";", "Se esperaba ';' después del campo");
-        fields.push({ name: member.lexeme, type, readonly, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
+        fields.push({ name: member.lexeme, type, readonly, access, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
       } else {
         const generics = this.typeParameterNames();
         this.consume("(", "Se esperaba '(' en el método");
@@ -254,28 +261,38 @@ export class Parser {
           const out = this.match("out");
           const mutable = this.match("mut");
           if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
+          // V19: parameter properties. Si el parámetro tiene modificador de
+          // acceso o readonly, se convierte en un campo de la misma clase.
+          const paramAccess: "private" | "public" | "protected" | undefined =
+            this.match("private") ? "private"
+            : this.match("public") ? "public"
+            : this.match("protected") ? "protected"
+            : undefined;
+          const paramReadonly = this.match("readonly");
           const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
-          // `name?: T` = parámetro opcional. Lo modelamos envolviendo el tipo
-          // en `Optional<T>` en type-check + codegen. Por ahora, solo
-          // registramos el flag; el user debe declarar el tipo como
-          // `Optional<T>` explícitamente para evitar envoltorios implícitos.
-          // (Aquí aceptamos la sintaxis pero no la propagamos: queda como
-          // pista semántica para el type-checker.)
           const optional = this.match("?");
           this.consume(":", "El parámetro necesita un tipo");
           const type = this.typeName();
           const defaultValue = this.match("=") ? this.expression() : undefined;
-          params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, optional, span: parameter.span });
+          params.push({
+            name: parameter.lexeme,
+            type,
+            out,
+            passing: out ? "out" : mutable ? "mut" : "automatic",
+            defaultValue,
+            optional,
+            // V19: si tiene modificador o readonly, es un parameter property.
+            access: paramAccess,
+            readonly: paramReadonly,
+            span: parameter.span,
+          });
         } while (this.match(","));
         this.consume(")", "Se esperaba ')' después de los parámetros");
-        // El método `constructor` es especial: no tiene tipo de retorno
-        // explícito y siempre devuelve void. Lo detectamos por nombre; C++
-        // también usa ese nombre, así que la traducción es directa.
         const isConstructor = member.lexeme === "constructor";
         const returnType: TypeName = isConstructor ? "void" : (this.match(":") ? this.typeName() : (this.error(this.peek(), "El método necesita un tipo de retorno"), "void"));
         const open = this.consume("{", "Se esperaba el cuerpo del método");
         const body = this.block(open);
-        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, span: span(member.span.start, body.span.end) });
+        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, access, span: span(member.span.start, body.span.end) });
       }
     }
     const close = this.consume("}", "Se esperaba '}' después de la clase");
