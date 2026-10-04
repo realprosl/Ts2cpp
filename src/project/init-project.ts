@@ -6,10 +6,194 @@ export interface InitializedProject {
   files: string[];
 }
 
+// Plantilla de `tsconfig.json` para el proyecto generado. La clave de todo
+// el cambio es `lib: ["es2022"]` y `types: []`:
+//   - `lib: []` no funciona: sin un lib mínimo, hasta los tipos globales
+//     básicos (Array, Boolean, Number, IArguments) se pierden, y eso
+//     rompe los `.d.ts` que importan `string[]`, `unknown[]`, etc.
+//   - `lib: ["es2022"]` da JS moderno sin DOM, que es lo que queremos.
+//   - `types: []` excluye `@types/node` y compañía, que es lo que de
+//     verdad no soporta el dialecto (no hay `Buffer`, `__dirname`, etc.).
+// `moduleResolution: "bundler"` es lo que usan Vite/Deno y no asume
+// resolución estilo Node.
+const tsconfigJson = `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["es2022"],
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*", "types/**/*", "estatic.config.ts"]
+}
+`;
+
+// Plantilla de `types/estatic.d.ts`. Declara al editor los built-ins del
+// dialecto (Unq, Rc, Optional, Result, Promise, Map, Set, Mut, MutRef,
+// readonly, numéricos i8..f64) y los globales (console, fs, path,
+// process, JSON) más los helpers de runtime que usan los ejemplos
+// (print, numberToString). El bloque `declare global` evita que el
+// usuario tenga que importar nada. NO incluye las versiones async de
+// `fs.*` que devuelven `Promise<...>` (decisión de scope confirmada).
+const estaticDts = `// Tipos del dialecto Estatic. Cargado por tsconfig.json para que el
+// editor conozca los built-ins del dialecto y los helpers del runtime
+// sin contaminar el código con imports.
+
+declare global {
+
+  // ─── Tipos numéricos concretos (V3) ──────────────────────────────────
+  // El dialecto distingue anchos de bits. Para el editor son alias de
+  // \`number\`; el transpilador enforce los rangos al compilar.
+  type i8 = number;
+  type i16 = number;
+  type i32 = number;
+  type i64 = number;
+  type u8 = number;
+  type u16 = number;
+  type u32 = number;
+  type u64 = number;
+  type f32 = number;
+  type f64 = number;
+
+  // ─── Modificadores / decoradores de tipo ─────────────────────────────
+  // \`Mut<T>\` y \`MutRef<T>\` se traducen a \`T*\` y \`T&\` en C++. El editor
+  // los ve como alias de T; el type-checker enforce la mutabilidad.
+  type Mut<T> = T;
+  type MutRef<T> = T;
+  // \`readonly<T>\` marca inmutabilidad. En el dialecto el checker rechaza
+  // reasignaciones; aquí es alias cosmético para que el editor no marque
+  // error de tipo inexistente.
+  type readonly<T> = T;
+
+  // ─── Envoltorios genéricos del runtime ──────────────────────────────
+  // Mapean a ets::Unq<T>, ets::Rc<T>, etc. en runtime/ets_*.hpp.
+  class Unq<T> {
+    private readonly _brand: symbol;
+  }
+  class Rc<T> {
+    private readonly _brand: symbol;
+  }
+  class Optional<T> {
+    private readonly _brand: symbol;
+    static some<T>(value: T): Optional<T>;
+    static none<T>(): Optional<T>;
+  }
+  class Result<T, E = string> {
+    private readonly _brand: symbol;
+  }
+  class Promise<T> {
+    private readonly _brand: symbol;
+  }
+  class Map<K, V> {
+    private readonly _brand: symbol;
+  }
+  class Set<T> {
+    private readonly _brand: symbol;
+  }
+  // Tipo opaco para JSON.parseValue. Se manipula vía helpers globales
+  // (jsonIsString, jsonAsString, ...).
+  type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+  // ─── Helpers de runtime (runtime/ets_core.hpp) ──────────────────────
+  function print(...values: unknown[]): void;
+  function numberToString(n: number): string;
+
+  // ─── Helpers de Optional<T> ─────────────────────────────────────────
+  function optionalSome<T>(value: T): Optional<T>;
+  function optionalNone<T>(): Optional<T>;
+
+  // ─── Helpers de filesystem (runtime/ets_file.hpp) ──────────────────
+  function fileRead(path: string): string;
+  function fileWrite(path: string, content: string): boolean;
+  function fileAppend(path: string, content: string): boolean;
+  function fileExists(path: string): boolean;
+  function fileCopy(src: string, dst: string): boolean;
+  function fileMove(src: string, dst: string): boolean;
+  function fileRemove(path: string): boolean;
+
+  // ─── Helpers de networking (runtime/ets_net_sync.hpp) ──────────────
+  function tcpListen(host: string, port: number): number;
+  function tcpAccept(listenerFd: number): number;
+  function tcpConnect(host: string, port: number): number;
+  function tcpRead(fd: number, maxBytes: number): string;
+  function tcpWrite(fd: number, data: string): boolean;
+  function tcpClose(fd: number): void;
+
+  // ─── Helpers de JsonValue ──────────────────────────────────────────
+  function jsonIsString(v: JsonValue): boolean;
+  function jsonIsNumber(v: JsonValue): boolean;
+  function jsonIsBool(v: JsonValue): boolean;
+  function jsonIsArray(v: JsonValue): boolean;
+  function jsonIsObject(v: JsonValue): boolean;
+  function jsonIsNull(v: JsonValue): boolean;
+  function jsonAsString(v: JsonValue): string;
+  function jsonAsNumber(v: JsonValue): number;
+  function jsonAsBool(v: JsonValue): boolean;
+  function jsonArrayLength(v: JsonValue): number;
+  function jsonArrayGet(v: JsonValue, index: number): JsonValue;
+  function jsonObjectGet(v: JsonValue, key: string): JsonValue;
+
+  // ─── Built-in globals (RUNTIME_GLOBAL_NAMES en type-checker) ───────
+  namespace console {
+    function log(...values: unknown[]): void;
+    function error(...values: unknown[]): void;
+    function warn(...values: unknown[]): void;
+  }
+  namespace fs {
+    // Versiones *Sync (devuelven Result<...> o boolean). Cobertura mínima:
+    // las versiones async (que devuelven Promise<...>) se omiten por scope.
+    function readFileSync(path: string): Result<string>;
+    function writeFileSync(path: string, data: string): Result<boolean>;
+    function appendFileSync(path: string, data: string): Result<boolean>;
+    function copyFileSync(src: string, dst: string): Result<boolean>;
+    function renameSync(oldPath: string, newPath: string): Result<boolean>;
+    function unlinkSync(path: string): Result<boolean>;
+    function existsSync(path: string): boolean;
+  }
+  namespace path {
+    function dirname(p: string): string;
+    function basename(p: string): string;
+    function extname(p: string): string;
+    function isAbsolute(p: string): boolean;
+    function normalize(p: string): string;
+    function join(parts: string[]): string;
+    function resolve(parts: string[]): string;
+  }
+  namespace process {
+    const argc: number;
+    const argv: string[];
+    function cwd(): string;
+    function exit(code: number): void;
+  }
+  namespace JSON {
+    function stringify(value: string): string;
+    function stringifyNumber(value: number): string;
+    function stringifyBool(value: boolean): string;
+    function stringifyValue(value: JsonValue): string;
+    function parse(text: string): string;
+    function parseValue(text: string): JsonValue;
+  }
+}
+
+export {};
+`;
+
 const templates: ReadonlyArray<readonly [string, string]> = [
   ["src/main.ts", `print("Hola desde Estatic");
 `],
-  ["estatic.config.ts", `export default {
+  ["estatic.config.ts", `// Editores (VSCode/Neovim) usan tsconfig.json + types/estatic.d.ts para
+// conocer los built-ins del dialecto (Unq, Mut, fs, path, process...).
+// No necesitas importar nada: los globales están disponibles vía
+// \`declare global\` en el .d.ts.
+export default {
   entry: "src/main.ts",
   moduleRoots: ["src"],
   aliases: {},
@@ -35,7 +219,10 @@ const templates: ReadonlyArray<readonly [string, string]> = [
   }
 };
 `],
+  ["tsconfig.json", tsconfigJson],
+  ["types/estatic.d.ts", estaticDts],
   [".gitignore", `build/
+node_modules/
 `],
   ["README.md", `# Proyecto Estatic
 
@@ -51,6 +238,23 @@ Durante el desarrollo, si ejecutas el CLI desde el repositorio del compilador:
 \`\`\`bash
 npm start -- --config /ruta/al/proyecto/estatic.config.ts
 \`\`\`
+
+## Soporte del editor
+
+El proyecto incluye:
+
+- \`tsconfig.json\` — configura el editor (VSCode/Neovim) para usar
+  \`moduleResolution: "bundler"\` y, sobre todo, \`"lib": ["es2022"]\` y
+  \`"types": []\`. Eso evita que tsserver añada APIs de DOM o de Node
+  (\`Buffer\`, \`__dirname\`, etc.) que el dialecto no implementa.
+- \`types/estatic.d.ts\` — declaraciones de los built-ins del dialecto
+  (\`Unq<T>\`, \`Rc<T>\`, \`Mut<T>\`, \`readonly<T>\`, \`fs.*Sync\`, \`path.*\`,
+  \`process.*\`, \`JSON\`, \`console\`) y los helpers del runtime
+  (\`print\`, \`numberToString\`, helpers de Optional/JsonValue).
+  \`declare global\` los expone sin imports.
+
+Si tu editor sigue marcando errores sobre tipos del dialecto, abre la
+paleta de comandos y elige "TypeScript: Restart TS Server".
 `]
 ];
 
