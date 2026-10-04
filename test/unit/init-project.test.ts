@@ -7,9 +7,12 @@
 //  2. `tsconfig.json` tiene `lib: ["es2022"]` y `types: []` (sin DOM ni
 //     @types/node implícitos) y `moduleResolution: "bundler"`.
 //  3. `types/estatic.d.ts` declara los built-ins del dialecto que el
-//     type-checker reconoce (Unq, Rc, Optional, Result, Promise, Map,
-//     Set, Mut, MutRef, readonly, numéricos i8..f64, console, fs.*Sync,
-//     path.*, process.*, JSON, print, numberToString).
+//     type-checker reconoce. V22 (Memory Model v2) reemplazó `Mut<T>`,
+//     `MutRef<T>`, `Unq<T>` y `Rc<T>` por 4 modificadores explícitos:
+//     `ptr<T>`, `constPtr<T>`, `ref<T>`, `constRef<T>`. También incluye
+//     `move<T>(x: ptr<T>)` como helper global. El resto de envoltorios
+//     (Optional, Result, Promise, Map, Set), numéricos y globales del
+//     runtime se mantienen.
 //  4. Si algún archivo del template ya existe, `initializeProject` aborta
 //     (decisión confirmada: no se sobrescribe nada).
 //  5. Si `tsc` está disponible, el proyecto generado pasa `tsc --noEmit`
@@ -69,13 +72,21 @@ test("init-project: estatic.d.ts declara los built-ins del dialecto", async () =
   const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
   await initializeProject(directory);
   const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
-  // Envoltorios genéricos del runtime.
-  for (const symbol of ["Unq", "Rc", "Optional", "Result", "Promise", "Map", "Set"]) {
+  // Envoltorios genéricos del runtime. V22 quitó `Unq` y `Rc` del .d.ts
+  // (los reemplaza `ptr<T>` y el futuro `weak<T>`); siguen reconociéndose
+  // por el codegen para diagnóstico de código legacy, pero el editor ya
+  // no debe verlos como tipos del dialecto.
+  for (const symbol of ["Optional", "Result", "Promise", "Map", "Set"]) {
     assert.match(dts, new RegExp(`\\bclass\\s+${symbol}\\b`), `falta class ${symbol}`);
   }
-  // Modificadores / decoradores de tipo.
-  for (const symbol of ["Mut", "MutRef", "readonly"]) {
+  // Modificadores de memoria V22 (4) + readonly (existente).
+  for (const symbol of ["ptr", "constPtr", "ref", "constRef", "readonly"]) {
     assert.match(dts, new RegExp(`\\btype\\s+${symbol}\\b`), `falta type ${symbol}`);
+  }
+  // Símbolos V22 eliminados: NO deben aparecer en el .d.ts.
+  for (const removed of ["Unq", "Rc", "Mut", "MutRef"]) {
+    assert.doesNotMatch(dts, new RegExp(`\\bclass\\s+${removed}\\b`), `${removed} NO debe declararse como class (eliminado en V22)`);
+    assert.doesNotMatch(dts, new RegExp(`\\btype\\s+${removed}\\b`), `${removed} NO debe declararse como type (eliminado/deprecado en V22)`);
   }
   // Numéricos concretos (V3).
   for (const num of ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]) {
@@ -190,6 +201,25 @@ test("init-project: estatic.d.ts declara helpers async (all, race, spawn, sleep)
     "race<T> no está declarado");
   assert.match(dts, /race\s*<T>\s*\(\s*tasks\s*:\s*Promise<T>\[\]\s*\)\s*:\s*T\b/,
     "race<T>(tasks: Promise<T>[]) -> T no está declarado con la firma correcta");
+});
+
+test("init-project (V22): estatic.d.ts declara move<T>() como helper global", async () => {
+  // V22 (Memory Model v2) introdujo `move<T>(x: ptr<T>)` como helper
+  // global que transfiere ownership. Sin esta declaración el editor
+  // marca "Cannot find name 'move'" en cualquier programa que use
+  // `let q: std<Counter> = move(p);`. Ver type-checker.ts:rama de
+  // `move` en expression() (HELPER_METADATA también lo lista).
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  // move<T>(x: ptr<T>) -> ptr<T>.
+  assert.match(dts, /function\s+move\s*<T>/,
+    "move<T> no está declarado");
+  assert.match(dts, /move\s*<T>\s*\(\s*x\s*:\s*ptr<T>\s*\)\s*:\s*ptr<T>/,
+    "move<T>(x: ptr<T>) -> ptr<T> no está declarado con la firma correcta");
+  // constPtr<T> también es válido para move(x).
+  assert.match(dts, /move\s*<T>\s*\(\s*x\s*:\s*constPtr<T>\s*\)\s*:\s*constPtr<T>/,
+    "move<T>(x: constPtr<T>) -> constPtr<T> no está declarado");
 });
 
 test("init-project: aborta si algún archivo del template ya existe", async () => {

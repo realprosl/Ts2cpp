@@ -37,12 +37,19 @@ const tsconfigJson = `{
 `;
 
 // Plantilla de `types/estatic.d.ts`. Declara al editor los built-ins del
-// dialecto (Unq, Rc, Optional, Result, Promise, Map, Set, Mut, MutRef,
-// readonly, numéricos i8..f64) y los globales (console, fs, path,
-// process, JSON) más los helpers de runtime que usan los ejemplos
-// (print, numberToString). El bloque `declare global` evita que el
-// usuario tenga que importar nada. NO incluye las versiones async de
-// `fs.*` que devuelven `Promise<...>` (decisión de scope confirmada).
+// dialecto (ptr/constPtr/ref/constRef como modificadores de memoria;
+// Optional, Result, Promise, Map, Set; readonly; numéricos i8..f64)
+// y los globales (console, fs, path, process, JSON) más los helpers de
+// runtime que usan los ejemplos (print, numberToString, move). El bloque
+// `declare global` evita que el usuario tenga que importar nada. NO
+// incluye las versiones async de `fs.*` que devuelven `Promise<...>`
+// (decisión de scope confirmada).
+//
+// V22 (Memory Model v2) eliminó `Mut<T>`, `MutRef<T>`, `Unq<T>` y deprecó
+// `Rc<T>` — los cuatro se reemplazan por modificadores más explícitos
+// (`ptr<T>` para unique_ptr, `ref<T>`/`constRef<T>` para préstamos, etc.).
+// Esta plantilla refleja el dialecto V22; los proyectos generados antes
+// de V22 deben regenerarse o actualizar `types/estatic.d.ts` a mano.
 const estaticDts = `// Tipos del dialecto Estatic. Cargado por tsconfig.json para que el
 // editor conozca los built-ins del dialecto y los helpers del runtime
 // sin contaminar el código con imports.
@@ -51,7 +58,7 @@ declare global {
 
   // ─── Tipos numéricos concretos (V3) ──────────────────────────────────
   // El dialecto distingue anchos de bits. Para el editor son alias de
-  // \`number\`; el transpilador enforce los rangos al compilar.
+  // \'number\'; el transpilador enforce los rangos al compilar.
   type i8 = number;
   type i16 = number;
   type i32 = number;
@@ -63,29 +70,40 @@ declare global {
   type f32 = number;
   type f64 = number;
 
-  // ─── Modificadores / decoradores de tipo ─────────────────────────────
-  // \`Mut<T>\` y \`MutRef<T>\` se traducen a \`T*\` y \`T&\` en C++. El editor
-  // los ve como alias de T; el type-checker enforce la mutabilidad.
-  type Mut<T> = T;
-  type MutRef<T> = T;
-  // \`readonly<T>\` marca inmutabilidad. En el dialecto el checker rechaza
+  // ─── Modificadores de memoria (V22 Memory Model v2) ──────────────────
+  // Los 4 modificadores controlan explícitamente cómo se pasa un valor
+  // entre funciones / métodos y cómo se almacenan los datos. El codegen
+  // los traduce así (ver src/codegen/cpp-types.ts:cppMemoryType):
+  //   ptrT       → std::unique_ptrT        (ownership exclusivo mutable)
+  //   constPtrT  → std::unique_ptr<const T>  (ownership exclusivo readonly)
+  //   refT       → T&                       (préstamo mutable no-null)
+  //   constRefT  → const T&                 (préstamo readonly no-null)
+  // Para el editor son alias de T; el type-checker enforce la
+  // semántica (no fields refT, no retornos refT, no borrows en async,
+  // move() solo sobre ptrT, etc.). Ver docs/memory-model.md.
+  type ptr<T> = T;
+  type constPtr<T> = T;
+  type ref<T> = T;
+  type constRef<T> = T;
+
+  // ─── Inmutabilidad (existente desde antes de V22) ────────────────────
+  // 'readonlyT' marca inmutabilidad. En el dialecto el checker rechaza
   // reasignaciones; aquí es alias cosmético para que el editor no marque
   // error de tipo inexistente.
   type readonly<T> = T;
 
   // ─── Envoltorios genéricos del runtime ──────────────────────────────
-  // Mapean a ets::Unq<T>, ets::Rc<T>, etc. en runtime/ets_*.hpp.
+  // Mapean a ets::Optional / Task / Result / Map / Set en runtime/ets_*.hpp.
   // Los métodos de instancia reflejan lo que el type-checker reconoce
   // (ver src/semantic/type-checker.ts: ARRAY_METHODS, MAP_METHODS,
   // SET_METHODS, OPTIONAL_HELPERS y las ramas de Result.isOk/value/error).
   // Sin esto, el editor marca r.isOk() como error porque no está
   // declarado en ninguna parte.
-  class Unq<T> {
-    _brand: string;
-  }
-  class Rc<T> {
-    _brand: string;
-  }
+  //
+  // V22 eliminó 'UnqT' (era el unique_ptr pre-V22) y deprecó 'RcT'.
+  // Ambos se sustituyen por 'ptrT' / 'constPtrT'; un reemplazo de
+  // 'RcT' (shared) está planeado en un PR futuro basado en 'weakT'.
+  // Por eso ya NO aparecen en esta plantilla.
   class Optional<T> {
     _brand: string;
     static some<T>(value: T): Optional<T>;
@@ -125,9 +143,9 @@ declare global {
     delete(value: T): boolean;
     readonly size: number;
   }
-  // Array<T> es la representación genérica. La forma canónica en el
+  // ArrayT es la representación genérica. La forma canónica en el
   // dialecto es T[] (chequea isArrayType en type-checker.ts), pero
-  // también se acepta Array<T> como sinónimo. Declaramos ambos.
+  // también se acepta ArrayT como sinónimo. Declaramos ambos.
   interface ArrayLike<T> {
     // ARRAY_METHODS en type-checker.ts:227-254.
     filter<U extends T>(predicate: (value: T) => boolean): T[];
@@ -152,6 +170,15 @@ declare global {
   function print(...values: unknown[]): void;
   function numberToString(n: number): string;
 
+  // ─── Transferencia de ownership (V22 Memory Model v2) ───────────────
+  // move(x) es la única forma de transferir ownership de un 'ptrT' sin
+  // copia. El argumento debe ser un identificador declarado como ptrT
+  // o constPtrT (de lo contrario el type-checker emite E4100). Tras
+  // la llamada, el uso de 'x' es diagnóstico E4102 (uso moved) o E4103
+  // (uso maybe-moved, p.ej. dentro de una rama if sin else).
+  function move<T>(x: ptr<T>): ptr<T>;
+  function move<T>(x: constPtr<T>): constPtr<T>;
+
   // ─── Helpers async (ASYNC_HELPERS + ASYNC_PRIMITIVE_HELPERS) ────────
   // sleep y spawn son funciones globales del runtime (registradas
   // en type-checker.ts:446-447). all y race se manejan como casos
@@ -164,7 +191,7 @@ declare global {
   function all<T>(tasks: Promise<T>[]): T[];
   function race<T>(tasks: Promise<T>[]): T;
 
-  // ─── Helpers de Optional<T> ─────────────────────────────────────────
+  // ─── Helpers de OptionalT ─────────────────────────────────────────
   function optionalSome<T>(value: T): Optional<T>;
   function optionalNone<T>(): Optional<T>;
 
@@ -250,7 +277,7 @@ const templates: ReadonlyArray<readonly [string, string]> = [
   ["estatic.config.ts", `// Editores (VSCode/Neovim) usan tsconfig.json + types/estatic.d.ts para
 // conocer los built-ins del dialecto (Unq, Mut, fs, path, process...).
 // No necesitas importar nada: los globales están disponibles vía
-// \`declare global\` en el .d.ts.
+// \'declare global\' en el .d.ts.
 export default {
   entry: "src/main.ts",
   moduleRoots: ["src"],
@@ -306,9 +333,11 @@ El proyecto incluye:
   \`"types": []\`. Eso evita que tsserver añada APIs de DOM o de Node
   (\`Buffer\`, \`__dirname\`, etc.) que el dialecto no implementa.
 - \`types/estatic.d.ts\` — declaraciones de los built-ins del dialecto
-  (\`Unq<T>\`, \`Rc<T>\`, \`Mut<T>\`, \`readonly<T>\`, \`fs.*Sync\`, \`path.*\`,
-  \`process.*\`, \`JSON\`, \`console\`) y los helpers del runtime
-  (\`print\`, \`numberToString\`, helpers de Optional/JsonValue).
+  (modificadores de memoria V22 \`ptr<T>\`, \`constPtr<T>\`, \`ref<T>\`,
+  \`constRef<T>\`; \`readonly<T>\`; envoltorios \`Optional<T>\`, \`Result\`,
+  \`Promise\`, \`Map\`, \`Set\`; \`fs.*Sync\`, \`path.*\`, \`process.*\`,
+  \`JSON\`, \`console\`; transferidor \`move<T>(x: ptr<T>)\`) y los helpers
+  del runtime (\`print\`, \`numberToString\`, helpers de Optional/JsonValue).
   \`declare global\` los expone sin imports.
 
 Si tu editor sigue marcando errores sobre tipos del dialecto, abre la

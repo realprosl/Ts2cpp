@@ -2,6 +2,64 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v0.27.1 (2026-10-04) — V22 subtareas: make_unique, move(), diagnósticos de borrows
+
+### Added
+
+- **V22 — `std::make_unique<T>(...)` automático**: cuando una declaración
+  `let`/`const` tiene `declaredType = ptr<T>` (o `constPtr<T>`) y el
+  initializer es un `new T(...)`, el codegen emite
+  `std::make_unique<T>(args)` automáticamente. Antes era obligatorio
+  llamar al helper manualmente. Ver test e2e `ownership/ptr-from-new`.
+- **V22 — `move<T>(x)` global helper**: transfiere ownership de un
+  `ptr<T>`. El codegen emite `std::move(x)` y el checker marca la
+  variable como `moved`/`maybe-moved` para rechazar usos posteriores.
+  El receptor (sea un parámetro `ptr<T>` o una variable local) recibe
+  el unique_ptr por valor con la semántica correcta. Ver test e2e
+  `ownership/move-transfer`.
+- **V22 — diagnósticos de borrows**:
+  - **E4102**: uso de un `ptr<T>` después de haber sido movido.
+  - **E4103**: uso de un `ptr<T>` que *puede* haber sido movido en una
+    rama de `if/else`.
+  - **E4203**: `ref<T>` / `constRef<T>` almacenado en un campo de clase.
+  - **E4204**: `ref<T>` / `constRef<T>` como parámetro de una función
+    `async`.
+  - **E4205**: `ref<T>` / `constRef<T>` como argumento de tipo en una
+    instanciación genérica.
+  - **E42xx**: `ref<T>` / `constRef<T>` como tipo de retorno (en
+    `FunctionDeclaration`, métodos de clase y métodos de interface).
+- **V22 — `identifierTypes` map en el codegen**: para que el acceso a
+  miembros (`p.value`) sobre un identificador de tipo `ptr<T>` se
+  emita como `p->value` (no `p.value`).
+- **V22 — inferencia de `declaredType` en `NewExpression`**: el
+  codegen propaga el `declaredType` de la declaración al `NewExpression`
+  para que el helper `make_unique` use el target ownership correcto.
+
+### Fixed
+
+- **V22 — `argumentExpectsPtrPointer` ya no añade `&` automático**:
+  antes buscaba `genericBase === "ptr"` y añadía `&` al lvalue, lo que
+  en V22 rompía la compilación porque `ptr<T>` se traduce a
+  `std::unique_ptr<T>` (por valor), no a `T*`. La función ahora
+  devuelve `false` siempre y se documenta como hook histórico.
+- **V22 — `examples/constructor-demo.ets` migrado**: usaba la sintaxis
+  legacy `function increment(mut counter: Counter)`. Ahora usa
+  `counter: ref<Counter>` (consistente con `mut-demo.ets`).
+- **V22 — `init-project` template**: el `estatic.d.ts` generado ahora
+  declara los 4 modificadores (`ptr<T>`, `constPtr<T>`, `ref<T>`,
+  `constRef<T>`) + el global `move(x: ptr<T>)`. Antes declaraba los
+  tipos legacy (`Mut<T>`, `MutRef<T>`, `Unq<T>`, `Rc<T>`) que V22
+  rechaza.
+
+### Tests
+
+- Unit tests: **194/194 verde**. Dos tests nuevos en `type-checker`:
+  - `type-checker V22: uso de variable movida genera E4102`
+  - `type-checker V22: move en if sin else deja la variable como
+    maybe-moved (E4103)`
+- E2E bucket `ownership`: **7/7 verde** (los 4 V22 originales +
+  `move-transfer` + `ptr-from-new` + `un-none` reorganizado).
+
 ## v0.27.0 (2026-10-04) — BREAKING: Memory Model v2
 
 ### Breaking

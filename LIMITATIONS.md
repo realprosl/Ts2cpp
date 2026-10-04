@@ -186,34 +186,32 @@ que el dialecto aún no implementa. **Se aceptan contribuciones** en estas
 ### Memory Model v2 — pendiente
 
 V22 introdujo los 4 modificadores `ptr<T>`, `constPtr<T>`, `ref<T>`,
-`constRef<T>` y la semántica de copia para `T`. Las siguientes
-funcionalidades del modelo aún no están implementadas y se entregarán
-en PRs posteriores:
+`constRef<T>` y la semántica de copia para `T`. **PR#1 (tipos),
+**PR#2 (value semantics), **PR#4 (make_unique)** y **PR#5 (moves con
+tracking completo + E4102/E4103)** están entregados y probados. La
+mayor parte de **PR#3 (borrows V1)** está entregada (E4203/E4204/E4205
++ rechazo de retornos `ref<T>`). Las siguientes funcionalidades siguen
+pendientes:
 
-- **PR#2 — Value semantics**: el codegen ya no aplica lowering implícito
-  T → const T&, pero la coerción `Counter` → `ptr<Counter>` en un
-  initializer (con `new`) aún no se infiere automáticamente.
-- **PR#3 — Borrows**: el checker acepta `ref<T>` y `constRef<T>` como
-  parámetros pero no valida las reglas de V1 (no fields ref<T>, no
-  retornos ref<T>, no await con borrows, no captura escaping de
-  closures).
-- **PR#4 — Unique ownership**: `make_unique<T>(...)` no se genera
-  todavía. La inicialización `let p: ptr<T> = new T(...)` requiere
-  que el codegen detecte el contexto propietario.
-- **PR#5 — Moves**: `move(x)` no se reconoce. Las variables `ptr<T>`
-  no se trackean con estados Available / Moved / MaybeMoved.
-- **PR#6 — Borrow conflicts**: el aliasing mutable (ref + ref, ref +
-  constRef) no se detecta todavía.
+- **PR#6 — Borrow conflicts**: aliasing mutable (`ref + ref`, `ref +
+  constRef`) no se detecta aún.
 - **PR#7 — Async/closures/generics**: las restricciones V1 (no
-  borrows en async, no captura escaping, no copy de move-only en
-  generics) no se enforce.
-- **`Rc<T>` (shared ownership)**: deprecado en V22. Se rediseñará con
+  capturas escaping de borrows, no copy de move-only en generics, no
+  uso de `ptr<T>` post-await) no se enforce completamente.
+- **`Rc<T>`** (shared ownership): deprecado en V22. Se rediseñará con
   `weak<T>` en un PR futuro.
 - **Nullable ptr explícito**: `let p: ptr<T> = null` no se admite
   todavía. El estado vacío se obtiene únicamente vía `move()`.
 - **Lifetime parameters** (`<'a>`): no soportados.
 - **Non-lexical lifetimes**: solo se implementará el modelo léxico
   básico (el préstamo termina al salir del bloque).
+
+> Diagnósticos actualmente en uso por el checker: **E4102** (use of moved
+> value), **E4103** (use of maybe-moved value), **E4203** (ref/constRef
+> en campo), **E4204** (ref/constRef en async), **E4205** (ref/constRef
+> como argumento de tipo genérico), **E42xx** (ref/constRef como
+> retorno), **E4400-E4406** (APIs legacy `mut`/`Mut`/`MutRef`/`Unq`/
+> `Rc`/`out`).
 
 ### Módulos y tooling
 

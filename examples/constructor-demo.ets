@@ -51,7 +51,9 @@ class Counter {
   current(): number { return this.value; }
 }
 
-function increment(mut counter: Counter): void {
+// V22: `mut` se reemplazó por `ref<T>` (T&). Ver examples/mut-demo.ets
+// para la versión expandida. Aquí usamos la misma forma compacta.
+function increment(counter: ref<Counter>): void {
   counter.value = counter.value + 1;
 }
 

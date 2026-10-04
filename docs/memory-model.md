@@ -112,19 +112,42 @@ E4400-E4406:
 | `out T`      | `Result<T>` (soft, warning)  | E4405       |
 | `class ptr`  | (reservado)                  | E4406       |
 
+## Estado actual de V22 (sub-PRs entregados)
+
+| Sub-PR | Estado | Resumen |
+|--------|--------|---------|
+| **PR#1 — Tipos** | ✅ entregado (v0.27.0) | `ptr<T>`, `constPtr<T>`, `ref<T>`, `constRef<T>` + matriz de conversión |
+| **PR#2 — Value semantics** | ✅ entregado | Coerción `T` → `ptr<T>` cuando el destino se declara `ptr<T>` y el initializer es `new T(...)`. El codegen emite `std::make_unique<T>(...)` automáticamente |
+| **PR#3 — Borrows (V1)** | 🟡 parcial | Implementadas: `no fields ref<T>` (E4203), `no retornos ref<T>` (E42xx), `no borrows en async` (E4204), `no borrows como argumentos genéricos` (E4205). Pendiente: aliasing mutable (ref + ref) — ver PR#6 |
+| **PR#4 — make_unique** | ✅ entregado | Emisión automática en declaraciones `let x: ptr<T> = new T(...)` y `const x: ptr<T> = new T(...)` |
+| **PR#5 — Moves** | ✅ entregado | `move(x)` se reconoce y emite `std::move(x)`. El checker marca la variable como `moved`/`maybe-moved` y rechaza usos posteriores con E4102/E4103. Join correcto entre ramas de `if/else` (preserva `Available` o degrada a `maybe-moved`) |
+| **PR#6 — Borrow conflicts** | ❌ pendiente | Aliasing mutable (`ref + ref`, `ref + constRef`) no se detecta aún |
+
+## Diagnósticos implementados
+
+| Código | Significado |
+|--------|-------------|
+| **E4102** | Uso de una variable `ptr<T>` después de haber sido movida (`move(x)`) |
+| **E4103** | Uso de una variable `ptr<T>` después de `move()` cuando puede estar movida (rama `if/else`) |
+| **E4203** | `ref<T>` / `constRef<T>` almacenado en un campo de clase — los préstamos no pueden sobrevivir al owner |
+| **E4204** | `ref<T>` / `constRef<T>` como parámetro en una función `async` — podrían colgar durante una suspensión |
+| **E4205** | `ref<T>` / `constRef<T>` como argumento de tipo en un genérico (`Array<ref<T>>` no tiene sentido) |
+| **E42xx** | `ref<T>` / `constRef<T>` como tipo de retorno — requiere análisis de lifetimes, no soportado aún |
+| **E4400–E4406** | APIs legacy rechazadas (`mut`, `Mut<T>`, `MutRef<T>`, `Unq<T>`, `Rc<T>`, `out`) |
+
 ## Lo que V22 **no** soporta todavía
 
 Ver `LIMITATIONS.md` §"Memory Model v2 — pendiente" para la lista
-completa. Resumen:
+completa. Resumen del trabajo restante:
 
-- **PR#2 — Value semantics**: coerción automática `Counter` → `ptr<Counter>`
-  en un initializer con `new` (make_unique).
-- **PR#3 — Borrows**: validación de V1 (no fields `ref<T>`, no retornos
-  `ref<T>`, no await con borrows, no captura escaping de closures).
-- **PR#5 — Moves**: `move(x)` y tracking Available / Moved / MaybeMoved.
-- **PR#6 — Borrow conflicts**: aliasing mutable (ref + ref, ref +
-  constRef).
-- **Rc<T>`** (shared ownership): rediseñado con `weak<T>` en PR futuro.
+- **PR#6 — Borrow conflicts**: aliasing mutable (`ref + ref`, `ref +
+  constRef`) no se detecta aún.
+- **PR#7 — Async/closures/generics**: las restricciones V1 (no capturas
+  escaping de `ref<T>`, no copy de move-only en generics) no se enforce.
+- **`Rc<T>`** (shared ownership): rediseñado con `weak<T>` en PR futuro.
+- **Lifetime parameters** (`<'a>`): no soportados.
+- **Non-lexical lifetimes**: solo se implementará el modelo léxico
+  básico (el préstamo termina al salir del bloque).
 
 ## Cómo migrar
 

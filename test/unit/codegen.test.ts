@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compile } from "../../src/compiler.ts";
+import { compile, analyze, parse } from "../../src/compiler.ts";
 
 const compilerRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -187,6 +187,96 @@ test("codegen V22: constRef<T> como parámetro emite const T&", () => {
   // V22: constRef<Counter> se traduce a `const Counter&` en la firma.
   assert.match(out, /const Counter& c/);
   assert.match(out, /\s+inspect\(const Counter&/);
+});
+
+test("codegen V22: move(p) se traduce a std::move(p)", () => {
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function use(): void {
+      let p: ptr<Counter> = new Counter(10);
+      let q: ptr<Counter> = move(p);
+      print(q.value);
+    }
+  `);
+  // V22: move() emite std::move() y el tipo ptr<Counter> se traduce a
+  // std::unique_ptr<Counter>.
+  assert.match(out, /std::make_unique<Counter>\(10\.0\)/);
+  assert.match(out, /std::move\(p\)/);
+  assert.match(out, /std::unique_ptr<Counter>\s+q\s*=\s*std::move\(p\)/);
+});
+
+test("codegen V22: make_unique<T> cuando targetType es ptr<T>", () => {
+  // V22: cuando la firma devuelve `ptr<T>` y se devuelve `new T(...)`,
+  // el codegen emite `std::make_unique<T>(...)` en lugar de construir
+  // por valor.
+  const out = cpp(`
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function make(): ptr<Counter> { return new Counter(42); }
+  `);
+  assert.match(out, /std::unique_ptr<Counter>\s+make\(\)/);
+  assert.match(out, /return std::make_unique<Counter>\(42\.0\)/);
+});
+
+function checkDiagnostics(src: string) {
+  const program = parse(src);
+  try {
+    const { checker } = analyze([program]);
+    return (checker as unknown as { diagnostics: { message: string }[] }).diagnostics ?? [];
+  } catch (err) {
+    // `analyze` throws DiagnosticError when there are diagnostics.
+    const diagErr = err as { diagnostics?: { message: string }[] };
+    return diagErr.diagnostics ?? [];
+  }
+}
+
+test("type-checker V22: move() sobre no-ptr<T> genera E4100", () => {
+  // V22: move() solo es válido sobre ptr<T> o constPtr<T>. Llamarlo sobre
+  // un valor plano es diagnóstico E4100.
+  const src = `
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function use(): void {
+      let c: Counter = new Counter(10);
+      let d: Counter = move(c);
+    }
+  `;
+  const diagnostics = checkDiagnostics(src);
+  const e4100 = diagnostics.find(d => d.message.includes("E4100"));
+  assert.ok(e4100, `Esperaba un diagnóstico E4100. Diagnósticos: ${diagnostics.map(d => d.message).join("\n")}`);
+});
+
+test("type-checker V22: uso de variable movida genera E4102", () => {
+  // V22: después de move(p), cualquier acceso a p es E4102 (uso de moved value).
+  const src = `
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function use(): void {
+      let p: ptr<Counter> = new Counter(10);
+      let q: ptr<Counter> = move(p);
+      let v: number = p.value;
+    }
+  `;
+  const diagnostics = checkDiagnostics(src);
+  const e4102 = diagnostics.find(d => d.message.includes("E4102"));
+  assert.ok(e4102, `Esperaba un diagnóstico E4102. Diagnósticos: ${diagnostics.map(d => d.message).join("\n")}`);
+});
+
+test("type-checker V22: move en if sin else deja la variable como maybe-moved (E4103)", () => {
+  // V22: si una variable se mueve dentro de un `if` sin `else`, fuera del
+  // if queda `maybe-moved` (pudo no haberse ejecutado). El uso posterior
+  // es diagnóstico E4103 (uso de maybe-moved value).
+  const src = `
+    class Counter { value: number; constructor(v: number) { this.value = v; } }
+    function use(cond: boolean): void {
+      let p: ptr<Counter> = new Counter(10);
+      if (cond) {
+        let q: ptr<Counter> = move(p);
+        print(q.value);
+      }
+      let v: number = p.value;
+    }
+  `;
+  const diagnostics = checkDiagnostics(src);
+  const e4103 = diagnostics.find(d => d.message.includes("E4103"));
+  assert.ok(e4103, `Esperaba un diagnóstico E4103. Diagnósticos: ${diagnostics.map(d => d.message).join("\n")}`);
 });
 
 // ---------------------------------------------------------------------------

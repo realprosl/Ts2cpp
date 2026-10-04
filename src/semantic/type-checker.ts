@@ -277,6 +277,13 @@ function levenshtein(a: string, b: string): number {
 export class TypeChecker {
   private readonly diagnostics: Diagnostic[] = [];
   private readonly types = new WeakMap<Expression, TypeName>();
+  // V22: mapa de variables locales `ptr<T>` que han sido movidas (`moved` o
+  // `maybe-moved`). Cualquier uso posterior genera un diagnóstico E4102 o
+  // E4103. El mapa se rellena al procesar `move(x)` y se consulta en
+  // `expression()` cuando se referencia un identificador. El mapa es
+  // mutable (no readonly) porque IfStatement hace snapshots y los restaura
+  // para implementar el join de estados entre ramas.
+  private moved = new Map<string, "moved" | "maybe-moved">();
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
   private inConstructor = false;
@@ -648,6 +655,11 @@ export class TypeChecker {
       this.validateType(method.returnType, method, false, true, scope);
       for (const parameter of method.params) this.validateType(parameter.type, parameter, false, true, scope);
       this.validateParameterDefaults(method.params, method);
+      // V22: ref<T>/constRef<T> no se permiten como return type en métodos
+      // de interface (misma regla que en FunctionDeclaration/ClassMethod).
+      if (isGenericType(method.returnType) && (genericBase(method.returnType) === "ref" || genericBase(method.returnType) === "constRef")) {
+        this.report(method, `E42xx: borrowed references cannot be returned yet. Returning ref<T> or constRef<T> requires lifetime analysis that is not supported by the current ownership model.`);
+      }
       // V0.3: huella estructural resuelta del método de interfaz.
       method.resolvedSignature = {
         parameters: method.params.map(p => ({
@@ -837,6 +849,11 @@ export class TypeChecker {
       members.add(field.name);
       this.validateType(field.type, field, false, false, scope);
       if (field.type === "void" || this.interfaces.has(field.type)) this.report(field, `El campo '${field.name}' necesita un tipo concreto`);
+      // V22 (Memory Model v2): ref<T> y constRef<T> son préstamos que no
+      // pueden almacenarse en un campo. E4203.
+      if (isGenericType(field.type) && (genericBase(field.type) === "ref" || genericBase(field.type) === "constRef")) {
+        this.report(field, `E4203: borrowed references cannot be stored in class fields. Use T (value), ptr<T> (exclusive owner), or constPtr<T> (readonly owner) for the field '${field.name}'.`);
+      }
     }
     for (const method of node.methods) {
       if (members.has(method.name)) this.report(method, `El método '${method.name}' entra en conflicto con un campo`);
@@ -1104,6 +1121,14 @@ export class TypeChecker {
         genericArguments(type).forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       } const arguments_ = genericArguments(type);
+      // V22 (Memory Model v2): ref<T> y constRef<T> no se permiten como
+      // argumentos de tipo en genéricos (e.g. `Array<ref<Counter>>` no
+      // tiene sentido porque las referencias no son valores). E4205.
+      for (const arg of arguments_) {
+        if (isGenericType(arg) && (genericBase(arg) === "ref" || genericBase(arg) === "constRef")) {
+          this.report(node, `E4205: borrowed references (ref<T>/constRef<T>) cannot be used as type arguments in generic instantiations.`);
+        }
+      }
       // Instanciación de alias genérico: `type Box<T> = T[]` + `Box<number>`.
       if (!owner && this.aliases.has(base)) {
         const alias = this.aliases.get(base)!;
@@ -1259,7 +1284,15 @@ export class TypeChecker {
           this.validateNumericExpression(node.initializer, node.declaredType);
         }
         if (expected === "void") this.report(node, "Una variable no puede ser de tipo void");
-        if (!typeMatches(actual, expected)) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+        // V22: si el expected es `ptr<T>`/`constPtr<T>` y el actual es `T`,
+        // aceptamos (inferencia de ownership). El codegen usará
+        // make_unique<T>(...) si el initializer es un NewExpression.
+        const isPtrImplicit = expected && isGenericType(expected)
+          && (genericBase(expected) === "ptr" || genericBase(expected) === "constPtr")
+          && genericArguments(expected)[0] === actual
+          && this.classes.has(actual)
+          && actual !== "void";
+        if (!typeMatches(actual, expected) && !isPtrImplicit) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
         // V6: si es `const` y el initializer es un literal puro, anotamos el
         // valor para que el codegen pueda emitir `constexpr` y propagar el
         // valor a usos posteriores (tamaños de arrays fijos, branches con
@@ -1324,6 +1357,20 @@ export class TypeChecker {
         break;
       }
       case "FunctionDeclaration": {
+        // V22 (Memory Model v2): ref<T>/constRef<T> no se permiten como
+        // return type en V1 (no hay análisis de lifetimes). E42xx.
+        if (isGenericType(node.returnType) && (genericBase(node.returnType) === "ref" || genericBase(node.returnType) === "constRef")) {
+          this.report(node, `E42xx: borrowed references cannot be returned yet. Returning ref<T> or constRef<T> requires lifetime analysis that is not supported by the current ownership model.`);
+        }
+        // V22: ref<T>/constRef<T> no se permiten en funciones `async`
+        // (podrían quedar colgando durante una suspensión). E4204.
+        if (node.async) {
+          for (const p of node.params) {
+            if (isGenericType(p.type) && (genericBase(p.type) === "ref" || genericBase(p.type) === "constRef")) {
+              this.report(p, `E4204: borrowed parameters (ref<T>/constRef<T>) are not allowed in async functions. Receive the value by copy (T) or by ownership (ptr<T>).`);
+            }
+          }
+        }
         this.withTypeParameters(node.typeParameters, () => {
           const local = new Scope(scope);
           for (const p of node.params) {
@@ -1366,6 +1413,12 @@ export class TypeChecker {
         // `expr` debe ser `IdentifierExpression` con tipo union con
         // variantes que tengan discriminador declarado.
         const narrowInfo = this.parseNarrowingCondition(node.condition, scope);
+        // V22: snapshot del estado `moved` antes de cada rama. Si ambas
+        // ramas mueven la misma variable, queda `moved`. Si solo una, queda
+        // `maybe-moved`. La implementación V1 conservadora hace un join
+        // por intersección: si una rama no toca una variable, conserva el
+        // estado previo (que podría ser `Available` o `moved`).
+        const previousMoved = new Map(this.moved);
         if (narrowInfo) {
           const thenVariants = narrowInfo.discriminator
             ? this.variantsMatchingDiscriminator(narrowInfo.unionType, narrowInfo.discriminator)
@@ -1375,17 +1428,52 @@ export class TypeChecker {
             : undefined;
           const previousNarrowed = new Map(this.narrowed);
           if (thenVariants) this.narrowed.set(narrowInfo.name, { unionType: narrowInfo.unionType, discriminator: narrowInfo.discriminator, variants: thenVariants });
+          const thenMoved = new Map(this.moved);
           this.statement(node.thenBranch, scope);
+          const afterThen = new Map(this.moved);
+          // Restauramos para que el `else` empiece desde el mismo snapshot.
+          this.moved = thenMoved;
           this.narrowed = previousNarrowed;
           if (node.elseBranch) {
             const previousNarrowed2 = new Map(this.narrowed);
             if (elseVariants) this.narrowed.set(narrowInfo.name, { unionType: narrowInfo.unionType, discriminator: narrowInfo.discriminator, variants: elseVariants });
             this.statement(node.elseBranch, scope);
+            // V22 join: una variable queda `moved` si está `moved` en
+            // AMBAS ramas. Si está `moved` solo en una, queda `maybe-moved`.
+            // Si está `maybe-moved` en una y `moved` en la otra, queda
+            // `maybe-moved` (puede que no se haya movido).
+            for (const [name, state] of this.moved) {
+              const other = afterThen.get(name) ?? previousMoved.get(name);
+              if (other === "moved" && state === "moved") this.moved.set(name, "moved");
+              else if (other === "moved" || state === "moved") this.moved.set(name, "maybe-moved");
+              else this.moved.set(name, state);
+            }
             this.narrowed = previousNarrowed2;
+          } else {
+            // Sin else: si la rama `then` movió la variable, ahora es
+            // `maybe-moved` (puede que no se haya ejecutado el then).
+            for (const [name, state] of afterThen) {
+              if (state === "moved" && !this.moved.has(name)) this.moved.set(name, "maybe-moved");
+            }
           }
         } else {
+          const thenMoved = new Map(this.moved);
           this.statement(node.thenBranch, scope);
-          if (node.elseBranch) this.statement(node.elseBranch, scope);
+          const afterThen = new Map(this.moved);
+          this.moved = thenMoved;
+          if (node.elseBranch) {
+            this.statement(node.elseBranch, scope);
+            for (const [name, state] of this.moved) {
+              const other = afterThen.get(name) ?? previousMoved.get(name);
+              if (other === "moved" && state === "moved") this.moved.set(name, "moved");
+              else if (other === "moved" || state === "moved") this.moved.set(name, "maybe-moved");
+              else this.moved.set(name, state);
+            }
+          } else {
+            for (const [name, state] of afterThen) {
+              if (state === "moved" && !this.moved.has(name)) this.moved.set(name, "maybe-moved");
+            }
+          }
         }
         break;
       }
@@ -1464,7 +1552,18 @@ export class TypeChecker {
           && (genericBase(this.currentReturn) === "Unq" || genericBase(this.currentReturn) === "Rc")
           && this.classes.has(actual)
           && actual !== "void";
-        if (this.currentReturn && !typeMatches(actual, this.currentReturn) && !flattenedAsyncReturn && !v8ImplicitWrap) this.report(node, `La función retorna ${this.currentReturn}, no ${actual}`);
+        // V22: si el retorno es `ptr<T>` o `constPtr<T>` y el valor es `T`
+        // (por ejemplo `new T(...)` o un identificador de tipo T), aceptamos
+        // — el codegen emite `std::make_unique<T>(...)` o convierte al
+        // `std::unique_ptr<T>` correcto. La inferencia es intraprocedural
+        // y solo aplica cuando el actual es exactamente T (la clase del
+        // modifier, sin genéricos).
+        const v22PtrImplicitWrap = node.value && this.currentReturn && isGenericType(this.currentReturn)
+          && (genericBase(this.currentReturn) === "ptr" || genericBase(this.currentReturn) === "constPtr")
+          && genericArguments(this.currentReturn)[0] === actual
+          && this.classes.has(actual)
+          && actual !== "void";
+        if (this.currentReturn && !typeMatches(actual, this.currentReturn) && !flattenedAsyncReturn && !v8ImplicitWrap && !v22PtrImplicitWrap) this.report(node, `La función retorna ${this.currentReturn}, no ${actual}`);
         break;
       }
     }
@@ -1488,6 +1587,11 @@ export class TypeChecker {
             // reconocido por el acceso a miembros.
           }
         }
+      }
+      // V22 (Memory Model v2): mismas reglas que para FunctionDeclaration
+      // aplicadas a los métodos de clase.
+      if (isGenericType(method.returnType) && (genericBase(method.returnType) === "ref" || genericBase(method.returnType) === "constRef")) {
+        this.report(method, `E42xx: borrowed references cannot be returned yet. Returning ref<T> or constRef<T> requires lifetime analysis that is not supported by the current ownership model.`);
       }
       // V0.3: huella estructural resuelta del método.
       method.resolvedSignature = {
@@ -1755,7 +1859,15 @@ export class TypeChecker {
         const symbol = scope.resolve(node.name);
         if (symbol) {
           if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
-          else { result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node); }
+          else {
+            // V22 (Memory Model v2): si la variable fue movida con move(x),
+            // cualquier lectura posterior es diagnóstico E4102 o E4103.
+            if (this.moved.has(node.name)) {
+              const state = this.moved.get(node.name);
+              this.report(node, `E410${state === "moved" ? "2" : "3"}: use of ${state} value '${node.name}'`);
+            }
+            result = this.expandType(symbol.type); if (symbol.variadic) this.variadicExpressions.add(node);
+          }
           break;
         }
         if (node.name === "console") { result = "Console"; break; }
@@ -1885,6 +1997,28 @@ export class TypeChecker {
           const elementType = genericArguments(arrayElement(argType))[0] ?? "unknown";
           if (helper.returnsArray) result = arrayType(elementType);
           else result = elementType;
+          break;
+        }
+        // V22 (Memory Model v2): `move(x)` transfiere ownership de un ptr<T>.
+        // El argumento debe ser un identificador declarado como `ptr<T>` o
+        // `constPtr<T>`. Marcamos la variable como `moved` para que cualquier
+        // uso posterior sea diagnóstico E4102/E4103.
+        if (node.callee === "move" && node.args.length === 1) {
+          const innerExpr = node.args[0];
+          if (innerExpr.kind === "IdentifierExpression") {
+            const symbol = scope.resolve(innerExpr.name);
+            if (!symbol || symbol.kind !== "variable") this.report(innerExpr, `move: símbolo no definido '${innerExpr.name}'`);
+            else if (!isGenericType(symbol.type) || (genericBase(symbol.type) !== "ptr" && genericBase(symbol.type) !== "constPtr")) {
+              this.report(innerExpr, `E4100: copy of non-move-only value '${innerExpr.name}'. move(x) is only valid on ptr<T> or constPtr<T>.`);
+            } else {
+              this.expression(innerExpr, scope, symbol.type);
+              this.moved.set(innerExpr.name, "moved");
+              result = symbol.type;
+            }
+          } else {
+            this.report(innerExpr, `E4101: ownership transfer requires move(identifier). Direct move of a temporary is not supported.`);
+            result = this.expression(innerExpr, scope);
+          }
           break;
         }
         if (OPTIONAL_HELPERS[node.callee]) {
@@ -2661,12 +2795,20 @@ export class TypeChecker {
   }
 
   private mutableTarget(node: Expression, scope: Scope): boolean {
-    if (node.kind === "MemberExpression") return this.mutableTarget(node.object, scope);
+    if (node.kind === "MemberExpression") {
+      // V22: si el objeto es `constRef<T>` o `constPtr<T>`, no se puede mutar.
+      // E4300/E4301.
+      const objectType = this.expression(node.object, scope);
+      if (isGenericType(objectType) && (genericBase(objectType) === "constRef" || genericBase(objectType) === "constPtr")) return false;
+      return this.mutableTarget(node.object, scope);
+    }
     if (node.kind === "IndexExpression") {
       // V5: si el objeto indexado es `readonly<T[]>`, no se puede mutar
       // a través de un index assignment (`xs[0] = 99`).
       const objectType = this.expression(node.object, scope);
       if (isReadonlyType(objectType)) return false;
+      // V22: constRef<T[]> o constPtr<T[]> también bloquean index assignment.
+      if (isGenericType(objectType) && (genericBase(objectType) === "constRef" || genericBase(objectType) === "constPtr")) return false;
       return this.mutableTarget(node.object, scope);
     }
     if (node.kind !== "IdentifierExpression") return false;
