@@ -1,23 +1,23 @@
-// mutref-demo.ets — `MutRef<T>` (alias mutable).
+// mutref-demo.ets — `ref<T>` (referencia mutable, equivalente a T&).
 //
-// `MutRef<T>` se usa como tipo de parámetro para indicar que la función
-// recibe una referencia mutable al objeto del caller.
+// V22 (Memory Model v2): `ref<T>` es el reemplazo directo de `MutRef<T>`.
+// El codegen lo traduce a `T&` y pasa el lvalue directamente.
 //
 // En C++:
-//   function increment(ref: MutRef<Counter>): void  →  void increment(Counter& ref)
-//   increment(c)                                     →  increment(c)  (paso por referencia)
+//   function increment(c: ref<Counter>): void  →  void increment(Counter& c)
+//   increment(c)                               →  increment(c)  (paso por referencia)
 
 class Counter {
   value: number;
   constructor(value: number) { this.value = value; }
 }
 
-function increment(ref: MutRef<Counter>): void {
-  // Como `ref: MutRef<Counter>` se traduce a `Counter& ref`, podemos mutar
-  // directamente.
-  ref.value = ref.value + 1;
+function increment(c: ref<Counter>): void {
+  // Como `c: ref<Counter>` se traduce a `Counter& c`, podemos mutar
+  // directamente a través de la referencia.
+  c.value = c.value + 1;
 }
 
-const c: Counter = new Counter(99);
-increment(c);
-print(numberToString(c.value));  // 100
+const counter: Counter = new Counter(99);
+increment(counter);
+print(numberToString(counter.value));  // 100

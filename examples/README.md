@@ -28,6 +28,13 @@ npm start -- --config estatic.config.ts
 | `composition.ets` | Composición de clases como alternativa a herencia. |
 | `interface.ets` | Interface aislada y satisfacción estructural. |
 | `instanceof-demo.ets` | `instanceof` con clases, uniones y primitivos. |
+| `memory-values.ets` | **V22**: `T` significa copia (value semantics). |
+| `memory-borrows.ets` | **V22**: `ref<T>` y `constRef<T>` modelan préstamos. |
+| `memory-ownership.ets` | **V22**: `ptr<T>` para ownership exclusivo. |
+| `mut-demo.ets` | **V22** (antes `Mut<T>`): `ref<T>` es una referencia mutable. |
+| `mutref-demo.ets` | **V22** (antes `MutRef<T>`): `ref<T>` es T&. |
+| `rc-demo.ets` | **V22** (antes `Rc<T>`): ownership exclusivo vía `ptr<T>`. |
+| `un-demo.ets` | **V22** (antes `Unq<T>`): ownership exclusivo. |
 | `type-aliases.ets` | `type X = …`. |
 | `typeof-value.ets` / `typeof-type.ets` | `typeof` como valor y como tipo. |
 | `default-type-params.ets` | Parámetros de tipo con `= default`. |

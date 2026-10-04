@@ -2,7 +2,9 @@ import type { Span } from "../core/span.ts";
 
 export type PrimitiveType = "number" | "string" | "boolean" | "void" | "undefined" | "object";
 export type TypeName = string;
-export type ParameterPassing = "automatic" | "mut" | "out" | "move";
+export type ParameterPassing = "value" | "out";
+// V22 (Memory Model v2): los antiguos `automatic`, `mut`, `move` ya no
+// existen. Ver src/semantic/diagnostics.ts E4400-E4405.
 export interface Program { kind: "Program"; statements: Statement[]; span: Span }
 // V18: declaración de cabecera de archivo para `.lib.ets`. Un `.lib.ets`
 // empieza por cero o más declaraciones `ModuleHeader` (decoradores

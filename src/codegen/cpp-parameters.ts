@@ -1,30 +1,43 @@
 import type { Parameter, ParameterPassing, TypeName } from "../ast/nodes.ts";
 import { isGenericType, genericBase, genericArguments, isReadonlyType, type ResolvedType } from "../types/type-system.ts";
-import { cppType } from "./cpp-types.ts";
+import { cppType, cppMemoryType } from "./cpp-types.ts";
+
+// V22 (Memory Model v2): los 4 modificadores de paso son ptr<T>,
+// constPtr<T>, ref<T>, constRef<T>. El codegen los traduce directamente
+// a su tipo C++ (T*, const T*, T&, const T&) sin heurística.
+//
+// `T` (sin modifier) significa copia: T se pasa por valor. El dialecto
+// ya no convierte T en const T& implícitamente.
+//
+// `out T` (parameter-level) se mantiene por compatibilidad con el
+// mecanismo de resultados existente; se trata como T&.
 
 export function automaticParameterUsesValue(type: TypeName, asynchronous: boolean): boolean {
-  // V5: readonly<T> siempre se pasa por `const T&` aunque su inner sea primitivo.
-  if (isReadonlyType(type)) return false;
-  return asynchronous || type === "number" || type === "boolean";
+  // V22: T siempre se pasa por valor (sin lowering implícito a const T&).
+  // Solo los modifiers explícitos eligen T*, T&, etc.
+  return true;
 }
 
 /**
- * V0.2: inspecciona un `ResolvedType` para detectar los modificadores de paso
- * `Mut<T>` (T*) y `MutRef<T>` (T&). Devuelve `{ kind, inner }` si aplica;
- * `null` en caso contrario. Esta función es la única fuente de verdad para
- * distinguir modificadores: el codegen la consume directamente en lugar de
- * parsear strings.
+ * V22: inspecciona un `ResolvedType` para detectar los 4 modificadores de
+ * paso. Devuelve `{ kind, inner, ownership, access }` si aplica; `null`
+ * en caso contrario. Esta función es la única fuente de verdad para
+ * distinguir modificadores: el codegen la consume directamente en lugar
+ * de parsear strings.
  */
+export type ModifierKind = "ptr" | "constPtr" | "ref" | "constRef";
+
 export type ModifierResolution =
-  | { kind: "pointer"; inner: ResolvedType }
-  | { kind: "reference"; inner: ResolvedType }
+  | { kind: ModifierKind; inner: ResolvedType }
   | null;
+
+const MEMORY_MODIFIER_NAMES = new Set(["ptr", "constPtr", "ref", "constRef"]);
 
 export function resolveParameterModifier(resolved: ResolvedType | undefined): ModifierResolution {
   if (!resolved || resolved.kind !== "generic") return null;
-  if (resolved.base === "Mut") return resolved.args[0] ? { kind: "pointer", inner: resolved.args[0] } : null;
-  if (resolved.base === "MutRef") return resolved.args[0] ? { kind: "reference", inner: resolved.args[0] } : null;
-  return null;
+  if (!MEMORY_MODIFIER_NAMES.has(resolved.base as string)) return null;
+  if (!resolved.args[0]) return null;
+  return { kind: resolved.base as ModifierKind, inner: resolved.args[0] };
 }
 
 /**
@@ -34,50 +47,45 @@ export function resolveParameterModifier(resolved: ResolvedType | undefined): Mo
 export function resolveParameterModifierFromString(type: TypeName): ModifierResolution {
   if (!isGenericType(type)) return null;
   const base = genericBase(type);
-  if (base === "Mut" || base === "MutRef") {
-    const argName = genericArguments(type)[0];
-    if (!argName) return null;
-    // Reconstruimos un ResolvedType mínimo. El caller usará solo el cppType(inner).
-    return { kind: base === "Mut" ? "pointer" : "reference", inner: { kind: "class", name: argName } };
-  }
-  return null;
+  if (!MEMORY_MODIFIER_NAMES.has(base)) return null;
+  const argName = genericArguments(type)[0];
+  if (!argName) return null;
+  return { kind: base as ModifierKind, inner: { kind: "class", name: argName } };
 }
 
 /**
- * Devuelve el tipo C++ y el modo de paso para un parámetro, considerando
- * los modificadores `Mut<T>` (→ T*, puntero mutable) y `MutRef<T>` (→ T&,
- * referencia mutable).
- *
- * Para el resto de tipos, delega en la lógica automática.
+ * Devuelve el tipo C++ de entrada para un parámetro. V22: T siempre se
+ * pasa por valor. Solo los modifiers explícitos (ptr/constPtr/ref/
+ * constRef) eligen T*, T&, o std::unique_ptr<T>.
  */
 export function cppInputType(type: TypeName, renderedType: string): string {
-  return automaticParameterUsesValue(type, false) ? renderedType : `const ${renderedType}&`;
+  // V22: T significa copia. No lowering implícito.
+  return renderedType;
 }
 
 export function cppParameterDeclaration(parameter: Parameter, renderedType: string, asynchronous: boolean, defaultText?: string, cppName?: string): string {
-  const mode: ParameterPassing = parameter.passing ?? (parameter.out ? "out" : "automatic");
+  const mode: ParameterPassing = parameter.passing ?? (parameter.out ? "out" : "value");
   let type: string;
-  // `Mut<T>` y `MutRef<T>` son modificadores: se traducen directamente a
-  // `T*` y `T&` respectivamente, sin generar una clase envoltorio.
-  // V0.2: primero intentamos con `resolvedType` (estructurado); caemos al
-  // string parsing solo si el checker aún no lo pobló.
+  // V22: los modifiers de paso (ptr/ref/constPtr/constRef) se traducen
+  // directamente a su tipo C++. Vienen como parte del TypeName, no como
+  // `passing`. La resolución prefiere el ResolvedType estructurado; cae
+  // al parsing de string si el checker no lo pobló.
   const modifier = resolveParameterModifier(parameter.resolvedType) ?? resolveParameterModifierFromString(parameter.type);
   // V0.2: si el nombre colisiona con un singleton del runtime, usamos el
   // nombre prefijado `cppName` (pasado por el codegen) en lugar del original.
   const name = cppName ?? parameter.name;
   if (modifier) {
-    const innerType = cppType(modifier.inner);
-    type = modifier.kind === "pointer" ? `${innerType}*` : `${innerType}&`;
+    const innerTypeName = parameter.type.includes("<")
+      ? genericArguments(parameter.type)[0] ?? "void"
+      : "void";
+    type = cppMemoryType(modifier.kind, innerTypeName);
     if (parameter.variadic) type += "...";
     return `${type} ${name}${defaultText ? ` = ${defaultText}` : ""}`;
   }
-  if (mode === "out" || mode === "mut") type = `${renderedType}&`;
-  else if (mode === "move") type = `${renderedType}&&`;
-  else if (automaticParameterUsesValue(parameter.type, asynchronous)) type = renderedType;
-  else if (renderedType.endsWith("&&") || renderedType.endsWith("&")) type = renderedType; // V10.2: ya viene como forwarding ref, no envolver.
-  else type = `const ${renderedType}&`;
+  if (mode === "out") type = `${renderedType}&`;
+  else type = renderedType; // V22: T siempre por valor.
   if (parameter.variadic) {
-    if (type.endsWith("&")) type += "...";
+    if (type.endsWith("&") || type.endsWith(">")) type += "...";
     else type += "...";
   }
   return `${type} ${name}${defaultText ? ` = ${defaultText}` : ""}`;

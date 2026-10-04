@@ -1,6 +1,0 @@
-Hola Mundo, count=42, flag=1
-Suma: 50
-Doble: 84
-Anidado: soy Mundo
-Hola Ana, tienes 30 años
-Literal puro

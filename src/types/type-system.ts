@@ -134,18 +134,21 @@ export function unionMembers(type: TypeName): TypeName[] {
 // unions, `actual` debe ser uno de los miembros. Un union acepta union si los
 // miembros del actual están todos cubiertos.
 export function typeMatches(actual: TypeName, expected: TypeName): boolean {
-  // `Mut<T>` y `MutRef<T>` son modificadores: si el expected es uno de ellos
-  // y el actual es T (o viceversa), aceptamos el match.
+  // V22 (Memory Model v2): ref<T> y constRef<T> aceptan un argumento T
+  // (covarianza de préstamo: el caller "presta" el valor al callee).
+  // ptr<T> y constPtr<T> NO aceptan T (no hay copia implícita de ownership).
   if (isGenericType(expected)) {
     const base = genericBase(expected);
-    if (base === "Mut" || base === "MutRef") {
+    if (base === "ref" || base === "constRef") {
       const inner = genericArguments(expected)[0];
       if (inner && typeMatches(actual, inner)) return true;
     }
+    // V22: ptr<T>/constPtr<T> solo aceptan ptr<T>/constPtr<T> respectivamente
+    // (mismo tipo exacto). Las conversiones por move las maneja PR#5.
   }
   if (isGenericType(actual)) {
     const base = genericBase(actual);
-    if (base === "Mut" || base === "MutRef") {
+    if (base === "ref" || base === "constRef") {
       const inner = genericArguments(actual)[0];
       if (inner && typeMatches(inner, expected)) return true;
     }

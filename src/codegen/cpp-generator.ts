@@ -922,7 +922,7 @@ export class CppGenerator {
   }
   private interfaceConcept(node: InterfaceDeclaration): string {
     const requirements = node.methods.map(method => {
-      const args = method.params.map(p => `std::declval<${cppType(p.type)}${p.out || p.passing === "mut" ? "&" : ""}>()`).join(", ");
+      const args = method.params.map(p => `std::declval<${cppType(p.type)}${p.out ? "&" : ""}>()`).join(", ");
       return `    { value.${method.name}(${args}) } -> std::same_as<${cppType(method.returnType)}>;`;
     });
     return [`template <typename T>`, `concept ${node.name} = requires(T value) {`, ...requirements, `};`].join("\n");
@@ -1107,8 +1107,12 @@ export class CppGenerator {
         if (node.value && this.currentReturn && isGenericType(this.currentReturn)) {
           const returnBase = genericBase(this.currentReturn);
           const valueType = this.expressionType(node.value);
-          if ((returnBase === "Unq" || returnBase === "Rc") && valueType && this.classNames.has(valueType) && valueType !== "void") {
-            returnText = `${returnBase === "Unq" ? "unSome" : "rcShare"}<${cppType(valueType)}>(${returnText})`;
+          // V22 (Memory Model v2): Unq<T> y Rc<T> ya no existen en el
+          // dialecto. Si el type-checker los rechazó, este path nunca se
+          // ejecuta; pero conservamos el bloque para `Optional<T>` (que
+          // sigue siendo válido como mecanismo de resultados).
+          if (returnBase === "Optional" && valueType && this.classNames.has(valueType) && valueType !== "void") {
+            returnText = `ets::Optional<${cppType(valueType)}>::some(${returnText})`;
           }
         }
         return `${this.pad()}${this.inAsyncFunction ? "co_return" : "return"}${returnText ? " " + returnText : ""};`;
@@ -1335,29 +1339,25 @@ export class CppGenerator {
    * de `const T&` automático.
    */
   private cppParameterType(type: TypeName): string {
-    if (isGenericType(type)) {
-      const base = genericBase(type);
-      if (base === "Mut" || base === "MutRef") {
-        const inner = genericArguments(type)[0];
-        return cppType(inner);
-      }
-    }
+    // V22 (Memory Model v2): los modificadores ptr/ref/constPtr/constRef
+    // ya se traducen en cppParameterDeclaration a través de
+    // resolveParameterModifier. Esta función es un pass-through.
     return cppType(type);
   }
 
   /**
    * Devuelve true si el argumento `index` de la llamada `call` espera un
-   * parámetro de tipo `Mut<T>`. En ese caso el codegen debe prefijar `&`
+   * parámetro de tipo `ptr<T>`. En ese caso el codegen debe prefijar `&`
    * al lvalue pasado como argumento.
    */
-  private argumentExpectsMutPointer(call: { callee: string; args: Expression[] }, index: number, _argument: Expression): boolean {
+  private argumentExpectsPtrPointer(call: { callee: string; args: Expression[] }, index: number, _argument: Expression): boolean {
     const overloads = this.topLevelFunctions.get(call.callee);
     if (!overloads || overloads.length === 0) return false;
     const signature = overloads[0];
     const parameter = signature.params[index];
     if (!parameter) return false;
     if (!isGenericType(parameter.type)) return false;
-    return genericBase(parameter.type) === "Mut";
+    return genericBase(parameter.type) === "ptr";
   }
 
   /**
@@ -1375,13 +1375,14 @@ export class CppGenerator {
    * como `Mut<T>`. En ese caso el codegen debe usar `->` para acceder a
    * miembros (porque en C++ es `T*`).
    */
-  private identifierIsMutPointer(name: string): boolean {
-    // Buscamos en todos los overloads top-level si alguno tiene un parámetro
-    // con ese nombre y tipo `Mut<T>`.
+  private identifierIsPtrPointer(name: string): boolean {
+    // V22 (Memory Model v2): un identificador es un puntero (ptr<T>) si
+    // algún parámetro top-level con ese nombre fue declarado como ptr<T>.
+    // En ese caso el codegen usa `->` para acceder a miembros.
     for (const overloads of this.topLevelFunctions.values()) {
       for (const signature of overloads) {
         for (const parameter of signature.params) {
-          if (parameter.name === name && isGenericType(parameter.type) && genericBase(parameter.type) === "Mut") return true;
+          if (parameter.name === name && isGenericType(parameter.type) && genericBase(parameter.type) === "ptr") return true;
         }
       }
     }
@@ -1684,9 +1685,9 @@ export class CppGenerator {
             // `print`). Sin el cast, `int8_t`/`uint8_t` se imprimirían como char.
             else if (argType && isNumericType(argType)) text = `static_cast<double>(${text})`;
           }
-          // `Mut<T>` espera un puntero: si el argumento es un lvalue (identificador,
+          // `ptr<T>` espera un puntero: si el argumento es un lvalue (identificador,
           // member access, index), le añadimos `&` para que C++ lo acepte.
-          if (this.argumentExpectsMutPointer(node, index, argument)) {
+          if (this.argumentExpectsPtrPointer(node, index, argument)) {
             if (this.isLvalue(argument)) text = `&(${text})`;
           }
           return text;
@@ -1944,7 +1945,7 @@ export class CppGenerator {
                             }
                             // Si el objeto es un parámetro `Mut<T>`, en C++ es `T*` y debemos usar `->`.
               // Si es `MutRef<T>`, es `T&` y debemos usar `.` (que ya es el comportamiento por defecto).
-              if (node.object.kind === "IdentifierExpression" && this.identifierIsMutPointer(node.object.name)) {
+              if (node.object.kind === "IdentifierExpression" && this.identifierIsPtrPointer(node.object.name)) {
                 return `${this.emitExpression(node.object)}->${node.member}`;
               }
               // V22-gap-#2: `xs.length` (propiedad) sobre `Array<T>` se mapea a

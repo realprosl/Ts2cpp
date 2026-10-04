@@ -2,6 +2,77 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v0.27.0 (2026-10-04) — BREAKING: Memory Model v2
+
+### Breaking
+
+- **V22 — `T` significa copia**. El dialecto ya no convierte automáticamente
+  un parámetro `T` a `const T&`. Si quieres evitar la copia, declara el
+  parámetro con `ref<T>` o `constRef<T>`.
+- **V22 — `mut` eliminado**. `function foo(mut x: T)` ya no se acepta; usa
+  `function foo(x: ref<T>)`.
+- **V22 — `Mut<T>`, `MutRef<T>`, `Unq<T>` eliminados**. Reemplazos:
+  - `Mut<T>` → `ptr<T>` (unique ownership) o `ref<T>` (mutable borrow)
+  - `MutRef<T>` → `ref<T>` (T&)
+  - `Unq<T>` → `ptr<T>` (std::unique_ptr<T>)
+- **V22 — `Rc<T>` deprecado**. El checker emite warning. Reemplazo: `ptr<T>`
+  para ownership exclusivo; shared ownership se rediseñará con `weak<T>`.
+- **V22 — `out` deprecado** (soft). `out T` se mantiene por compatibilidad
+  con el mecanismo de resultados; se prefiere `Result<T>`.
+
+### Added
+
+- **V22 — `ptr<T>`**: ownership exclusivo mutable. Se traduce a
+  `std::unique_ptr<T>`.
+- **V22 — `constPtr<T>`**: ownership exclusivo readonly. Se traduce a
+  `std::unique_ptr<const T>`.
+- **V22 — `ref<T>`**: préstamo mutable no-null. Se traduce a `T&`.
+- **V22 — `constRef<T>`**: préstamo readonly no-null. Se traduce a
+  `const T&`.
+- **V22 — diagnósticos E4400-E4406**: rechazo de `mut`, `Mut<T>`, `MutRef<T>`,
+  `Unq<T>`, `Rc<T>` (warning) y `out` (warning).
+- **V22 — `docs/memory-model.md`**: especificación canónica del modelo de
+  memoria.
+- **V22 — ejemplos**: `memory-values.ets`, `memory-borrows.ets`,
+  `memory-ownership.ets`. Los ejemplos legacy (`mut-demo`, `mutref-demo`,
+  `rc-demo`, `un-demo`) se migraron a las nuevas APIs.
+
+### Changed
+
+- `ParameterPassing` reducido a `"value" | "out"`. Los valores legacy
+  `"automatic"`, `"mut"`, `"move"` se eliminan.
+- `cppInputType` ya no aplica lowering implícito a `const T&`.
+- `parameterIsMutableReference` simplificado: solo `ref<T>` califica.
+- `cppMemoryType(name, inner)`: helper centralizado para mapear los 4
+  modificadores a sus tipos C++.
+
+### Migration
+
+Migración mecánica de código existente:
+
+```diff
+- function foo(mut x: User): void {}
++ function foo(x: ref<User>): void {}
+
+// MutRef<T> → ref<T>
+- function bar(x: MutRef<Counter>): void {}
++ function bar(x: ref<Counter>): void {}
+
+// Mut<T> — depende del caso:
+//   si era valor mutable → ref<T>
+//   si era puntero (transferencia) → ptr<T>
+- function baz(x: Mut<Counter>): void {}
++ function baz(x: ptr<Counter>): void {}
+
+// Unq<T> → ptr<T>
+- function make(): Unq<Counter> { return unSome<Counter>(new Counter(42)); }
++ function make(): ptr<Counter> { return new Counter(42); }
+
+// Rc<T> → ptr<T> (deprecation warning por ahora)
+- function share(): Rc<Counter> { return rcShare<Counter>(new Counter(7)); }
++ function share(): ptr<Counter> { return new Counter(7); }
+```
+
 ## v0.26.0 (2026-09-27) — Features TS completas + productividad del compilador
 
 ### Added (Fase 1 — features TypeScript)

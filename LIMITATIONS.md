@@ -111,7 +111,10 @@ Lista no exhaustiva — ver `README.md`, `examples/` y los nodos AST en
 - `Map<T>`, `Set<T>` con `forEach`, `has`, `get`, `set`, `delete`, `size`.
 - `etS::concat` para strings heterogéneos.
 - `numberToString`, `length`, `charAt`, `concat`.
-- **Smart pointers**: `Un<T>`, `Rc<T>`, `Mut<T>`, `MutRef<T>` (Issue #3, Fase 1.16).
+- **Memory Model v2 (V22)**: `ptr<T>` (`std::unique_ptr<T>`),
+  `constPtr<T>` (`std::unique_ptr<const T>`), `ref<T>` (`T&`),
+  `constRef<T>` (`const T&`). Sustituyen a `Un<T>`, `Rc<T>`, `Mut<T>`,
+  `MutRef<T>`. Ver `docs/memory-model.md` para el contrato completo.
 - Helpers async: `all(tasks)`, `race(tasks)`, `sleep(ms)`.
 - File I/O: `readFile`, `writeFile`, `appendFile`, `copyFile`, `moveFile`,
   `removeFile`, `fileExists` (+ variantes `Async`).
@@ -179,6 +182,38 @@ que el dialecto aún no implementa. **Se aceptan contribuciones** en estas
 - `static` en miembros.
 - Index signatures `[key: string]: T`.
 - Override de métodos (no aplica — sin herencia).
+
+### Memory Model v2 — pendiente
+
+V22 introdujo los 4 modificadores `ptr<T>`, `constPtr<T>`, `ref<T>`,
+`constRef<T>` y la semántica de copia para `T`. Las siguientes
+funcionalidades del modelo aún no están implementadas y se entregarán
+en PRs posteriores:
+
+- **PR#2 — Value semantics**: el codegen ya no aplica lowering implícito
+  T → const T&, pero la coerción `Counter` → `ptr<Counter>` en un
+  initializer (con `new`) aún no se infiere automáticamente.
+- **PR#3 — Borrows**: el checker acepta `ref<T>` y `constRef<T>` como
+  parámetros pero no valida las reglas de V1 (no fields ref<T>, no
+  retornos ref<T>, no await con borrows, no captura escaping de
+  closures).
+- **PR#4 — Unique ownership**: `make_unique<T>(...)` no se genera
+  todavía. La inicialización `let p: ptr<T> = new T(...)` requiere
+  que el codegen detecte el contexto propietario.
+- **PR#5 — Moves**: `move(x)` no se reconoce. Las variables `ptr<T>`
+  no se trackean con estados Available / Moved / MaybeMoved.
+- **PR#6 — Borrow conflicts**: el aliasing mutable (ref + ref, ref +
+  constRef) no se detecta todavía.
+- **PR#7 — Async/closures/generics**: las restricciones V1 (no
+  borrows en async, no captura escaping, no copy de move-only en
+  generics) no se enforce.
+- **`Rc<T>` (shared ownership)**: deprecado en V22. Se rediseñará con
+  `weak<T>` en un PR futuro.
+- **Nullable ptr explícito**: `let p: ptr<T> = null` no se admite
+  todavía. El estado vacío se obtiene únicamente vía `move()`.
+- **Lifetime parameters** (`<'a>`): no soportados.
+- **Non-lexical lifetimes**: solo se implementará el modelo léxico
+  básico (el préstamo termina al salir del bloque).
 
 ### Módulos y tooling
 
