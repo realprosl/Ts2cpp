@@ -438,7 +438,11 @@ function f(v: number | string): string {
   assert.doesNotMatch(out, /unreachable/);
 });
 
-test("codegen V23: varios whenType marcan los siguientes como unreachable", () => {
+test("codegen V23: varios whenType con union usan holds_alternative encadenados", () => {
+  // V23.2: cuando el subject es una union, cada whenType<T> emite
+  // `if (std::holds_alternative<T>(v))` en cadena, NO comentarios
+  // unreachable. Esto es el narrowing real que el codegen ahora
+  // soporta (issue #95 — V23.1 no lo tenia, V23.2 lo anade).
   const out = cpp(`
 function f(v: number | string): string {
   return match(v, [
@@ -447,8 +451,31 @@ function f(v: number | string): string {
   ]);
 }
 `);
-  // El segundo whenType debe tener el comentario unreachable.
+  // Cada variante se emite como `holds_alternative<T_i>` encadenado.
+  assert.match(out, /std::holds_alternative<double>\(v\)/);
+  assert.match(out, /std::holds_alternative<std::string>\(v\)/);
+  // El segundo whenType NO es unreachable (narrowing real).
+  assert.doesNotMatch(out, /unreachable/);
+});
+
+test("codegen V23: whenType sobre subject NO-union cae al comportamiento legacy", () => {
+  // V23.2: cuando el subject NO es una union, whenType cae al
+  // comportamiento legacy de V23.1: solo el primer whenType es
+  // activo, los siguientes quedan como comentarios `unreachable`
+  // (porque no podemos narrowar — el subject ya es de un tipo
+  // concreto, no una union).
+  const out = cpp(`
+function f(v: number): string {
+  return match(v, [
+    whenType<number>(() => "num"),
+    whenType<string>(() => "str"),
+  ]);
+}
+`);
+  // El segundo whenType queda como comentario unreachable.
   assert.match(out, /unreachable/);
+  // NO se emite holds_alternative porque el subject no es union.
+  assert.doesNotMatch(out, /std::holds_alternative/);
 });
 
 test("codegen V23: match con callbacks de 0 params se invocan sin args", () => {
