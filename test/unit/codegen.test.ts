@@ -5,7 +5,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { compile } from "../../src/compiler.ts";
+
+const compilerRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function cpp(source: string) {
   return compile(source).cpp;
@@ -186,4 +193,82 @@ test("codegen V8.0: let c = new T() sin firma de retorno Unq sigue siendo por va
   assert.match(out, /auto\s+c\s*=\s*Counter\{42\.0\}/);
   // Y el `print` accede por valor, no por `unValue(c)`.
   assert.doesNotMatch(out, /unSome<Counter>|rcShare<Counter>/);
+});
+
+// ---------------------------------------------------------------------------
+// Fix: NewExpression no aplicaba static_cast entre tipos numéricos, lo que
+// provocaba `-Wnarrowing` en g++ cuando un literal `double` se pasaba a un
+// parámetro/campo de tipo numérico concreto (i8..f64). La misma lógica V3
+// ya existía para variables, fixed arrays y assignments; aquí faltaba.
+// Cobertura: los 10 numéricos concretos + casos mixtos.
+// ---------------------------------------------------------------------------
+
+const NUMERIC_TYPES = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"] as const;
+const NUMERIC_TO_CPP: Record<typeof NUMERIC_TYPES[number], string> = {
+  i8: "int8_t", i16: "int16_t", i32: "int32_t", i64: "int64_t",
+  u8: "uint8_t", u16: "uint16_t", u32: "uint32_t", u64: "uint64_t",
+  f32: "float", f64: "double",
+};
+
+test("codegen: new T(1.0) emite static_cast para los 10 numéricos concretos (aggregate)", () => {
+  for (const t of NUMERIC_TYPES) {
+    const src = `class B { x: ${t}; } const b: B = new B(1.0); print(b.x);`;
+    const out = cpp(src);
+    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(1.0)`;
+    assert.match(out, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `falta ${expected} para tipo ${t}. Output:\n${out}`);
+  }
+});
+
+test("codegen: new T(1.0) emite static_cast también con constructor explícito", () => {
+  for (const t of NUMERIC_TYPES) {
+    const src = `class C { v: ${t}; constructor(n: ${t}) { this.v = n; } } const c: C = new C(2.0); print(c.v);`;
+    const out = cpp(src);
+    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(2.0)`;
+    assert.match(out, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `falta ${expected} para tipo ${t} (constructor explícito). Output:\n${out}`);
+  }
+});
+
+test("codegen: new T() con varios campos numéricos mezcla casts correctamente", () => {
+  const out = cpp("class P { x: i32; y: u8; z: f32; } const p: P = new P(1.0, 2.0, 3.0); print(p.x);");
+  assert.match(out, /static_cast<int32_t>\(1\.0\)/);
+  assert.match(out, /static_cast<uint8_t>\(2\.0\)/);
+  assert.match(out, /static_cast<float>\(3\.0\)/);
+});
+
+test("codegen: new T(number) NO añade cast si el target es `number` (sin narrowing)", () => {
+  const out = cpp("class P { x: number; } const p: P = new P(42.0); print(p.x);");
+  // No debe aparecer static_cast<double>: doble→doble no necesita cast.
+  assert.doesNotMatch(out, /static_cast<double>\(42\.0\)/);
+  assert.match(out, /P\{42\.0\}/);
+});
+
+test("codegen: new T(\"hi\") no numérico no se toca (no cast en strings)", () => {
+  const out = cpp('class S { n: string; } const s: S = new S("hi"); print(s.n);');
+  assert.doesNotMatch(out, /static_cast<std::string>\("hi"\)/);
+  assert.match(out, /S\{std::string\("hi"\)\}/);
+});
+
+test("codegen: argumentos de NewExpression compilan limpio con g++ (sin narrowing)", () => {
+  // Esta prueba compila el output con g++ y verifica que no emite
+  // -Wnarrowing. Si alguien rompe el cast en el futuro, este test
+  // detecta el regresión a nivel binario, no solo textual.
+  const dir = mkdtempSync(join(tmpdir(), "ets-narrowing-"));
+  try {
+    for (const t of NUMERIC_TYPES) {
+      const src = `class B { x: ${t}; } const b: B = new B(1.0); print(b.x);`;
+      const out = cpp(src);
+      const cppFile = join(dir, `probe_${t}.cpp`);
+      writeFileSync(cppFile, out);
+      // g++ con -Werror=narrowing y -c para solo compilar (no enlazar).
+      execFileSync("g++", [
+        "-std=c++20", "-Werror=narrowing",
+        "-I", compilerRoot,
+        "-c", cppFile, "-o", join(dir, `probe_${t}.o`),
+      ], { stdio: "pipe" });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

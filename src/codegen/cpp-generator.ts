@@ -27,6 +27,10 @@ export class CppGenerator {
   private indent = 0;
   private readonly interfaceNames = new Set<string>();
   private readonly classNames = new Set<string>();
+  // Mapa nombre → declaración, para que el codegen de NewExpression
+  // (y futuras piezas) pueda resolver la firma del constructor o el
+  // orden de los campos aggregate sin re-escanear el programa.
+  private readonly classesByName = new Map<string, ClassDeclaration>();
   private readonly aliasNames: Set<string> = new Set();
   private readonly enumNames: Set<string> = new Set();
   private readonly enumUnderlying = new Map<string, "number" | "string">();
@@ -173,6 +177,8 @@ export class CppGenerator {
     const classes = unwrapped.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
     this.interfaceNames.clear(); interfaces.forEach(contract => this.interfaceNames.add(contract.name));
     this.classNames.clear(); classes.forEach(node => this.classNames.add(node.name));
+    this.classesByName.clear();
+    for (const node of classes) this.classesByName.set(node.name, node);
     this.aliasNames.clear();
     this.enumNames.clear();
     this.enumUnderlying.clear();
@@ -1958,7 +1964,39 @@ export class CppGenerator {
         const tupleIndex = node.index.kind === "LiteralExpression" && typeof node.index.value === "number" ? String(node.index.value) : this.emitExpression(node.index);
         return objectType && isTupleType(objectType) ? `std::get<${tupleIndex}>(${object})` : `${object}[static_cast<std::size_t>(${this.emitExpression(node.index)})]`;
       }
-      case "NewExpression": return `${cppType(node.className)}{${node.args.map(a => this.emitExpression(a)).join(", ")}}`;
+      case "NewExpression": {
+        // V3 (fix narrowing en NewExpression): los argumentos posicionales
+        // de `new T(...)` deben respetar el tipo del parámetro del
+        // constructor (o el tipo del campo, si la clase no tiene
+        // constructor explícito y se inicializa aggregate-style). Sin
+        // esto, `new Person("Alberto", 42.0)` con `age: i32` emite
+        // `Person{..., 42.0}` y g++ falla con `-Wnarrowing`.
+        // La misma lógica V3 ya existía para variables, fixed arrays y
+        // assignments; aquí faltaba.
+        const cls = this.classesByName.get(node.className);
+        const paramTypes: TypeName[] = cls
+          ? (() => {
+              const ctor = cls.methods.find(m => m.name === "constructor");
+              if (ctor) return ctor.params.map(p => p.type);
+              // Aggregate init: el orden posicional sigue el orden de
+              // declaración de los campos. Solo el subconjunto con valor
+              // por defecto omitido se inicializa; aquí simplificamos
+              // y emitimos el cast para los primeros N args.
+              return cls.fields.map(f => f.type);
+            })()
+          : [];
+        const args = node.args.map((arg, index) => {
+          let text = this.emitExpression(arg);
+          const target = paramTypes[index];
+          if (target && isNumericType(target)) {
+            const argType = this.expressionType(arg);
+            const needsCast = argType === "number" || (argType !== undefined && isNumericType(argType) && argType !== target);
+            if (needsCast) text = `static_cast<${cppType(target)}>(${text})`;
+          }
+          return text;
+        });
+        return `${cppType(node.className)}{${args.join(", ")}}`;
+      }
     }
   }
   private stringConcatParts(node: Expression): Expression[] {
