@@ -28,6 +28,40 @@ inline std::string numberToString(double value) {
     return converted.ec == std::errc{} ? std::string(buffer, converted.ptr) : std::string();
 }
 
+// Tamaño exacto (en chars) que ocuparia `value` si se serializara con
+// `numberToString`. Usado por `ets::concat` para pre-reservar el
+// string final sin reallocs.
+namespace ets {
+inline std::size_t string_size(double value) noexcept {
+    char buffer[64];
+    const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    return converted.ec == std::errc{} ? static_cast<std::size_t>(converted.ptr - buffer) : 0;
+}
+}  // namespace ets
+
+// Append optimizado a un std::string sin alocar temporales.
+// Para doubles usa `to_chars` directo al buffer del string (C++20).
+namespace ets::detail {
+inline void append_to(std::string& out, const std::string& s) { out.append(s); }
+inline void append_to(std::string& out, const char* s) { out.append(s); }
+inline void append_to(std::string& out, char c) { out.push_back(c); }
+inline void append_to(std::string& out, double v) {
+    char buffer[64];
+    const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), v);
+    if (converted.ec == std::errc{}) {
+        out.append(buffer, static_cast<std::size_t>(converted.ptr - buffer));
+    }
+}
+inline void append_to(std::string& out, float v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, int v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, long v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, long long v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, unsigned v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, unsigned long v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, unsigned long long v) { append_to(out, static_cast<double>(v)); }
+inline void append_to(std::string& out, bool b) { b ? out.append("true", 4) : out.append("false", 5); }
+}  // namespace ets::detail
+
 inline std::string charAt(const std::string& value, double index) {
     const auto i = static_cast<std::size_t>(index);
     return i < value.size() ? std::string(1, value[i]) : std::string();

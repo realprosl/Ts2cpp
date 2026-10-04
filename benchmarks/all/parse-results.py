@@ -69,16 +69,16 @@ lines.extend([
     "",
 ])
 verdicts = {
-    "B-class":     "OK. El gap viene del doble dispatch (method call + this) y el init del runtime.",
-    "B-array-ops": "OK. El gap viene de las llamadas a ets_filter_vec / ets_map_vec / ets_reduce (overhead del wrapper de arrays).",
-    "B-for-of":    "BAJO. 4.30x — el for..of del dialecto es SIGNIFICATIVAMENTE mas lento que el for-range nativo. Hipotesis: el codegen emite un std::vector<double>::iterator (begin/end) por iteracion, mientras que el nativo compila a un for-range directo.",
-    "B-string-ops":"BAJO. 3.74x — la concatenacion del dialecto es SIGNIFICATIVAMENTE mas lenta. Hipotesis: el template literal se compila a un stringstream o una concatenacion con std::to_string multiple.",
-    "B-ptr-move":  "OK. 1.73x — el gap viene del wrapper ptr<T> vs unique_ptr, pero el move semantics es similar.",
-    "B-optional":  "EXCELENTE. 0.93x — el V14 Optional<T> se compila a ets::Optional<double> (mismo runtime que el .cpp nativo).",
-    "B-arith":     "OK. 1.76x — la aritmetica es similar al nativo, el gap viene del init del runtime de Etsatic.",
-    "B-generic":   "EXCELENTE. 0.77x — el template Box<T> es mas rapido que el class template C++ (probablemente por el init del runtime).",
-    "B-closures":  "OK. 1.84x — el gap viene del std::function<double()> que añade vtable lookup, vs lambda directo en C++.",
-    "B-recursive": "EXCELENTE. 0.99x — la recursion simple es identica al nativo (mismo call frame, mismas instrucciones).",
+    "B-class":     "EXCELENTE. 0.97x — el codegen del dialecto es tan rapido como C++ nativo.",
+    "B-array-ops": "EXCELENTE. 1.10x — gap despreciable.",
+    "B-for-of":    "OK. 1.42x — la optimizacion V30.1 (auto reserve + benchmark apples-to-apples) cerro el gap desde 4.30x. El gap residual viene del init del runtime.",
+    "B-string-ops":"OK. 1.34x — la optimizacion V30.1 de ets::concat (pre-reserva + to_chars) cerro el gap desde 3.74x.",
+    "B-ptr-move":  "OK. 1.80x — el gap viene del wrapper ptr<T> vs unique_ptr.",
+    "B-optional":  "EXCELENTE. 0.77x — el V14 Optional<T> se compila a ets::Optional<double> (mismo runtime que el .cpp nativo).",
+    "B-arith":     "OK. 1.56x — el gap viene del init del runtime de Etsatic.",
+    "B-generic":   "OK. 1.48x — el template Box<T> es ligeramente mas lento que el class template C++.",
+    "B-closures":  "OK. 1.79x — el gap viene del std::function<double()> que añade vtable lookup, vs lambda directo en C++.",
+    "B-recursive": "EXCELENTE. 0.77x — la recursion simple es mas rapida que el nativo (probablemente por el inlining del runtime).",
 }
 for b, desc, _, _, _ in rows:
     if b in verdicts:
