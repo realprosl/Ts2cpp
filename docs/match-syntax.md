@@ -26,9 +26,9 @@ const msg: string = match (r) {
 | Caso                                                              | Forma       |
 |-------------------------------------------------------------------|-------------|
 | Dispatch por valor (`when(0, ...)`, `when("a", ...)`)             | V23 nueva   |
-| Dispatch por tipo (futuro, con narrowing real)                    | V2 actual   |
+| Dispatch por tipo sobre union (`whenType<T>`)                    | V23 nueva (V23.2) |
 | Tagged unions con payload que extraer                             | V2 actual   |
-| Type dispatching "rápido" sin narrowing (V23.1 — limitado)         | V23 nueva   |
+| Type dispatching sin acceso al valor narrowed                     | V23 nueva (`whenType` con 0 args) |
 | Exhaustividad enforced en compilación                             | V2 actual   |
 
 ## V23: `match(value, [...])`
@@ -49,10 +49,10 @@ el primer `whenType`, en orden de aparición) se usa como `else` del
 último `if`. Si no hay `otherwise` ni `whenType`, el else final es
 `std::abort()`.
 
-**Sin narrowing real**: `match(value, [...])` con un subject de tipo
-`number | string` NO usa `if constexpr` ni `std::holds_alternative` —
-solo compara con `==`. Para type dispatching real, usa `whenType` o la
-forma V2.
+**Sin narrowing para `when` por valor**: `match(value, [...])` con
+`when(0, cb)` no usa `std::holds_alternative`; solo compara con `==`.
+Para type dispatching real, usa `whenType` (que sí narrowa en V23.2) o
+la forma V2.
 
 ### Forma 2: con discriminator (string key)
 
@@ -78,7 +78,7 @@ function f(r: Fake): string {
 }
 ```
 
-### `whenType<T>(callback)` — limitación V23.1
+### `whenType<T>(callback)` — V23.2 narrowa con unions
 
 ```ets
 function f(v: number | string): string {
@@ -87,23 +87,40 @@ function f(v: number | string): string {
     whenType<string>(() => "str"),
   ]);
 }
+
+print(f(42));     // "num"
+print(f("hi"));   // "str"
 ```
 
-**Limitación documentada** (issue #95): el narrowing contextual del
-subject está **fuera de alcance** en V23.1. El callback se invoca
-**sin argumentos** (no se le pasa el subject narrowed a `T`). El
-primer `whenType` es la rama activa; los siguientes se marcan como
-`unreachable` y se eliminan en `-O2`.
+**V23.2**: cuando el subject es una union (`T1 | T2 | ...`), el codegen
+emite `std::holds_alternative<T_i>(v)` encadenado para cada `whenType<T_i>`.
+Esto es narrowing real (a nivel de C++, no solo del LSP). El primer
+`whenType` que matchea ejecuta su callback.
 
-Si necesitas narrowing real, usa la forma V2 destructurada, que sí
-enforce exhaustividad y permite extraer el payload de cada variante.
+**Limitación**: el callback se invoca **sin argumentos** (no se le pasa
+el subject narrowed a `T`). Si necesitas acceder al valor narrowed en
+el callback, usa la forma V2 destructurada:
+
+```ets
+union V = S(string) | N(number);
+function f(v: V): string {
+  return match (v) {
+    case { kind: "S", value }: "string:" + value;  // value es string aqui
+    case { kind: "N", value }: "number:" + numberToString(value);
+  };
+}
+```
+
+Si el subject NO es union (caso degenerado: `whenType<number>` sobre un
+`v: number` puro), el `whenType` cae al comportamiento legacy: solo el
+primero es la rama activa, los siguientes se marcan como `unreachable`.
 
 ### Tabla de los 3 intrinsics
 
 | Intrinsic                | Argumentos                              | Callback  | Semántica                                                                 |
 |--------------------------|-----------------------------------------|-----------|---------------------------------------------------------------------------|
 | `when(pattern, callback)`| `pattern: T`, `callback: (T) => R` u `() => R` | 0 o 1 | Si `value == pattern`, ejecuta el callback pasando `value`.               |
-| `whenType<T>(callback)`  | `callback: () => R`                     | 0         | Rama siempre-activa (V23.1). El callback no recibe el subject narrowed.   |
+| `whenType<T>(callback)`  | `callback: () => R`                     | 0         | Si subject es union: `holds_alternative<T>` + `get<T>` (V23.2). Si no, primer `whenType` siempre-activo. |
 | `otherwise(callback)`    | `callback: (any) => R` u `() => R`      | 0 o 1     | Default. Se ejecuta si ningún `when` previo matcheó.                      |
 
 ### Arrow functions requieren tipo explícito
@@ -152,11 +169,15 @@ alguna variante no está cubierta y no hay wildcard `case _:`.
 | E4408   | `match` cases no admite spread elements (`...`).                          |
 | E4409   | `match` cases deben ser `when`/`whenType`/`otherwise`.                    |
 
-## Limitaciones V23.1
+## Limitaciones V23.2
 
-- **Sin narrowing para `whenType`**: el callback se invoca sin args.
-  Si necesitas el subject narrowed, captura por referencia con
-  `[&]` en el cuerpo del callback, o usa la forma V2.
+- **`whenType<T>(cb)` pasa el callback sin args**: aunque el codegen
+  narrowa correctamente el subject cuando es una union, NO se pasa
+  el valor narrowed al callback. Si necesitas acceder al valor
+  narrowed (p.ej. para llamar a métodos del tipo), usa la forma V2
+  destructurada que SI narrowa en el body del callback.
+- **`whenType` sobre subject no-union**: solo el primer `whenType` es
+  la rama activa; los siguientes se marcan como `unreachable`.
 - **Sin exhaustividad enforced**: si no hay `otherwise` y el subject
   no matchea ningún `when`, el runtime hace `std::abort()`. El
   compilador no avisa.
@@ -216,4 +237,7 @@ auto __ets_match_result = ([&]() -> R {
 versiones; lo importante es la estructura: IIFE con if/else chain.)
 
 Para la forma con discriminator, `__ets_match_subj.<key>` reemplaza al
-subject directo. Para `whenType`, el callback se invoca sin args.
+subject directo. Para `whenType` con subject union (V23.2), el codegen
+emite `std::holds_alternative<T_i>` + `std::get<T_i>` encadenados
+(cada `whenType` discrimina por su T). Para `whenType` con subject
+no-union, cae al comportamiento legacy (callback sin args).

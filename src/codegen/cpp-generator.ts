@@ -1333,37 +1333,91 @@ export class CppGenerator {
     // huérfano). Si no hay fallback en absoluto y tampoco `whens`, el
     // IIFE no tiene cuerpo útil: emitimos un comentario.
     //
-    // `whenType<T>(cb)` se emite igual que `when` (rama `if`/`else if` con
-    // condición siempre-true) pero SIN narrowing real del subject — #95
-    // deja el narrowing explícitamente fuera de alcance para V23.1. Por
-    // eso el callback se invoca SIN argumentos: el usuario no puede
-    // esperar tener el valor narrowed a `T` (sería un type-cast
-    // inseguro). El callback puede capturar el subject por referencia
-    // (`[&]`) si lo necesita, pero debe tratarlo como el tipo original.
-    // Si hay varios `whenType` consecutivos, el primero es el activo y
-    // los siguientes reciben un comentario `unreachable`. Si aparece
-    // un `otherwise` después, el `otherwise` SIEMPRE gana (es
-    // semánticamente el "default").
+    // `whenType<T>(cb)` SI narrowa el subject en V23.2 cuando el subject
+    // es una union: emitimos `if (std::holds_alternative<T>(subj)) {
+    // auto narrowed = std::get<T>(subj); return cb(narrowed); }`. Esto
+    // corrige el comportamiento de V23.1 (que dejaba el narrowing fuera
+    // de alcance y producía "is string" para los 3 inputs) sin
+    // necesidad de tocar el LSP — el narrowing ocurre en el codegen,
+    // que sí tiene la información de tipos. Para unions con N
+    // variantes, los `whenType` se encadenan como `if/else if`, cada
+    // uno con su `holds_alternative<T_i>`. El primero que matchea
+    // ejecuta su callback con el valor narrowed.
+    //
+    // Si el subject NO es union (caso degenerado: el tipo del subject
+    // no se puede narrowar), `whenType` cae al comportamiento legacy
+    // de V23.1: solo el PRIMER `whenType` se emite como rama "siempre
+    // matchea" y los siguientes quedan como comentarios `unreachable`.
+    // Documentamos esto explícitamente.
+    const subjectType = this.expressionType(subject);
+    const subjectIsUnion = subjectType !== undefined && isUnionType(subjectType);
     const liveFallback = fallbacks.find(f => f.kind === "otherwise");
-    const firstWhenType = fallbacks.find(f => f.kind === "whenType");
+    const whenTypeElements = fallbacks.filter(f => f.kind === "whenType");
     const unreachableComments: string[] = [];
-    for (const f of fallbacks) {
-      if (f === liveFallback) continue;
-      if (f === firstWhenType) continue;
-      if (f.kind === "whenType") unreachableComments.push("whenType (unreachable: hay un whenType anterior que ya matchea siempre)");
-      else unreachableComments.push("otherwise (unreachable: ya hay un otherwise anterior)");
+    // Comentarios unreachable: si NO narrowing (subject no es union),
+    // solo el primer whenType es activo. Si hay narrowing, todos
+    // participan (cada uno con su T_i). `otherwise` extra: solo el
+    // primero es activo (los siguientes son redundantes).
+    if (!subjectIsUnion) {
+      for (let i = 1; i < whenTypeElements.length; i++) {
+        unreachableComments.push("whenType (unreachable: hay un whenType anterior que ya matchea siempre — V23.2 solo narrowa con unions)");
+      }
+    }
+    if (liveFallback) {
+      // Si hay un otherwise y también un whenType activo (con
+      // narrowing), el otherwise es el `else` final. Sin narrowing
+      // (subject no es union), el primer whenType se emite como
+      // `else` directamente, por lo que un otherwise posterior
+      // sería unreachable.
+      if (!subjectIsUnion && whenTypeElements.length > 0) {
+        for (const f of fallbacks) {
+          if (f === liveFallback) continue;
+          if (f.kind === "otherwise") unreachableComments.push("otherwise (unreachable: ya hay un whenType que matchea siempre)");
+        }
+      } else {
+        for (const f of fallbacks) {
+          if (f === liveFallback) continue;
+          if (f.kind === "otherwise") unreachableComments.push("otherwise (unreachable: ya hay un otherwise anterior)");
+        }
+      }
     }
     let body: string;
     // Construimos las ramas en orden: primero las `when`, luego los
-    // `whenType` (que actúan como fallbacks en orden de aparición), y
+    // `whenType` (con narrowing via std::holds_alternative si el
+    // subject es union, o comportamiento legacy si no lo es), y
     // finalmente el `otherwise` (que es el fallback definitivo).
-    // Cada `whenType` se emite como `else if` con condición `true` y
-    // callback invocado sin args.
     const whenTypeBranches: string[] = [];
-    if (firstWhenType) {
-      const cb = firstWhenType.callback;
-      // Callback invocado con 0 args (no narrowing — el subject no se
-      // pasa al callback de whenType, igual que en el original).
+    if (subjectIsUnion) {
+      // Emite TODOS los whenType como if/else if, cada uno con su T_i.
+      for (let i = 0; i < whenTypeElements.length; i++) {
+        const w = whenTypeElements[i]!;
+        const whenTypeCall = caseList.elements.find(el =>
+          el.kind === "CallExpression" && (el as { callee: string }).callee === "whenType"
+            && (el as { callee: string }) === (whenTypeElements as unknown as Expression[])[i]
+        ) as { typeArguments: TypeName[] } | undefined;
+        // Fallback: si no encontramos el call por referencia, buscamos
+        // el i-ésimo whenType.
+        const allWhenTypeCalls = caseList.elements.filter(el =>
+          el.kind === "CallExpression" && (el as { callee: string }).callee === "whenType"
+        ) as { typeArguments: TypeName[] }[];
+        const call = whenTypeCall ?? allWhenTypeCalls[i];
+        const tArg = call?.typeArguments[0];
+        if (!tArg) continue;
+        const tCpp = cppType(tArg);
+        const cb = w.callback;
+        const hasCb = cb.kind === "ArrowFunctionExpression" && cb.params.length === 1;
+        const prefix = i === 0 ? "if" : "else if";
+        if (hasCb) {
+          const callbackCall = `${this.emitExpression(cb)}(__ets_match_narrowed_${this.cppName(tArg)})`;
+          whenTypeBranches.push(`        ${prefix} (std::holds_alternative<${tCpp}>(${subjectText})) { auto __ets_match_narrowed_${this.cppName(tArg)} = std::get<${tCpp}>(${subjectText}); return ${callbackCall}; }`);
+        } else {
+          const callbackCall = `${this.emitExpression(cb)}()`;
+          whenTypeBranches.push(`        ${prefix} (std::holds_alternative<${tCpp}>(${subjectText})) { return ${callbackCall}; }`);
+        }
+      }
+    } else if (whenTypeElements.length > 0) {
+      // Comportamiento legacy: solo el primer whenType es activo.
+      const cb = whenTypeElements[0]!.callback;
       const callbackCall = `${this.emitExpression(cb)}()`;
       whenTypeBranches.push(`        else { return ${callbackCall}; }`);
     }
@@ -1395,7 +1449,7 @@ export class CppGenerator {
       // ya reportó el error; emitimos un comentario para no romper el
       // .cpp.
       body = `        // match: sin cases válidos`;
-    } else if (allBranches.length === 1 && !liveFallback && !firstWhenType) {
+    } else if (allBranches.length === 1 && !liveFallback && whenTypeElements.length === 0) {
       // Solo hay `whens` (sin fallback). El último `if` no debe tener
       // `else` colgando — añadimos un else con `std::abort()`.
       const last = allBranches[0]!;

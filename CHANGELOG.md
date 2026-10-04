@@ -37,10 +37,14 @@ Todas las versiones siguen [Semantic Versioning](https://semver.org/).
   intrinsics:
   - `when(pattern, callback)`: compara con `==` y ejecuta el callback
     pasando el subject. El callback puede tener 0 o 1 parámetros.
-  - `whenType<T>(callback)`: tipo-based dispatch. **Limitación V23.1**:
-    NO narrowa el subject (issue #95). El callback se invoca sin
-    argumentos; si hay varios `whenType` consecutivos, solo el primero
-    es la rama activa, los siguientes se marcan como `unreachable`.
+  - `whenType<T>(callback)`: tipo-based dispatch. **V23.2 narrowa el
+    subject cuando es una union**: el codegen emite
+    `if (std::holds_alternative<T>(v)) { auto narrowed = std::get<T>(v);
+    ... }` encadenado. El callback se invoca SIN argumentos (no se le
+    pasa el `narrowed`); si necesitas acceder al valor narrowed, usa
+    la forma V2 destructurada. Si el subject NO es una union, cae al
+    comportamiento legacy: solo el primer `whenType` es la rama
+    activa, los siguientes se marcan como `unreachable`.
   - `otherwise(callback)`: default, siempre se ejecuta si ningún
     `when` previo matcheó. Si no hay `otherwise` (ni `whenType`), el
     else final hace `std::abort()`.
