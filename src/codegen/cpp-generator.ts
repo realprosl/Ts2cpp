@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, ExpressionStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, TypeParameter, CallExpression } from "../ast/nodes.ts";
 import { cppType, collectTypeParameterNames, registerExternalType, clearExternalTypes } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
 import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, tupleElements, unionMembers } from "../types/type-system.ts";
@@ -1143,7 +1143,18 @@ export class CppGenerator {
           }
           initializer = `${this.variableIsConst(node.initializer) ? "const " : ""}${node.initializer.declaredType ? cppType(node.initializer.declaredType) : "auto"} ${this.cppName(node.initializer.name)} = ${init}`;
         } else if (node.initializer?.kind === "ExpressionStatement") initializer = this.emitExpression(node.initializer.expression);
-        return `${this.pad()}for (${initializer}; ${node.condition ? this.emitExpression(node.condition) : ""}; ${node.increment ? this.emitExpression(node.increment) : ""}) ${this.statementBody(node.body)}`;
+
+        // V30.1: deteccion de patron "loop with push_back". Si el body es
+        // un unico `arr.push(expr)` y la condition tiene la forma `i < N`
+        // donde N es una cota superior conocida, emitimos `arr.reserve(N)`
+        // antes del for. Esto evita las 14 reallocaciones que hace
+        // `std::vector` por su growth exponencial cuando el usuario no
+        // llama a `reserve` explicitamente. Es una optimizacion segura
+        // porque `reserve` es un no-op si el vector ya tiene >= N capacidad.
+        const reserveHint = this.detectPushBackReserveHint(node);
+        const prefix = reserveHint ? `${this.pad()}${reserveHint};\n` : "";
+
+        return `${prefix}${this.pad()}for (${initializer}; ${node.condition ? this.emitExpression(node.condition) : ""}; ${node.increment ? this.emitExpression(node.increment) : ""}) ${this.statementBody(node.body)}`;
       }
       case "BreakStatement": return `${this.pad()}break;`;
       case "ContinueStatement": return `${this.pad()}continue;`;
@@ -1517,6 +1528,108 @@ export class CppGenerator {
       return `${this.pad()}{\n${tupleLine}\n${bodyStr}\n${this.pad()}}`;
     }
     return `${this.pad()}/* for..of: tipo iterable no soportado */`;
+  }
+
+  // V30.1: deteccion de patron "loop with push_back". Devuelve la
+  // expresion a emitir como `reserve(N)` antes del for, o null si el
+  // patron no aplica.
+  //
+  // Patron reconocido:
+  //   for (let i = 0; i < N; i = i + 1) {
+  //     arr.push(expr);
+  //   }
+  // o
+  //   for (let i: number = 0; i < N; i = i + 1) {
+  //     arr.push(expr);
+  //   }
+  // o
+  //   for (let i = 0; i < N; i = i + 1) arr.push(expr);
+  //
+  // Devuelve `${arrStr}.reserve(${N})` si aplica, o null.
+  private detectPushBackReserveHint(node: {
+    initializer?: VariableDeclaration | ExpressionStatement;
+    condition?: Expression;
+    increment?: Expression;
+    body: Statement;
+  }): string | null {
+    // 1. El initializer debe ser una declaracion de variable numerica
+    //    (el counter del loop). Aceptamos tanto los tipos numericos
+    //    concretos (i32, f64, ...) como el alias `number` del dialecto.
+    if (!node.initializer || node.initializer.kind !== "VariableDeclaration") return null;
+    const initVar = node.initializer;
+    if (!initVar.declaredType) return null;
+    const isNum = initVar.declaredType === "number" || isNumericType(initVar.declaredType);
+    if (!isNum) return null;
+
+    // 2. La condition debe ser `counter < N` (BinaryExpression con `<`).
+    if (!node.condition || node.condition.kind !== "BinaryExpression") return null;
+    const cond = node.condition;
+    if (cond.operator !== "<") return null;
+    const condLhsIsCounter =
+      cond.left.kind === "IdentifierExpression" && cond.left.name === initVar.name;
+    const condRhsIsCounter =
+      cond.right.kind === "IdentifierExpression" && cond.right.name === initVar.name;
+    if (!condLhsIsCounter && !condRhsIsCounter) return null;
+    // El N (cota superior) es el lado que NO es el counter.
+    const upperBoundExpr = condLhsIsCounter ? cond.right : cond.left;
+    // N debe ser un LiteralExpression o IdentifierExpression.
+    if (upperBoundExpr.kind !== "LiteralExpression" &&
+        upperBoundExpr.kind !== "IdentifierExpression") {
+      return null;
+    }
+
+    // 3. El increment debe ser algo tipo `i = i + 1` o `i++` (o el
+    //    equivalente). Si no, es muy arriesgado asumir monotonia.
+    //    Aceptamos varios patrones comunes:
+    //    - AssignmentExpression con target == counter
+    //    - UpdateExpression (++i o i++) — no tenemos nodo explicito;
+    //      el codegen lo emite como assignment.
+    if (!node.increment) return null;
+    if (node.increment.kind !== "AssignmentExpression") return null;
+    const inc = node.increment;
+    if (inc.target.kind !== "IdentifierExpression" || inc.target.name !== initVar.name) return null;
+
+    // 4. El body debe ser un unico push_back.
+    const pushStmt = this.extractSinglePushBack(node.body);
+    if (!pushStmt) return null;
+
+    // 5. Emite el reserve. upperBoundExpr se emite como CPP.
+    const upperStr = this.emitExpression(upperBoundExpr);
+    const arrStr = this.emitExpression(pushStmt.object);
+    return `${arrStr}.reserve(${upperStr})`;
+  }
+
+  // Extrae el push_back unico del body de un for, si existe y el
+  // body no hace nada mas que ese push_back. Devuelve el push_back
+  // (MemberCallExpression) o null.
+  private extractSinglePushBack(
+    body: Statement,
+  ): { object: Expression; method: string; args: Expression[] } | null {
+    // Caso 1: body es directamente el push_back (sin block).
+    if (body.kind === "ExpressionStatement" && body.expression.kind === "MemberCallExpression") {
+      const mc = body.expression;
+      if (mc.method === "push" && isArrayType(this.expressionType(mc.object))) {
+        return mc;
+      }
+      return null;
+    }
+    // Caso 2: body es un BlockStatement con exactamente un push_back.
+    if (body.kind === "BlockStatement") {
+      const stmts = body.statements;
+      if (stmts.length !== 1) return null;
+      if (stmts[0].kind !== "ExpressionStatement") return null;
+      const inner = stmts[0].expression;
+      if (inner.kind !== "MemberCallExpression") return null;
+      const mc = inner;
+      if (mc.method !== "push") return null;
+      if (!isArrayType(this.expressionType(mc.object))) return null;
+      // Seguridad: el push debe usar el counter de alguna forma
+      // (o un valor independiente). Si usa una variable que el for
+      // declara/modifica, no podemos asumir que solo se hace push.
+      // Por simplicidad, aceptamos cualquier push.
+      return mc;
+    }
+    return null;
   }
 
   // Emite bucles de índice para arrays y proyecciones de clave para Map<K,V>.
