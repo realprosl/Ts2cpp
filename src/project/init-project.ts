@@ -75,28 +75,74 @@ declare global {
 
   // ─── Envoltorios genéricos del runtime ──────────────────────────────
   // Mapean a ets::Unq<T>, ets::Rc<T>, etc. en runtime/ets_*.hpp.
+  // Los métodos de instancia reflejan lo que el type-checker reconoce
+  // (ver src/semantic/type-checker.ts: ARRAY_METHODS, MAP_METHODS,
+  // SET_METHODS, OPTIONAL_HELPERS y las ramas de Result.isOk/value/error).
+  // Sin esto, el editor marca r.isOk() como error porque no está
+  // declarado en ninguna parte.
   class Unq<T> {
-    private readonly _brand: symbol;
+    _brand: string;
   }
   class Rc<T> {
-    private readonly _brand: symbol;
+    _brand: string;
   }
   class Optional<T> {
-    private readonly _brand: symbol;
+    _brand: string;
     static some<T>(value: T): Optional<T>;
     static none<T>(): Optional<T>;
+    // Métodos de instancia (helpers globales en runtime):
+    isPresent(): boolean;
+    isEmpty(): boolean;
+    value(): T;
+    valueOr(defaultValue: T): T;
   }
   class Result<T, E = string> {
     private readonly _brand: symbol;
+    // El dialecto trata Result<T, E> como tagged union sintética; los
+    // métodos isOk/value/error se infieren desde el tag 'ok'. Ver
+    // type-checker.ts:2100-2108.
+    isOk(): boolean;
+    value(): T;
+    error(): E;
   }
   class Promise<T> {
     private readonly _brand: symbol;
   }
   class Map<K, V> {
     private readonly _brand: symbol;
+    // MAP_METHODS en type-checker.ts:199-205.
+    get(key: K): V | void;
+    set(key: K, value: V): void;
+    has(key: K): boolean;
+    delete(key: K): boolean;
+    readonly size: number;
   }
   class Set<T> {
     private readonly _brand: symbol;
+    // SET_METHODS en type-checker.ts:211-214.
+    add(value: T): boolean;
+    has(value: T): boolean;
+    delete(value: T): boolean;
+    readonly size: number;
+  }
+  // Array<T> es la representación genérica. La forma canónica en el
+  // dialecto es T[] (chequea isArrayType en type-checker.ts), pero
+  // también se acepta Array<T> como sinónimo. Declaramos ambos.
+  interface ArrayLike<T> {
+    // ARRAY_METHODS en type-checker.ts:227-254.
+    filter<U extends T>(predicate: (value: T) => boolean): T[];
+    map<U>(mapper: (value: T) => U): U[];
+    reduce<U>(initial: U, reducer: (acc: U, value: T) => U): U;
+    forEach(visitor: (value: T) => void): void;
+    push(value: T): void;
+    find(predicate: (value: T) => boolean): Optional<T>;
+    some(predicate: (value: T) => boolean): boolean;
+    every(predicate: (value: T) => boolean): boolean;
+    slice(start: number, end?: number): T[];
+    sort(comparator?: (a: T, b: T) => number): T[];
+    flatMap<U>(mapper: (value: T) => U[]): U[];
+    includes(value: T): boolean;
+    readonly length: number;
   }
   // Tipo opaco para JSON.parseValue. Se manipula vía helpers globales
   // (jsonIsString, jsonAsString, ...).
@@ -105,6 +151,18 @@ declare global {
   // ─── Helpers de runtime (runtime/ets_core.hpp) ──────────────────────
   function print(...values: unknown[]): void;
   function numberToString(n: number): string;
+
+  // ─── Helpers async (ASYNC_HELPERS + ASYNC_PRIMITIVE_HELPERS) ────────
+  // sleep y spawn son funciones globales del runtime (registradas
+  // en type-checker.ts:446-447). all y race se manejan como casos
+  // especiales del type-checker (no están en la tabla de helpers, ver
+  // type-checker.ts:161-164 y 1869-1880). race en el estado actual
+  // del repo es SECUENCIAL: devuelve el primer elemento del array
+  // (ver LIMITATIONS.md / test task-race). all sí espera a todos.
+  function sleep(ms: number): Promise<void>;
+  function spawn(task: Promise<void>): void;
+  function all<T>(tasks: Promise<T>[]): T[];
+  function race<T>(tasks: Promise<T>[]): T;
 
   // ─── Helpers de Optional<T> ─────────────────────────────────────────
   function optionalSome<T>(value: T): Optional<T>;

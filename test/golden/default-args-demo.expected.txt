@@ -1,5 +1,0 @@
-Hola, Mundo!
-Adiós, Ana!
-scale 5:110
-scale 5,3:115
-scale 5,3,1:16

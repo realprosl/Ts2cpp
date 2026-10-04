@@ -146,53 +146,47 @@ test("codegen V7: ets_collections.hpp NO se incluye si no se usa", () => {
   assert.doesNotMatch(out, /ets_collections\.hpp/);
 });
 
-// V8.0: análisis de escape implícito. Cuando la firma de retorno es
-// `Unq<T>` y el valor es de tipo `T` (por valor), el codegen envuelve
-// automáticamente con `unSome<T>(...)`. Esto permite al usuario escribir
-// `return new Counter(42)` o `return c` sin envolver manualmente.
-test("codegen V8.0: return new T() con firma Unq<T> se envuelve con unSome", () => {
+// V22 (Memory Model v2): ptr<T> y ref<T> sustituyen a Unq<T>/Rc<T>/Mut<T>.
+// El codegen ya no envuelve automáticamente retornos ptr<T>; el usuario
+// debe usar `new` con contexto ptr explícito o un helper (PR#4 implementa
+// make_unique). Por ahora validamos que la firma del parámetro se emite
+// con la sintaxis C++ correcta.
+
+test("codegen V22: ptr<T> declarado se traduce a std::unique_ptr<T>", () => {
+  // V22: ptr<T> se traduce a std::unique_ptr<T> en cualquier firma. La
+  // conversión desde `new T()` a `ptr<T>` se implementa en PR#4 con
+  // make_unique. Aquí validamos que un parámetro `ptr<T>` se traduce
+  // correctamente a `std::unique_ptr<T>` (no la conversión de valor).
   const out = cpp(`
-    class Counter { value: number; constructor(v: number) { this.value = v; } }
-    function make(): Unq<Counter> {
-      return new Counter(42);
-    }
+    class Counter { value: number; }
+    function use(p: ptr<Counter>): void { print(numberToString(p.value)); }
   `);
-  assert.match(out, /return\s+unSome<Counter>\(Counter\{42\.0\}\)/);
+  // V22: `p: ptr<Counter>` se traduce a `std::unique_ptr<Counter> p`.
+  assert.match(out, /std::unique_ptr<Counter>\s+p/);
 });
 
-test("codegen V8.0: return x (de tipo T) con firma Unq<T> se envuelve con unSome", () => {
+test("codegen V22: ref<T> como parámetro emite T&", () => {
   const out = cpp(`
     class Counter { value: number; constructor(v: number) { this.value = v; } }
-    function make(): Unq<Counter> {
-      let c = new Counter(42);
-      return c;
+    function increment(c: ref<Counter>): void {
+      c.value = c.value + 1;
     }
   `);
-  assert.match(out, /return\s+unSome<Counter>\(c\)/);
+  // V22: ref<Counter> se traduce a `Counter&` en la firma.
+  assert.match(out, /Counter& c/);
+  assert.match(out, /\s+increment\(Counter&/);
 });
 
-test("codegen V8.0: return new T() con firma Rc<T> se envuelve con rcShare", () => {
+test("codegen V22: constRef<T> como parámetro emite const T&", () => {
   const out = cpp(`
     class Counter { value: number; constructor(v: number) { this.value = v; } }
-    function share(): Rc<Counter> {
-      return new Counter(42);
+    function inspect(c: constRef<Counter>): number {
+      return c.value;
     }
   `);
-  assert.match(out, /return\s+rcShare<Counter>\(Counter\{42\.0\}\)/);
-});
-
-test("codegen V8.0: let c = new T() sin firma de retorno Unq sigue siendo por valor", () => {
-  const out = cpp(`
-    class Counter { value: number; constructor(v: number) { this.value = v; } }
-    function use(): void {
-      let c = new Counter(42);
-      print(numberToString(c.value));
-    }
-  `);
-  // V8.0 no toca casos sin escape: `c` sigue siendo `Counter` por valor.
-  assert.match(out, /auto\s+c\s*=\s*Counter\{42\.0\}/);
-  // Y el `print` accede por valor, no por `unValue(c)`.
-  assert.doesNotMatch(out, /unSome<Counter>|rcShare<Counter>/);
+  // V22: constRef<Counter> se traduce a `const Counter&` en la firma.
+  assert.match(out, /const Counter& c/);
+  assert.match(out, /\s+inspect\(const Counter&/);
 });
 
 // ---------------------------------------------------------------------------

@@ -98,6 +98,100 @@ test("init-project: estatic.d.ts declara los built-ins del dialecto", async () =
   assert.match(dts, /declare\s+global\s*\{/);
 });
 
+test("init-project: estatic.d.ts declara métodos de instancia de Result<T, E>", async () => {
+  // El type-checker reconoce .isOk(), .value(), .error() sobre
+  // Result<T, E> (ver type-checker.ts:2100-2108). Sin estas
+  // declaraciones, el editor marca "Property 'isOk' does not exist
+  // on type 'Result<string>'" cada vez que el usuario trata un
+  // resultado de fs.readFileSync.
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*isOk\(\):\s*boolean/s,
+    "Result.isOk() no está declarado");
+  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*value\(\):\s*T/s,
+    "Result.value() no está declarado");
+  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*error\(\):\s*E/s,
+    "Result.error() no está declarado");
+});
+
+test("init-project: estatic.d.ts declara métodos de instancia de Optional<T>", async () => {
+  // OPTIONAL_HELPERS en type-checker.ts:118-126 + ramas en 1896-1897.
+  // El dialecto expone .isPresent(), .isEmpty(), .value(), .valueOr().
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*isPresent\(\):\s*boolean/s,
+    "Optional.isPresent() no está declarado");
+  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*isEmpty\(\):\s*boolean/s,
+    "Optional.isEmpty() no está declarado");
+  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*value\(\):\s*T/s,
+    "Optional.value() no está declarado");
+  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*valueOr\([^)]+\):\s*T/s,
+    "Optional.valueOr() no está declarado");
+});
+
+test("init-project: estatic.d.ts declara métodos de Map<K, V> y Set<T>", async () => {
+  // MAP_METHODS y SET_METHODS en type-checker.ts:199-214.
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  // Map.
+  for (const method of ["get", "set", "has", "delete"]) {
+    assert.match(dts, new RegExp(`\\b${method}\\(`), `Map.${method}() no está declarado`);
+  }
+  assert.match(dts, /readonly\s+size:\s*number/);
+  // Set.
+  for (const method of ["add", "has", "delete"]) {
+    assert.match(dts, new RegExp(`\\b${method}\\(`), `Set.${method}() no está declarado`);
+  }
+});
+
+test("init-project: estatic.d.ts declara interface con métodos de Array<T>", async () => {
+  // ARRAY_METHODS en type-checker.ts:227-254 (12 métodos + length).
+  // El dialecto usa la forma canónica T[]; la interface ArrayLike<T>
+  // cubre el sinónimo Array<T> y permite al editor hacer hover y
+  // completions sobre métodos de instancia de arrays.
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  assert.match(dts, /\binterface\s+ArrayLike\b/);
+  for (const method of [
+    "filter", "map", "reduce", "forEach", "push", "find",
+    "some", "every", "slice", "sort", "flatMap", "includes",
+  ]) {
+    // Buscamos el nombre del método como identificador seguido de `<` o `(`.
+    // `<` cubre `filter<U extends T>(...)`; `(` cubre `forEach(...)`.
+    assert.match(dts, new RegExp(`\\b${method}(?=\\s*[<(])`), `Array.${method}() no está declarado`);
+  }
+  assert.match(dts, /readonly\s+length:\s*number/);
+});
+
+test("init-project: estatic.d.ts declara helpers async (all, race, spawn, sleep)", async () => {
+  // sleep y spawn están registradas como funciones globales en
+  // type-checker.ts:446-447. all y race son casos especiales del
+  // type-checker (ASYNC_HELPERS en type-checker.ts:161-164) que
+  // esperan/extraen de un array de Promise<T>.
+  const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
+  await initializeProject(directory);
+  const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
+  // sleep y spawn.
+  assert.match(dts, /function\s+sleep\s*\(\s*ms\s*:\s*number\s*\)\s*:\s*Promise<void>/,
+    "sleep(ms: number) -> Promise<void> no está declarado");
+  assert.match(dts, /function\s+spawn\s*\(\s*task\s*:\s*Promise<void>\s*\)\s*:\s*void/,
+    "spawn(task: Promise<void>) -> void no está declarado");
+  // all<T>(tasks: Promise<T>[]) -> T[].
+  assert.match(dts, /function\s+all\s*<T>/,
+    "all<T> no está declarado");
+  assert.match(dts, /all\s*<T>\s*\(\s*tasks\s*:\s*Promise<T>\[\]\s*\)\s*:\s*T\[\]/,
+    "all<T>(tasks: Promise<T>[]) -> T[] no está declarado con la firma correcta");
+  // race<T>(tasks: Promise<T>[]) -> T.
+  assert.match(dts, /function\s+race\s*<T>/,
+    "race<T> no está declarado");
+  assert.match(dts, /race\s*<T>\s*\(\s*tasks\s*:\s*Promise<T>\[\]\s*\)\s*:\s*T\b/,
+    "race<T>(tasks: Promise<T>[]) -> T no está declarado con la firma correcta");
+});
+
 test("init-project: aborta si algún archivo del template ya existe", async () => {
   const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
   // Pre-creamos tsconfig.json para forzar el conflicto.

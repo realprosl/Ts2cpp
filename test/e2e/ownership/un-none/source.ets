@@ -1,6 +1,17 @@
-// un-none — unNone<T>(), unIsSome devuelve false.
+// ref-aliased — múltiples constRef<T> sobre el mismo valor son válidos.
 
-class Item { value: number; constructor(v: number) { this.value = v; } }
+class Point {
+  x: number;
+  y: number;
+  constructor(x: number, y: number) { this.x = x; this.y = y; }
+}
 
-const empty: Un<Item> = unNone<Item>();
-print(unIsSome(empty) ? "some" : "none");
+function sum(p: constRef<Point>): number {
+  return p.x + p.y;
+}
+
+const pt: Point = new Point(10, 20);
+const a: number = sum(pt);
+const b: number = sum(pt);
+print(numberToString(a));
+print(numberToString(b));

@@ -1,4 +1,0 @@
-Doble: 12
-Suma capturada: 15
-Contador: 1
-Contador: 2

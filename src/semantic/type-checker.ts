@@ -320,7 +320,7 @@ export class TypeChecker {
   // si el nombre coincide con un singleton del runtime C++; el codegen usa
   // este flag para renombrar y evitar colisiones de identificadores.
   // También anota el AST si el `target` es VariableDeclaration o Parameter.
-  private defineVariable(scope: Scope, name: string, type: TypeName, mutable: boolean, extra: { variadic?: boolean; constValue?: number | string | boolean | null } = {}, target?: { fromRuntime?: boolean; constValue?: number | string | boolean | null }): boolean {
+  private defineVariable(scope: Scope, name: string, type: TypeName, mutable: boolean, extra: { variadic?: boolean; mutableReference?: boolean; constValue?: number | string | boolean | null } = {}, target?: { fromRuntime?: boolean; constValue?: number | string | boolean | null }): boolean {
     const symbol: import("./symbols.ts").VariableSymbol = { kind: "variable", type, mutable, ...extra };
     if (TypeChecker.RUNTIME_GLOBAL_NAMES.has(name)) {
       symbol.fromRuntime = true;
@@ -516,16 +516,9 @@ export class TypeChecker {
   }
 
   private unwrapMutLike(stored: TypeName): TypeName {
-    // `Mut<T>` y `MutRef<T>` son modificadores: el tipo "real" para el
-    // codegen y el semantic es el tipo interno T. Devolvemos T en lugar del
-    // envoltorio (que ya no existe).
-    if (isGenericType(stored)) {
-      const base = genericBase(stored);
-      if (base === "Mut" || base === "MutRef") {
-        const inner = genericArguments(stored)[0];
-        if (inner) return inner;
-      }
-    }
+    // V22 (Memory Model v2): `Mut<T>` y `MutRef<T>` ya no existen en el
+    // dialecto. El type-checker los rechaza con E4401/E4402 antes de
+    // llegar aquí, así que esta función es ahora un pass-through.
     return stored;
   }
   isVariadic(expression: Expression): boolean { return this.variadicExpressions.has(expression); }
@@ -895,7 +888,15 @@ export class TypeChecker {
         // concretos en defaults de parámetros (acepta `-N` / `+N` unarios).
         this.validateNumericExpression(parameter.defaultValue, parameter.type);
       }
-      this.defineVariable(local, parameter.name, parameter.type, parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), { variadic: parameter.variadic }, parameter);
+      // V22: los parámetros de función son siempre mutables localmente (el
+      // callee puede asignar a `b` o a `b.x` libremente). La inmutabilidad
+      // se enforce en runtime cuando el tipo es `readonly<T>` o `constRef<T>`.
+      // Las arrow functions (1685) sí restringen a false para evitar mutar
+      // capturas.
+      // V22: los parámetros de función son siempre mutables localmente (el
+      // callee puede asignar a `b` o a `b.x` libremente). La inmutabilidad
+      // se enforce en runtime cuando el tipo es `readonly<T>` o `constRef<T>`.
+      this.defineVariable(local, parameter.name, parameter.type, true, { variadic: parameter.variadic, mutableReference: this.parameterIsMutableReference(parameter.type) }, parameter);
     }
   }
 
@@ -1201,6 +1202,14 @@ export class TypeChecker {
         arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
         return type;
       }
+      // V22 (Memory Model v2): ptr<T>, constPtr<T>, ref<T>, constRef<T> son
+      // modificadores intrínsecos de paso, no tipos genéricos definidos por
+      // el usuario. Aceptamos exactamente 1 argumento (T) y seguimos.
+      if (base === "ptr" || base === "constPtr" || base === "ref" || base === "constRef") {
+        if (arguments_.length !== 1) this.report(node, `'${base}<T>' espera 1 argumento de tipo, recibió ${arguments_.length}`);
+        else arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
+        return type;
+      }
       if (!owner) { this.report(node, `Tipo genérico no definido '${base}'`); return type; }
       if (arguments_.length !== owner.typeParameters.length) this.report(node, `'${base}' espera ${owner.typeParameters.length} argumentos de tipo, recibió ${arguments_.length}`);
       arguments_.forEach(argument => this.validateType(argument, node, false, primitiveOnly, scope));
@@ -1323,7 +1332,7 @@ export class TypeChecker {
             const effectiveType = p.optional
               ? (isGenericType(p.type) && genericBase(p.type) === "Optional" ? p.type : genericType("Optional", [p.type]))
               : p.type;
-            if (!this.defineVariable(local, p.name, effectiveType, p.out || p.passing === "mut" || this.parameterIsMutableReference(p.type), { variadic: p.variadic }, p)) this.report(node, `Parámetro duplicado '${p.name}'`);
+            if (!this.defineVariable(local, p.name, effectiveType, true, { variadic: p.variadic, mutableReference: this.parameterIsMutableReference(p.type) }, p)) this.report(node, `Parámetro duplicado '${p.name}'`);
           }
           const previousReturn = this.currentReturn; const previousAsync = this.currentAsync;
           this.currentReturn = node.async && isPromiseType(node.returnType) ? promiseResult(node.returnType) : node.returnType;
@@ -1466,7 +1475,7 @@ export class TypeChecker {
       const local = new Scope(scope);
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
       this.defineVariable(local, "this", ownerType, true);
-      for (const parameter of method.params) if (!this.defineVariable(local, parameter.name, parameter.type, parameter.out || parameter.passing === "mut" || this.parameterIsMutableReference(parameter.type), {}, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
+      for (const parameter of method.params) if (!this.defineVariable(local, parameter.name, parameter.type, true, { mutableReference: this.parameterIsMutableReference(parameter.type) }, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
       // V20: parameter properties. Si el parámetro del constructor tiene
       // modificador (acceso o readonly), también lo añadimos como campo
       // accesible en `this.x`. Lo hacemos después de los params para no
@@ -2461,7 +2470,18 @@ export class TypeChecker {
           result = genericType("Optional", [fieldInnerType]);
           break;
         }
-        const resolved = this.resolveClass(objectType); const owner = resolved?.owner;
+        // V22 (Memory Model v2): ptr<T>, constPtr<T>, ref<T>, constRef<T>
+        // son modificadores de paso. El member access desempaca al tipo
+        // interno T antes de buscar la clase.
+        let classLookupType = objectType;
+        if (isGenericType(classLookupType)) {
+          const memBase = genericBase(classLookupType);
+          if (memBase === "ptr" || memBase === "constPtr" || memBase === "ref" || memBase === "constRef") {
+            const innerArg = genericArguments(classLookupType)[0];
+            if (innerArg) classLookupType = innerArg;
+          }
+        }
+        const resolved = this.resolveClass(classLookupType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
         // V1.2: los miembros de una unión (variantes) se acceden como `Direction.North`.
         // Si el objeto es un nombre de unión, el miembro es una variante.
@@ -2478,7 +2498,7 @@ export class TypeChecker {
           result = "number";
           break;
         }
-        if (!owner) this.report(node.object, `El tipo '${objectType}' no es una clase concreta`);
+        if (!owner) this.report(node.object, `El tipo '${classLookupType}' no es una clase concreta`);
         // V19: chequeo de encapsulación. Si el campo es `private` y el
         // acceso viene desde fuera de la clase, error.
         const ownerName = owner?.name;
@@ -2642,21 +2662,23 @@ export class TypeChecker {
 
   private mutableTarget(node: Expression, scope: Scope): boolean {
     if (node.kind === "MemberExpression") return this.mutableTarget(node.object, scope);
-    if (node.kind === "IndexExpression") return this.mutableTarget(node.object, scope);
+    if (node.kind === "IndexExpression") {
+      // V5: si el objeto indexado es `readonly<T[]>`, no se puede mutar
+      // a través de un index assignment (`xs[0] = 99`).
+      const objectType = this.expression(node.object, scope);
+      if (isReadonlyType(objectType)) return false;
+      return this.mutableTarget(node.object, scope);
+    }
     if (node.kind !== "IdentifierExpression") return false;
     const symbol = scope.resolve(node.name);
     if (!symbol) return false;
     if (symbol.kind !== "variable") return false;
-    // Parámetro con `Mut<T>` o `MutRef<T>` es mutable (es T* o T& en C++).
-    if (symbol.parameter && (symbol.parameter.passing === "mut" || symbol.parameter.passing === "out")) return true;
-    // Parámetro `Mut<T>` o `MutRef<T>` se detecta también por el tipo genérico.
-    if (symbol.parameter) {
-      const paramType = symbol.parameter.type;
-      if (isGenericType(paramType)) {
-        const base = genericBase(paramType);
-        if (base === "Mut" || base === "MutRef") return true;
-      }
-    }
+    // V22 (Memory Model v2): los parámetros `out T` o con modifier `ref<T>`
+    // son mutables (T&). Esto se marca con `mutableReference: true` en el
+    // FunctionParameterSymbol. Variables `let` ya tienen `mutable: true`.
+    if (symbol.mutableReference) return true;
+    // V5: si el tipo del símbolo es `readonly<T>`, el target es inmutable.
+    if (isReadonlyType(symbol.type)) return false;
     return symbol.mutable;
   }
 
@@ -2851,12 +2873,12 @@ export class TypeChecker {
    * y debe permitirse la asignación a sus campos.
    */
   private parameterIsMutableReference(type: TypeName): boolean {
-    // V5: readonly<T> no es mutable. El wrapper pasa por `const T&`, pero el
-    // contrato es inmutabilidad semántica (el checker rechaza reasignaciones).
+    // V22 (Memory Model v2): solo `ref<T>` (T&) es mutable por referencia.
+    // `ptr<T>` y `constPtr<T>` no se modifican directamente (se usa `move()`
+    // para transferir ownership). `constRef<T>` y `readonly<T>` son inmutables.
     if (isReadonlyType(type)) return false;
     if (!isGenericType(type)) return false;
-    const base = genericBase(type);
-    return base === "Mut" || base === "MutRef";
+    return genericBase(type) === "ref";
   }
   private substituteType(type: TypeName, substitutions: Map<string, TypeName>): TypeName {
     return this.substituteTypeInternal(type, substitutions, new Set());

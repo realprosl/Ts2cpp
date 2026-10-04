@@ -22,7 +22,8 @@ type DocEntry =
   | { kind: "variable"; exported: boolean; name: string; declaredType?: string };
 
 function formatParameter(parameter: Parameter): string {
-  const passing = parameter.passing === "automatic" ? "" : `${parameter.passing} `;
+  // V22: solo "out" se imprime como prefijo; "value" es el default y no aparece.
+  const passing = parameter.passing === "out" ? "out " : "";
   const variadic = parameter.variadic ? "..." : "";
   return `${parameter.out ? "out " : passing}${variadic}${parameter.name}: ${parameter.type}`;
 }

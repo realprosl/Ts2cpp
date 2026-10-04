@@ -20,8 +20,10 @@ function indent(level: number): string {
 }
 
 function passingKeyword(passing: Parameter["passing"]): string {
-  if (passing === "automatic") return "";
-  return `${passing} `;
+  // V22 (Memory Model v2): solo "value" y "out" existen. "value" no se
+  // imprime (es el default); "out" se imprime como prefijo.
+  if (passing === "out") return "out ";
+  return "";
 }
 
 function formatParameter(parameter: Parameter): string {

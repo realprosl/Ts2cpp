@@ -101,9 +101,10 @@ En perfiles de release se separan funciones y datos por sección, el enlazador e
 - Packs genéricos heterogéneos y parámetros rest emitidos como parameter packs de C++20.
 - Funciones `async`, `Promise<T>` y `await` emitidos como corutinas C++20.
 - Event loop cooperativo, temporizadores, tareas desacopladas y sockets TCP no bloqueantes.
-- Parámetros síncronos no triviales prestados automáticamente como referencias constantes.
-- Préstamos mutables explícitos mediante parámetros `mut`, emitidos como `T&`.
-- Errores explícitos mediante `Result<T>` o parámetros `out` compatibles; el runtime no lanza excepciones.
+- Parámetros `ref<T>` y `constRef<T>` emitidos como `T&` y `const T&` (V22).
+- Parámetros `ptr<T>` y `constPtr<T>` emitidos como `std::unique_ptr<T>` y `std::unique_ptr<const T>` (V22).
+- `T` significa copia (V22): el dialecto no aplica lowering implícito a `const T&`.
+- Errores explícitos mediante `Result<T>` o parámetros `out` (deprecado, mantener por compatibilidad).
 - Imports relativos, roots y aliases resueltos mediante un grafo de módulos.
 - Visibilidad nominal entre módulos mediante `export` e imports explícitos.
 - Informe JSON cronológico de cada transpilación y compilación.
@@ -286,53 +287,46 @@ const data: Result<string> = await asyncRead;
 
 `await` a nivel superior se traduce a `ets::syncWait` porque la función `main` de C++ no puede ser corutina. Dentro de una `async function` se convierte en `co_await` como cualquier otra promesa.
 
-## Paso de parámetros sin copias
+## Paso de parámetros
 
-Los parámetros normales son inmutables en el lenguaje. El backend aprovecha esa garantía y selecciona automáticamente un ABI eficiente sin cambiar la firma lógica:
+**V22 — `T` significa copia**. El dialecto ya no convierte automáticamente
+un parámetro `T` a `const T&` para "optimizar" el ABI. Si quieres evitar
+la copia, declara el parámetro con `ref<T>` o `constRef<T>`.
 
 ```typescript
-function inspect(values: number[], label: string, count: number): number {
-  print(label);
-  return count + length(values);
+class Counter { value: number; constructor(v: number) { this.value = v; } }
+
+function inspect(c: constRef<Counter>): number {
+  return c.value;  // lectura, no copia
+}
+
+function increment(c: ref<Counter>): void {
+  c.value = c.value + 1;  // muta el valor del caller
 }
 ```
 
 ```cpp
-double inspect(
-    const std::vector<double>& values,
-    const std::string& label,
-    double count
-);
+double inspect(const Counter& c);
+void increment(Counter& c);
 ```
 
 | Parámetro fuente | C++ generado |
 | --- | --- |
-| `number`, `boolean` | Por valor |
-| Strings, arrays, tuplas y clases | `const T&` |
-| Interfaces y tipos genéricos | `const T&` |
-| Firmas de closures | Referencias constantes para tipos no triviales |
-| Pack variádico síncrono | `const T&...` |
-| `mut value: T` | `T&` con lectura y escritura |
-| `out value: T` | `T&` |
-| Parámetro de función `async` | Por valor dentro del frame de corutina |
+| `T` (sin modifier) | Por valor (copia) |
+| `number`, `boolean` (primitivos) | Por valor |
+| `ref<T>` | `T&` con lectura y escritura |
+| `constRef<T>` | `const T&` (solo lectura) |
+| `ptr<T>` | `std::unique_ptr<T>` (ownership exclusivo) |
+| `constPtr<T>` | `std::unique_ptr<const T>` (ownership readonly) |
+| `out value: T` | `T&` (deprecado; preferir `Result<T>`) |
 
-Los retornos siguen siendo valores y aprovechan RVO, NRVO y movimiento de C++. Las corutinas conservan parámetros por valor porque una referencia podría quedar colgando durante una suspensión. Por el mismo motivo, las funciones `async` rechazan parámetros `mut` y `out` hasta disponer de análisis de duración.
+> **Importante**: Estatic **nunca** cambia implícitamente un parámetro `T`
+> por una referencia para optimizar el ABI. Si se quiere evitar una copia,
+> debe expresarse mediante `ref<T>` o `constRef<T>`.
 
-`Result<T>::value()` devuelve ahora una referencia al valor almacenado cuando el `Result` sigue vivo, por lo que consultar o imprimir un `Result<string>` ya no copia todo el texto. Al mover un `Result` temporal, C++ puede mover también su contenido.
-
-El AST representa los modos `automatic`, `mut`, `out` y `move`. Sin modificador, los escalares pasan por valor y los objetos por referencia constante. `mut` exige una variable mutable —no una constante ni un temporal— y permite modificarla. `out` conserva su significado de resultado por argumento.
-
-```typescript
-class Counter { value: number; }
-
-function inspect(counter: Counter): number {
-  return counter.value;
-}
-
-function increment(mut counter: Counter): void {
-  counter.value = counter.value + 1;
-}
-```
+Las funciones `async` rechazan parámetros `ref<T>` y `constRef<T>` hasta
+disponer de análisis de lifetimes (PR#7). Si la corutina necesita el
+objeto, debe recibirlo por valor o tomar ownership con `ptr<T>`.
 
 ## Arrays y tuplas
 

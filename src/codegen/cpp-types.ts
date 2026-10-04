@@ -78,22 +78,35 @@ function cppTypeFromString(type: TypeName): string {
 }
 
 function cppTypeFromGenericString(sourceBase: string, args: TypeName[]): string {
-  // `Mut<T>` y `MutRef<T>` son modificadores, no tipos envoltorio.
-  // Se resuelven al tipo base (T). El cppParameterDeclaration se encarga
-  // de emitir T* o T& cuando se usan como parámetro.
-  if (sourceBase === "Mut" || sourceBase === "MutRef") {
+  // V22 (Memory Model v2): los modificadores de paso son ptr<T>,
+  // constPtr<T>, ref<T>, constRef<T>. Cada uno se traduce directamente a
+  // su equivalente C++ (T*, const T*, T&, const T&).
+  if (sourceBase === "ptr" || sourceBase === "constPtr" || sourceBase === "ref" || sourceBase === "constRef") {
     const inner = args[0];
-    return inner ? cppType(inner) : "void";
+    return inner ? cppMemoryType(sourceBase, inner) : "void";
   }
   const base = sourceBase === "Promise" ? "ets::Task"
     : sourceBase === "Result" ? "ets::Result"
     : sourceBase === "Map" ? "ets::Map"
     : sourceBase === "Set" ? "ets::Set"
     : sourceBase === "Optional" ? "ets::Optional"
-    : sourceBase === "Unq" ? "ets::Unq"
-    : sourceBase === "Rc" ? "ets::Rc"
     : sourceBase;
   return `${base}<${args.map(cppType).join(", ")}>`;
+}
+
+// V22 (Memory Model v2): mapa explícito de los 4 modificadores de paso
+// a su tipo C++ correspondiente. ptr<T> y constPtr<T> modelan ownership
+// exclusivo (std::unique_ptr); ref<T> y constRef<T> modelan préstamos
+// no-null (referencias). Ningún modificador incrementa el reference
+// count ni participa en ABI oculto.
+export function cppMemoryType(name: "ptr" | "constPtr" | "ref" | "constRef", inner: TypeName): string {
+  const innerCpp = cppType(inner);
+  switch (name) {
+    case "ptr":      return `std::unique_ptr<${innerCpp}>`;
+    case "constPtr": return `std::unique_ptr<const ${innerCpp}>`;
+    case "ref":      return `${innerCpp}&`;
+    case "constRef": return `const ${innerCpp}&`;
+  }
 }
 
 function cppTypeFromResolved(type: ResolvedType): string {

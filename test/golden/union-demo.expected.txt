@@ -1,8 +1,0 @@
-string
-string
-a =texto
-a =100
-b =abc
-b =1
-c =ok
-c =3.14

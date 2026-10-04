@@ -170,14 +170,16 @@ export class Parser {
     if (!this.check(")")) do {
       const variadic = this.match("...");
       const out = this.match("out");
-      const mutable = this.match("mut");
-      if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
+      // V22 (Memory Model v2): el modificador `mut` ya no existe.
+      // Si aparece, emitimos E4400 y lo consumimos para continuar parseando.
+      if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
+      if (out && this.check("mut")) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
       const p = this.consume("identifier", "Se esperaba el nombre del parámetro");
       const optional = this.match("?");
       this.consume(":", "El parámetro necesita un tipo");
       const type = this.typeName();
       const defaultValue = this.match("=") ? this.expression() : undefined;
-      params.push({ name: p.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", variadic, defaultValue, optional, span: p.span });
+      params.push({ name: p.lexeme, type, out, passing: out ? "out" : "value", variadic, defaultValue, optional, span: p.span });
     } while (this.match(","));
     this.consume(")", "Se esperaba ')' después de los parámetros");
     this.consume(":", "La función necesita un tipo de retorno");
@@ -215,14 +217,14 @@ export class Parser {
       const params: Parameter[] = [];
       if (!this.check(")")) do {
         const out = this.match("out");
-        const mutable = this.match("mut");
-        if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
+        // V22: `mut` eliminado. Consumir + diagnosticar.
+        if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
         const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
         const optional = this.match("?");
         this.consume(":", "El parámetro necesita un tipo");
         const type = this.typeName();
         const defaultValue = this.match("=") ? this.expression() : undefined;
-        params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : mutable ? "mut" : "automatic", defaultValue, optional, span: parameter.span });
+        params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : "value", defaultValue, optional, span: parameter.span });
       } while (this.match(","));
       this.consume(")", "Se esperaba ')' después de los parámetros");
       this.consume(":", "El método necesita un tipo de retorno");
@@ -264,8 +266,8 @@ export class Parser {
         const params: Parameter[] = [];
         if (!this.check(")")) do {
           const out = this.match("out");
-          const mutable = this.match("mut");
-          if (out && mutable) this.error(this.previous(), "Un parámetro no puede ser out y mut a la vez");
+          // V22: `mut` eliminado.
+          if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
           // V19: parameter properties. Si el parámetro tiene modificador de
           // acceso o readonly, se convierte en un campo de la misma clase.
           const paramAccess: "private" | "public" | "protected" | undefined =
@@ -283,7 +285,7 @@ export class Parser {
             name: parameter.lexeme,
             type,
             out,
-            passing: out ? "out" : mutable ? "mut" : "automatic",
+            passing: out ? "out" : "value",
             defaultValue,
             optional,
             // V19: si tiene modificador o readonly, es un parameter property.
@@ -801,12 +803,13 @@ export class Parser {
     const open = this.consume("(", "Se esperaba '('");
     const params: Parameter[] = [];
     if (!this.check(")")) do {
-      const mutable = this.match("mut");
+      // V22: `mut` eliminado.
+      if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
       const name = this.consume("identifier", "Se esperaba el nombre del parámetro");
       this.consume(":", "Los parámetros de una función flecha necesitan tipo");
       const type = this.typeName();
       const defaultValue = this.match("=") ? this.expression() : undefined;
-      params.push({ name: name.lexeme, type, out: false, passing: mutable ? "mut" : "automatic", defaultValue, span: name.span });
+      params.push({ name: name.lexeme, type, out: false, passing: "value", defaultValue, span: name.span });
     } while (this.match(","));
     this.consume(")", "Se esperaba ')' después de los parámetros");
     const returnType = this.match(":") ? this.typeName() : undefined;

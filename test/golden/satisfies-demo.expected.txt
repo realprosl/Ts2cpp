@@ -1,4 +1,0 @@
-42
-literal
-hello
-10

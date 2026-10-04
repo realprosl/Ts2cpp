@@ -1,18 +1,23 @@
-// rc-demo.ets — `Rc<T>` (smart pointer con conteo de referencias, equivalente
-// a std::shared_ptr<T>).
+// rc-demo.ets — V22 sustituye `Rc<T>` por `ptr<T>` (unique ownership).
 //
-// `Rc<T>` se construye con `rcShare<T>(value)`. Cada copia incrementa el
-// contador; cuando llega a 0, el recurso se libera. Útil para grafos,
-// caches, y estructuras donde varios owners legítimos comparten el mismo dato.
+// V22 (Memory Model v2): `Rc<T>` (shared ownership) se deprecó. El nuevo
+// modelo ofrece `ptr<T>` (ownership exclusivo, std::unique_ptr<T>).
+// Shared ownership con `weak<T>` se diseñará en un PR futuro.
+//
+// Mientras tanto, este ejemplo muestra el reemplazo básico: poseemos un
+// valor de forma exclusiva y lo pasamos por referencia mutable cuando
+// necesitamos que otra función lo modifique.
 
 class Counter {
   value: number;
   constructor(value: number) { this.value = value; }
 }
 
-const a: Rc<Counter> = rcShare<Counter>(new Counter(10));
-const b: Rc<Counter> = a;  // copia: contador sube
-print(numberToString(rcStrongCount(a)));  // 2
+function increment(c: ref<Counter>): void {
+  // ref<Counter> es T&: el callee muta el valor del caller.
+  c.value = c.value + 1;
+}
 
-const c: Rc<Counter> = rcShare<Counter>(new Counter(20));
-print(numberToString(rcValue(c).value));  // 20
+const counter: Counter = new Counter(10);
+increment(counter);
+print(numberToString(counter.value));  // 11

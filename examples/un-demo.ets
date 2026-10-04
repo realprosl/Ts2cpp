@@ -1,22 +1,22 @@
-// un-demo.ets — `Unq<Counter>` (smart pointer con ownership único, equivalente a
-// std::unique_ptr<T>).
+// un-demo.ets — V22 sustituye `Unq<T>` por `ptr<T>` (unique ownership).
 //
-// `Unq<Counter>` se construye con `unSome<T>(value)` y se destruye automáticamente
-// al salir del scope. Es move-only: no se puede copiar.
+// V22 (Memory Model v2): `Unq<T>` se eliminó en favor de `ptr<T>`, que
+// también modela ownership exclusivo (std::unique_ptr<T>) y es move-only.
+// Las APIs `unSome<T>(value)`, `unValue(x)`, `unIsSome(x)` se rediseñarán
+// en PR#4 (moves) y PR#5 (move semantics).
+//
+// Mientras tanto, este ejemplo muestra el modelo de propiedad: poseemos
+// un valor de forma exclusiva y lo prestamos a otras funciones.
 
 class Counter {
   value: number;
   constructor(value: number) { this.value = value; }
 }
 
-function makeCounter(): Unq<Counter> {
-  return unSome<Counter>(new Counter(42));
+function inspect(c: constRef<Counter>): number {
+  // constRef<T> permite leer el valor sin posibilidad de mutarlo.
+  return c.value;
 }
 
-function inspect(c: Unq<Counter>): number {
-  if (unIsSome(c)) return unValue(c).value;
-  return -1;
-}
-
-const counter: Unq<Counter> = makeCounter();
-print(numberToString(inspect(counter)));
+const counter: Counter = new Counter(42);
+print(numberToString(inspect(counter)));  // 42
