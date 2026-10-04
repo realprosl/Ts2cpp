@@ -689,25 +689,60 @@ export class Parser {
   }
 
   private expression(): Expression {
-    const left = this.isArrowStart() ? this.arrowFunction() : (this.check("match") ? this.matchExpression() : this.assignment());
+    // V23: lookahead para distinguir `match(v, [...])` (intrinsics) de
+    // `match(v) {...}` (V2 keyword). `match` ya no es keyword (lo
+    // convertimos en identifier para soportar la nueva sintaxis), así que
+    // tenemos que mirar el lexema del token actual.
+    if (this.check("identifier") && this.peek().lexeme === "match") {
+      const afterParen = this.lookaheadAfterMatchParen();
+      if (afterParen === "new") {
+        // match(value, [...]) o match(value, "key", [...])
+        return this.assignment();
+      }
+      return this.matchExpression();
+    }
+    const left = this.isArrowStart() ? this.arrowFunction() : this.assignment();
     return this.ternary(left);
   }
 
   /**
-   * Parsea `match (subject) { when (pattern) => result; when (...) => ...; _ => default }`.
-   * El subject se evalúa una vez. Cada arm se evalúa como `subject == pattern ? result : ...`.
-   * El último arm con pattern `_` actúa como default (siempre matchea).
+   * V23: mira lo que hay justo después del `(` en `match (`. Devuelve:
+   *   - "new" si lo siguiente es `,` o un literal (nueva forma intrinsics).
+   *   - "keyword" si lo siguiente es `{`, `)`, o cualquier otra cosa (V2).
    */
+  private lookaheadAfterMatchParen(): "new" | "keyword" {
+    const start = this.current;
+    // Como `match` ya es identifier, buscamos por lexema.
+    if (this.tokens[start].lexeme !== "match") return "keyword";
+    if (this.tokens[start + 1]?.kind !== "(") return "keyword";
+    let depth = 1;
+    for (let i = start + 2; i < this.tokens.length; i++) {
+      const k = this.tokens[i].kind;
+      if (k === "(") depth++;
+      else if (k === ")") {
+        depth--;
+        if (depth === 0) return "keyword";
+        continue;
+      }
+      if (depth === 1 && k === ",") return "new";
+      if (depth === 1 && k === "{") return "keyword";
+    }
+    return "keyword";
+  }
+
   /**
-   * Parsea arms de `match`:
-   *   - V2: `case { kind: "Variant", payload1, payload2 }: <expr>;`
-   *   - V2: `case _: <expr>;`
-   *   - Legacy TC39: `when (<expr>) => <expr>;` (sigue funcionando para
-   *     matches cuyo subject NO sea tagged union).
+   * Parsea arms de `match` V2 (destructured sobre tagged unions).
+   *   - `case { kind: "<Variant>", <id>?, ... }: <expr>;`
+   *   - `case _: <expr>;`
    *
-   * El parser detecta el dialecto por el primer token: si ve `case`,
-   * parsea todos los arms como V2; si ve `when`, los parsea como legacy.
-   * Mezclar en un mismo match es un error de diagnóstico.
+   * La forma TC39 `when (p) => <expr>;` se eliminó en V23. Si el parser
+   * encuentra `when` aquí, emite diagnóstico E4400 sugiriendo la nueva
+   * sintaxis `match(v, [when(p, () => <expr>)])`.
+   *
+   * V23: los `match` keyword (V2 destructurado) y `match(v, [...])` (V23
+   * intrinsics) son formas distintas. El keyword exige `match (subject) { ... }`
+   * con `{` literal; la V23 usa `match(subject, [...])` sin llaves y se
+   * parsea como `CallExpression` normal.
    */
   private matchArms(arms: MatchArm[]): void {
     while (!this.check("}") && !this.check("eof")) {
@@ -716,16 +751,21 @@ export class Parser {
         const arm = this.parseCaseArm();
         arms.push(arm);
       } else if (this.check("when")) {
+        // V23: la sintaxis TC39 `when (p) => ...` se eliminó. Diagnosticamos
+        // y dejamos que el caller siga parseando para encontrar el `}`.
         this.advance(); // consume 'when'
-        this.consume("(", "Se esperaba '(' después de 'when'");
-        const pattern = this.expression();
-        this.consume(")", "Se esperaba ')' después del pattern");
-        this.consume("=>", "Se esperaba '=>' en el arm de 'match'");
-        const result = this.expression();
-        const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
-        arms.push({ pattern, result, span: span(pattern.span.start, end.span.end) });
+        this.error(this.previous(), "E4400: 'when (p) => ...' dentro de 'match' ya no se admite; usa 'match(value, [when(p, () => result)])' en su lugar");
+        // Skip hasta el siguiente `;` o `}` para no liar el resto del bloque.
+        let parenDepth = 0;
+        while (!this.check("eof")) {
+          if (this.check("(")) parenDepth++;
+          else if (this.check(")")) parenDepth--;
+          else if (parenDepth === 0 && (this.check(";") || this.check("}"))) break;
+          this.advance();
+        }
+        if (this.check(";")) this.advance();
       } else {
-        this.error(this.peek(), "Se esperaba 'case' o 'when' para iniciar un arm de 'match'");
+        this.error(this.peek(), "Se esperaba 'case' para iniciar un arm de 'match' V2");
         return;
       }
     }
@@ -774,7 +814,10 @@ export class Parser {
   private matchExpression(): MatchExpression {
     const keyword = this.previous();
     const start = this.peek().span.start;
-    this.match("match");
+    // V23: `match` ya no es keyword — es un identifier que el lookahead
+    // detectó que va seguido de `(...) {`. Consumimos el identifier manualmente.
+    if (this.check("identifier") && this.peek().lexeme === "match") this.advance();
+    else this.error(this.peek(), "Se esperaba 'match' para iniciar una expresión match V2");
     this.consume("(", "Se esperaba '(' después de 'match'");
     const subject = this.expression();
     this.consume(")", "Se esperaba ')' después del sujeto de 'match'");
@@ -957,14 +1000,16 @@ export class Parser {
     }
     if (token.kind === "[") {
       const elements: ArrayElement[] = [];
-      if (!this.check("]")) do {
-        if (this.match("...")) {
-          const expr = this.expression();
-          elements.push({ kind: "SpreadElement", expression: expr, span: expr.span });
-        } else {
-          elements.push(this.expression());
-        }
-      } while (this.match(","));
+      if (!this.check("]")) {
+        do {
+          if (this.match("...")) {
+            const expr = this.expression();
+            elements.push({ kind: "SpreadElement", expression: expr, span: expr.span });
+          } else {
+            elements.push(this.expression());
+          }
+        } while (this.match(",") && !this.check("]"));
+      }
       const close = this.consume("]", "Se esperaba ']' después del literal");
       return { kind: "ArrayLiteralExpression", elements, span: span(token.span.start, close.span.end) };
     }

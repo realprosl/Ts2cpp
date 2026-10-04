@@ -743,7 +743,7 @@ Esta sección documenta **explícitamente** features de TypeScript estándar que
 - Template literals con `${expr}` (1.7).
 - `for await...of` sobre `Promise<T>[]` (1.8).
 - `using name = expr` con RAII automático (1.9).
-- Match expressions con `when (pattern) => result` (1.10).
+- Match expressions con `when (pattern) => result` (1.10) — **eliminado en V23**, ver `docs/match-syntax.md`.
 - **`export default` y `export { x as y }`** (1.15).
 - `satisfies` operator con cast implícito (1.11).
 - `Promise.all(tasks)` y `Promise.race(tasks)` sobre `Promise<T>[]` (1.13).

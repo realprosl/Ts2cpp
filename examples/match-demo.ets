@@ -1,35 +1,41 @@
-// match-demo.ets — Fase 1.10: match expressions (TC39 stage 2).
+// match-demo.ets — V23: match intrinsics con sintaxis compatible con TypeScript.
 //
-// `match (subject) { when (pattern) => result; ... }` desazucara a una
-// cadena de comparaciones `(subject == pattern ? result : ...)` con
-// short-circuit. Cada arm se evalúa en orden; el primero que matchea
-// determina el resultado. El último arm puede ser un wildcard `_` que
-// siempre matchea (default).
+// `match(value, [when(pattern, callback), ...])` desazucara a un
+// if/else chain (IIFE) que se compila a codigo C++ nativo, sin pasar
+// por una llamada a funcion. Cada arm se evalua en orden; el primero
+// que matchea determina el resultado. El ultimo arm puede ser un
+// `otherwise(callback)` que actua como default.
 //
-// Limitaciones actuales:
-// - Los patterns son expresiones (literales, identifiers). No hay
-//   pattern destructuring, rangos, ni type guards.
-// - El operador `==` se usa para comparar; en runtime depende de
-//   operator== del tipo (no funciona con strings si no se define).
+// Diferencias con la forma TC39 (V1.10, eliminada en V23):
+// - Los callbacks son arrow functions con tipo explicito: `(v: T): R => expr`.
+//   El dialecto requiere anotacion de tipo en lambdas (no hay inferencia
+//   contextual como en TypeScript).
+// - Los patterns son expresiones que se comparan con `==` (literales,
+//   identifiers). No hay pattern destructuring ni rangos.
+// - Para type dispatching, usa `whenType<T>(callback)`. En V23.1 NO
+//   narrowa el subject (issue #95): el callback se invoca sin
+//   argumentos. Para narrowing real, usa la forma V2 destructurada.
+//
+// Ver `docs/match-syntax.md` para la especificacion completa.
 
 function classify(x: number): string {
-  return match (x) {
-    when (0) => "zero";
-    when (1) => "one";
-    when (2) => "two";
-    when (3) => "three";
-    when (_) => "many";
-  };
+  return match(x, [
+    when(0, (v: number): string => "zero"),
+    when(1, (v: number): string => "one"),
+    when(2, (v: number): string => "two"),
+    when(3, (v: number): string => "three"),
+    otherwise((): string => "many"),
+  ]);
 }
 
 function sign(n: number): string {
-  return match (n) {
-    when (0) => "zero";
-    when (_) => match (n) {
-      when (1) => "one";
-      when (_) => "many";
-    };
-  };
+  return match(n, [
+    when(0, (v: number): string => "zero"),
+    otherwise((): string => match(n, [
+      when(1, (v: number): string => "one"),
+      otherwise((): string => "many"),
+    ])),
+  ]);
 }
 
 print(classify(0));   // zero

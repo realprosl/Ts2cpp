@@ -179,6 +179,70 @@ declare global {
   function move<T>(x: ptr<T>): ptr<T>;
   function move<T>(x: constPtr<T>): constPtr<T>;
 
+  // ─── Match intrinsics (V23) ────────────────────────────────────────
+  // El dialecto expone una API declarativa para pattern matching
+  // compatible con TypeScript. match(value, [when(pattern, callback),
+  // ...]) se compila a un if/else chain (no a una llamada a funcion);
+  // los intrinsics when/whenType/otherwise SOLO son validos dentro del
+  // array de cases de match.
+  //
+  // Limitacion V23.1: whenType NO narrowa el tipo del subject. El
+  // callback se invoca sin argumentos (usa captura por referencia si
+  // necesitas el subject). Issue #95 deja el narrowing fuera de
+  // alcance. Para type dispatching real, usa el V2 destructurado:
+  //   match (r) { case { kind: "X", x }: ...; case _: ... }
+  // que SI enforce exhaustividad.
+  interface MatchValueCase<P, R> {
+    readonly __matchKind: "value";
+    readonly __pattern: P;
+    readonly __result: R;
+  }
+  interface MatchTypeCase<T, R> {
+    readonly __matchKind: "type";
+    readonly __type: T;
+    readonly __result: R;
+  }
+  interface MatchDefaultCase<R> {
+    readonly __matchKind: "default";
+    readonly __result: R;
+  }
+  type MatchCase =
+    | MatchValueCase<any, any>
+    | MatchTypeCase<any, any>
+    | MatchDefaultCase<any>;
+  type MatchCaseResult<C> =
+    C extends MatchValueCase<any, infer R> ? R
+    : C extends MatchTypeCase<any, infer R> ? R
+    : C extends MatchDefaultCase<infer R> ? R
+    : never;
+  type MatchResult<Cases extends readonly MatchCase[]> =
+    MatchCaseResult<Cases[number]>;
+  function when<const P, R>(
+    pattern: P,
+    callback: (value: P) => R
+  ): MatchValueCase<P, R>;
+  function whenType<T, R>(
+    callback: (value: T) => R
+  ): MatchTypeCase<T, R>;
+  function otherwise<R>(
+    callback: (value: any) => R
+  ): MatchDefaultCase<R>;
+  function match<
+    T,
+    const Cases extends readonly MatchCase[]
+  >(
+    value: T,
+    cases: Cases
+  ): MatchResult<Cases>;
+  function match<
+    T,
+    const Cases extends readonly MatchCase[]
+  >(
+    value: T,
+    discriminator: string,
+    cases: Cases
+  ): MatchResult<Cases>;
+
   // ─── Helpers async (ASYNC_HELPERS + ASYNC_PRIMITIVE_HELPERS) ────────
   // sleep y spawn son funciones globales del runtime (registradas
   // en type-checker.ts:446-447). all y race se manejan como casos

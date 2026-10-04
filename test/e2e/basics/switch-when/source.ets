@@ -1,17 +1,18 @@
-// switch-when — expresiones `match (subject) { when (pattern) => ... }`.
+// switch-when — V23: match intrinsics con sintaxis compatible con TypeScript.
 //
-// El dialecto usa `match` (similar a TC39 stage 2) en lugar de `switch`/`case`.
-// Cada arm se evalúa en orden; el primero que matchea determina el resultado.
-// El último arm puede usar el wildcard `_` como default.
+// `match(value, [when(pattern, callback), ...])` desazucara a un
+// if/else chain (IIFE) que se compila a codigo C++ nativo. El ultimo
+// arm puede usar `otherwise(callback)` como default (antes era `when (_)`
+// con wildcard).
 
 function classify(n: number): string {
-  return match (n) {
-    when (0) => "zero";
-    when (1) => "one";
-    when (2) => "two";
-    when (3) => "three";
-    when (_) => "many";
-  };
+  return match(n, [
+    when(0, (v: number): string => "zero"),
+    when(1, (v: number): string => "one"),
+    when(2, (v: number): string => "two"),
+    when(3, (v: number): string => "three"),
+    otherwise((): string => "many"),
+  ]);
 }
 
 print(classify(0));
@@ -20,13 +21,13 @@ print(classify(2));
 print(classify(3));
 print(classify(42));
 
-// match como statement (descarta el valor con punto-y-coma al final).
+// match como expression (su valor se devuelve directamente).
 function isWeekend(day: string): boolean {
-  return match (day) {
-    when ("sat") => true;
-    when ("sun") => true;
-    when (_) => false;
-  };
+  return match(day, [
+    when("sat", (d: string): boolean => true),
+    when("sun", (d: string): boolean => true),
+    otherwise((): boolean => false),
+  ]);
 }
 
 print("sat = " + numberToString(isWeekend("sat") ? 1 : 0));
