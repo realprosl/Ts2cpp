@@ -121,6 +121,10 @@ export class CppGenerator {
   // Map de alias introducidos por `export { x as y }` para que el codegen
   // resuelva `y` al símbolo original `x`. Se rellena desde type-checker.
   private readonly exportAliases = new Map<string, string>();
+  // V22: tipos inferidos de los identificadores locales (nombre → TypeName).
+  // Permite al codegen decidir entre `.` y `->` en member access cuando el
+  // tipo es `ptr<T>`.
+  private readonly identifierTypes = new Map<string, TypeName>();
   private destructuringCounter = 0;
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
@@ -695,7 +699,9 @@ export class CppGenerator {
       // `auto` para que C++ deduzca, y emitimos la asignación en el init.
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
-      let initializerText = this.emitExpression(variable.initializer);
+      // V22: si el declaredType es ptr<T>/constPtr<T>, pasamos ese target al
+      // emitExpression para que el NewExpression use make_unique.
+      let initializerText = this.emitExpression(variable.initializer, variable.declaredType);
       if (variable.declaredType && isNumericType(variable.declaredType)) {
         const initType = this.expressionType(variable.initializer);
         const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== variable.declaredType);
@@ -1067,7 +1073,11 @@ export class CppGenerator {
         // tiene un tipo numérico distinto (o es `number` literal), insertamos
         // `static_cast<Target>` para que el C++ no se queje de la conversión
         // (p.ej. `int32_t x = 42.0` es narrowing implícito y emite warning).
-        let initializerExpr = this.emitExpression(node.initializer);
+        // V22: pasamos el declaredType al emitExpression para que
+        // NewExpression use make_unique cuando el destino es ptr<T>/constPtr<T>.
+        let initializerExpr = this.emitExpression(node.initializer, node.declaredType);
+        // V22: registramos el tipo del identifier para que member access use ->.
+        if (node.declaredType) this.identifierTypes.set(node.name, node.declaredType);
         if (node.declaredType && isNumericType(node.declaredType)) {
           const initType = this.expressionType(node.initializer);
           const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== node.declaredType);
@@ -1090,7 +1100,9 @@ export class CppGenerator {
         }
         // V3: emitir static_cast si el tipo declarado del retorno es un
         // numérico concreto y el valor es de otro tipo numérico.
-        let returnText = node.value ? this.emitExpression(node.value) : "";
+        // V22: pasamos this.currentReturn como targetType para que el
+        // NewExpression use make_unique cuando la firma es ptr<T>/constPtr<T>.
+        let returnText = node.value ? this.emitExpression(node.value, this.currentReturn) : "";
         if (node.value && this.currentReturn && isNumericType(this.currentReturn)) {
           const valueType = this.expressionType(node.value);
           if (valueType && (valueType === "number" || isNumericType(valueType)) && valueType !== this.currentReturn) {
@@ -1346,18 +1358,27 @@ export class CppGenerator {
   }
 
   /**
-   * Devuelve true si el argumento `index` de la llamada `call` espera un
-   * parámetro de tipo `ptr<T>`. En ese caso el codegen debe prefijar `&`
-   * al lvalue pasado como argumento.
+   * Devuelve false en V22 (Memory Model v2): el codegen ya NO añade `&`
+   * automático a lvalues pasados a parámetros, porque:
+   *
+   *   - `ptr<T>` / `constPtr<T>` esperan `std::unique_ptr<T>` por valor
+   *     (ownership). Pasar `&(x)` daría un `unique_ptr*` y no compila.
+   *     El call site pasa `x` directamente y C++ lo mueve.
+   *
+   *   - `ref<T>` / `constRef<T>` esperan `T&` / `const T&` por referencia.
+   *     C++ ya vincula lvalues a referencias automáticamente (no hace
+   *     falta `&` explícito). Pasar `&(x)` daría `T*` que no es
+   *     convertible a `T&` (es la razón por la que un fix inicial que
+   *     añadía `&` para `ref`/`constRef` rompía la compilación de
+   *     tests como `constref-read` y `ref-mutate`).
+   *
+   * El único caso pre-V22 que necesitaba `&` era `Mut<T>` → `T*`. Pero
+   * `Mut<T>` se eliminó en V22, así que la función ahora siempre
+   * devuelve false y queda como hook histórico por si un futuro
+   * modificador "raw pointer" reaparece.
    */
-  private argumentExpectsPtrPointer(call: { callee: string; args: Expression[] }, index: number, _argument: Expression): boolean {
-    const overloads = this.topLevelFunctions.get(call.callee);
-    if (!overloads || overloads.length === 0) return false;
-    const signature = overloads[0];
-    const parameter = signature.params[index];
-    if (!parameter) return false;
-    if (!isGenericType(parameter.type)) return false;
-    return genericBase(parameter.type) === "ptr";
+  private argumentExpectsPtrPointer(_call: { callee: string; args: Expression[] }, _index: number, _argument: Expression): boolean {
+    return false;
   }
 
   /**
@@ -1376,15 +1397,23 @@ export class CppGenerator {
    * miembros (porque en C++ es `T*`).
    */
   private identifierIsPtrPointer(name: string): boolean {
-    // V22 (Memory Model v2): un identificador es un puntero (ptr<T>) si
-    // algún parámetro top-level con ese nombre fue declarado como ptr<T>.
-    // En ese caso el codegen usa `->` para acceder a miembros.
+    // V22 (Memory Model v2): un identificador es un puntero (ptr<T>) si:
+    //   (a) algún parámetro top-level con ese nombre fue declarado como ptr<T>, o
+    //   (b) el checker lo marcó como ptr<T> en su resolvedType.
+    // En cualquier caso, el codegen usa `->` para acceder a miembros.
     for (const overloads of this.topLevelFunctions.values()) {
       for (const signature of overloads) {
         for (const parameter of signature.params) {
           if (parameter.name === name && isGenericType(parameter.type) && genericBase(parameter.type) === "ptr") return true;
         }
       }
+    }
+    // Variables locales: usamos el tipo de la expresión para detectar ptr<T>.
+    // Esta es una heurística: si el nombre es una variable y su tipo es
+    // `ptr<T>`, tratamos sus accesos como `->`.
+    if (this.identifierTypes.has(name)) {
+      const t = this.identifierTypes.get(name);
+      if (t && isGenericType(t) && genericBase(t) === "ptr") return true;
     }
     return false;
   }
@@ -1411,7 +1440,7 @@ export class CppGenerator {
   }
   private statementBody(node: Statement): string { if (node.kind === "BlockStatement") return this.emitBlock(node); this.indent++; const body = `{\n${this.emitStatement(node)}\n`; this.indent--; return body + this.pad() + "}"; }
   private emitBlock(node: BlockStatement, appendCoReturn = false): string { const lines = ["{"]; this.indent++; for (const s of node.statements) lines.push(this.emitStatement(s)); if (appendCoReturn) lines.push(this.pad() + "co_return;"); this.indent--; lines.push(this.pad() + "}"); return lines.join("\n"); }
-  private emitExpression(node: Expression): string {
+  private emitExpression(node: Expression, targetType?: TypeName): string {
     switch (node.kind) {
       case "LiteralExpression": {
         if (typeof node.value === "string") return `std::string(${JSON.stringify(node.value)})`;
@@ -1669,8 +1698,22 @@ export class CppGenerator {
           else if (underlying === "string") text = `static_cast<std::string>(${text})`;
           return `static_cast<${cppType(node.callee)}>(${text})`;
         }
+        // V22: pasamos el tipo esperado del parámetro como targetType para
+        // que el NewExpression use make_unique cuando el parámetro es
+        // ptr<T>/constPtr<T>. Usamos la primera sobrecarga top-level si existe.
+        let expectedParamTypes: TypeName[] = [];
+        if (node.callee && this.topLevelFunctions.has(node.callee)) {
+          const overloads = this.topLevelFunctions.get(node.callee)!;
+          if (overloads.length > 0) expectedParamTypes = overloads[0].params.map(p => p.type);
+        }
+        // V22 (Memory Model v2): `move(x)` se traduce a `std::move(x)`.
+        // El type-checker se encarga de trackear el estado Moved; aquí
+        // solo emitimos el código C++.
+        if (node.callee === "move" && node.args.length === 1) {
+          return `std::move(${this.emitExpression(node.args[0])})`;
+        }
         const args = node.args.map((argument, index) => {
-          let text = this.emitExpression(argument);
+          let text = this.emitExpression(argument, expectedParamTypes[index]);
           if (this.expressionIsVariadic(argument)) text += "...";
           else {
             // Enums: ni `enum class` ni el struct de cadena convierten implícitamente
@@ -1685,11 +1728,11 @@ export class CppGenerator {
             // `print`). Sin el cast, `int8_t`/`uint8_t` se imprimirían como char.
             else if (argType && isNumericType(argType)) text = `static_cast<double>(${text})`;
           }
-          // `ptr<T>` espera un puntero: si el argumento es un lvalue (identificador,
-          // member access, index), le añadimos `&` para que C++ lo acepte.
-          if (this.argumentExpectsPtrPointer(node, index, argument)) {
-            if (this.isLvalue(argument)) text = `&(${text})`;
-          }
+          // V22 (Memory Model v2): ningún modificador requiere prefijar `&` al
+          // call site. `ref<T>`/`constRef<T>` ya aceptan lvalues por la
+          // regla C++ de vinculación lvalue→referencia, y `ptr<T>`/
+          // `constPtr<T>` esperan `std::unique_ptr<T>` por valor. Ver
+          // `argumentExpectsPtrPointer` (siempre false).
           return text;
         });
         // Si la función tiene exactamente una sobrecarga y el call site omitió
@@ -1996,6 +2039,16 @@ export class CppGenerator {
           }
           return text;
         });
+        // V22 (Memory Model v2): si el contexto propietario es `ptr<T>` o
+        // `constPtr<T>` (targetType), emitimos `std::make_unique<T>(...)`
+        // en lugar de construcción por valor. El tipo de retorno C++ es
+        // `std::unique_ptr<T>` (el typeName ptr<T> ya está mapeado en cppType).
+        if (targetType && isGenericType(targetType)) {
+          const memBase = genericBase(targetType);
+          if (memBase === "ptr" || memBase === "constPtr") {
+            return `std::make_unique<${cppType(node.className)}>(${args.join(", ")})`;
+          }
+        }
         return `${cppType(node.className)}{${args.join(", ")}}`;
       }
     }

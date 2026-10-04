@@ -33,19 +33,15 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   unNone:            { minParams: 0, returnsGeneric: true },
   unIsSome:          { minParams: 1 },
   unValue:           { minParams: 1, returnsRef: true },     // T& (no copia)
-  // Rc<T>
+  // V22 (Memory Model v2): `move(x)` transfiere ownership de un `ptr<T>`.
+  // El codegen emite `std::move(x)` y el checker marca la variable como
+  // `Moved` para que cualquier uso posterior sea diagnóstico E4102/E4103.
+  move:              { minParams: 1 },
+  // Rc<T> — DEPRECATED en V22. Conservado en metadata por compatibilidad
+  // temporal con código que aún lo use; los diagnósticos E4404 lo marcan.
   rcShare:           { minParams: 1, returnsGeneric: true },
   rcStrongCount:     { minParams: 1 },
   rcValue:           { minParams: 1, returnsRef: true },     // T&
-  // MutRef<T>
-  mutRefOf:          { minParams: 1, returnsGeneric: true },   // DEPRECATED
-  mutRefFrom:        { minParams: 1, returnsGeneric: true },   // DEPRECATED
-  mutRefValue:       { minParams: 1, returnsRef: true },        // DEPRECATED
-  // Mut<T>
-  mutOf:             { minParams: 1, returnsGeneric: true },    // DEPRECATED
-  mutFrom:           { minParams: 1, returnsGeneric: true },    // DEPRECATED
-  mutValue:          { minParams: 1, returnsRef: true },        // DEPRECATED
-  mutIsSome:         { minParams: 1 },                          // DEPRECATED
   // JSON
   parseJson:         { minParams: 1, returnsGeneric: true },
   // Map<K,V>
