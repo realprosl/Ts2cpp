@@ -356,3 +356,113 @@ test("codegen: argumentos de NewExpression compilan limpio con g++ (sin narrowin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// V23: tests del codegen para la nueva sintaxis `match(value, [when(...), ...])`.
+// Verifica que la interceptación convierte la CallExpression en un IIFE con
+// if/else chain, NO en una llamada a función (que sería `match(v, std::vector<void>{...})`).
+test("codegen V23: match(v, [when(0, cb)]) emite if con comparación", () => {
+  const out = cpp(`
+function classify(n: number): string {
+  return match(n, [
+    when(0, (v: number): string => "cero"),
+    otherwise((): string => "otro"),
+  ]);
+}
+print(classify(0));
+`);
+  // El IIFE debe contener un `if` con la comparación contra el patrón.
+  assert.match(out, /\[&]\(\)\s*->\s*std::string\s*\{/);
+  assert.match(out, /if\s*\(\s*\(n\)\s*==\s*\(0\.0\)\s*\)/);
+  // El literal 0 se emite como 0.0 (el dialecto modela number como double).
+  assert.match(out, /0\.0/);
+  // NO debe aparecer la llamada normal a `match` ni un std::vector<void>.
+  assert.doesNotMatch(out, /std::vector<void>\{/);
+  assert.doesNotMatch(out, /match\(\s*n\s*,\s*std::vector/);
+});
+
+test("codegen V23: match con multiple when emite if/else if chain", () => {
+  const out = cpp(`
+function f(n: number): string {
+  return match(n, [
+    when(0, (v: number): string => "a"),
+    when(1, (v: number): string => "b"),
+    otherwise((): string => "c"),
+  ]);
+}
+`);
+  // Primer when: `if`, los siguientes: `else if`.
+  assert.match(out, /if\s*\(\s*\(n\)\s*==\s*\(0\.0\)\s*\)/);
+  assert.match(out, /else\s+if\s*\(\s*\(n\)\s*==\s*\(1\.0\)\s*\)/);
+  assert.match(out, /else\s*\{[^}]*return[^}]*\}/);
+});
+
+test("codegen V23: match sin otherwise aborta", () => {
+  const out = cpp(`
+function f(n: number): string {
+  return match(n, [
+    when(0, (v: number): string => "a"),
+  ]);
+}
+`);
+  // El else final debe ser `std::abort()` marcado `[[unlikely]]`.
+  assert.match(out, /\[\[unlikely\]\]\s*std::abort\(\)/);
+});
+
+test("codegen V23: match con discriminator emite acceso a .key", () => {
+  const out = cpp(`
+class Fake { kind: string; payload: number; constructor(k: string, p: number) { this.kind = k; this.payload = p; } }
+function f(r: Fake): string {
+  return match(r, "kind", [
+    when("a", (x: Fake): string => "A"),
+    when("b", (x: Fake): string => "B"),
+  ]);
+}
+`);
+  // El acceso debe ser `r.kind` y la comparación contra el string literal.
+  assert.match(out, /\(r\.kind\)\s*==\s*\(std::string\("a"\)\)/);
+  assert.match(out, /\(r\.kind\)\s*==\s*\(std::string\("b"\)\)/);
+});
+
+test("codegen V23: whenType emite rama siempre-activa con callback sin args", () => {
+  const out = cpp(`
+function f(v: number | string): string {
+  return match(v, [
+    whenType<number>(() => "num"),
+  ]);
+}
+`);
+  // El callback se invoca con 0 args.
+  assert.match(out, /\[\]\(\)\s*->\s*std::string\s*\{[^}]*\}\(\)/);
+  // El primer whenType es la rama activa; el comentario unreachable no
+  // aparece porque solo hay uno.
+  assert.doesNotMatch(out, /unreachable/);
+});
+
+test("codegen V23: varios whenType marcan los siguientes como unreachable", () => {
+  const out = cpp(`
+function f(v: number | string): string {
+  return match(v, [
+    whenType<number>(() => "num"),
+    whenType<string>(() => "str"),
+  ]);
+}
+`);
+  // El segundo whenType debe tener el comentario unreachable.
+  assert.match(out, /unreachable/);
+});
+
+test("codegen V23: match con callbacks de 0 params se invocan sin args", () => {
+  const out = cpp(`
+function f(n: number): string {
+  return match(n, [
+    when(0, (): string => "cero"),
+    otherwise((): string => "otro"),
+  ]);
+}
+`);
+  // El callback de 0 params se invoca con `()` y no con `(n)`.
+  assert.match(out, /\[\]\(\)\s*->\s*std::string\s*\{[^}]*std::string\("cero"\)/
+  );
+  // Verificamos que NO se le pasa el subject al callback de 0 params.
+  assert.doesNotMatch(out, /\[\]\(\)\s*->\s*std::string[^}]*\(\s*n\s*\)/);
+});

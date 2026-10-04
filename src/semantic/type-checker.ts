@@ -2,6 +2,7 @@ import type { Program, Statement, Expression, TypeName, Parameter, FunctionDecla
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isReadonlyType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, readonlyInner, readonlyType, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
+import { HELPER_METADATA } from "./helpers.ts";
 
 // Tabla de métodos del built-in `fs` (estilo Node). Las versiones `*Sync`
 // devuelven `Result<T>` o `boolean`; las versiones sin sufijo son asíncronas y
@@ -2020,6 +2021,169 @@ export class TypeChecker {
             result = this.expression(innerExpr, scope);
           }
           break;
+        }
+        // V23: `match(value, [...])` o `match(value, "discriminator", [...])`.
+        // El primer argumento es el subject. El segundo (sin discriminator) es
+        // el array de cases. Con discriminator, args[1] es la clave string y
+        // args[2] es el array de cases.
+        if (node.callee === "match" && (node.args.length === 2 || node.args.length === 3)) {
+          const subject = node.args[0];
+          const subjectType = this.expression(subject, scope);
+          // Determinar dónde está el array de cases.
+          let caseList: Expression;
+          if (node.args.length === 3) {
+            const discArg = node.args[1];
+            const casesArg = node.args[2];
+            if (discArg.kind !== "LiteralExpression" || discArg.literalType !== "string") {
+              this.report(discArg, `E4403: 'match' with 3 arguments expects a string discriminator as the second argument, got ${discArg.kind}`);
+              result = "void";
+              break;
+            }
+            node.matchedDiscriminator = discArg.value as string;
+            this.expression(discArg, scope, "string");
+            caseList = casesArg;
+          } else {
+            caseList = node.args[1];
+          }
+          if (caseList.kind !== "ArrayLiteralExpression") {
+            this.report(caseList, `E4402: 'match' expects an array of cases as ${node.args.length === 3 ? "third" : "second"} argument, got ${caseList.kind}`);
+            result = "void";
+            break;
+          }
+          // Validamos cada elemento del array.
+          const returnTypes: TypeName[] = [];
+          let hasOtherwise = false;
+          for (const element of caseList.elements) {
+            if (element.kind !== "SpreadElement" && (element as any).kind === "CallExpression" && (element as any).callee === "when") {
+              const caseCall = element as any;
+              if (caseCall.args.length !== 2) {
+                this.report(caseCall, `E4404: 'when' expects 2 arguments (pattern, callback), got ${caseCall.args.length}`);
+                continue;
+              }
+              const [pattern, callback] = caseCall.args;
+              // Pattern se valida contra el subject type.
+              this.expression(pattern, scope, subjectType);
+              // Callback puede tener 0 o 1 params (0 si no usa el subject, 1 si sí).
+              if (callback.params.length > 1) {
+                this.report(callback, `E4406: 'when' callback must have at most 1 parameter, got ${callback.params.length}`);
+                continue;
+              }
+              const _unused = this.expression(callback, scope);
+              // V23: el checker sobre una ArrowFunctionExpression devuelve el tipo
+              // function (`(T) => R`), no el `R` del body. Para el resultado del
+              // match queremos el `R` real. Si el lambda tiene returnType declarado
+              // lo usamos; si no, inferimos del body.
+              let callbackReturnType: TypeName;
+              if (callback.returnType) {
+                callbackReturnType = callback.returnType;
+              } else if (callback.body.kind !== "BlockStatement") {
+                callbackReturnType = this.expression(callback.body, scope);
+              } else {
+                callbackReturnType = "void";
+              }
+              returnTypes.push(callbackReturnType);
+            } else if (element.kind !== "SpreadElement" && (element as any).kind === "CallExpression" && (element as any).callee === "whenType") {
+              const caseCall = element as any;
+              if (caseCall.args.length !== 1) {
+                this.report(caseCall, `E4404: 'whenType' expects 1 argument (callback), got ${caseCall.args.length}`);
+                continue;
+              }
+              const callback = caseCall.args[0];
+              if (callback.kind !== "ArrowFunctionExpression") {
+                this.report(callback, `E4405: 'whenType' callback must be an arrow function`);
+                continue;
+              }
+              if (callback.params.length > 1) {
+                this.report(callback, `E4406: 'whenType' callback must have exactly 1 parameter`);
+                continue;
+              }
+              // El tipo T viene de los typeArguments del whenType<T>.
+              if (caseCall.typeArguments.length !== 1) {
+                this.report(caseCall, `E4407: 'whenType<T>' requires exactly 1 type argument, got ${caseCall.typeArguments.length}`);
+                continue;
+              }
+              this.expression(callback, scope);
+              let callbackReturnType: TypeName;
+              if (callback.returnType) callbackReturnType = callback.returnType;
+              else if (callback.body.kind !== "BlockStatement") callbackReturnType = this.expression(callback.body, scope);
+              else callbackReturnType = "void";
+              returnTypes.push(callbackReturnType);
+            } else if (element.kind !== "SpreadElement" && (element as any).kind === "CallExpression" && (element as any).callee === "otherwise") {
+              const caseCall = element as any;
+              if (caseCall.args.length !== 1) {
+                this.report(caseCall, `E4404: 'otherwise' expects 1 argument (callback), got ${caseCall.args.length}`);
+                continue;
+              }
+              hasOtherwise = true;
+              const callback = caseCall.args[0];
+              if (callback.kind !== "ArrowFunctionExpression") {
+                this.report(callback, `E4405: 'otherwise' callback must be an arrow function`);
+                continue;
+              }
+              // `otherwise` callback may have 0 or 1 params.
+              if (callback.params.length > 1) {
+                this.report(callback, `E4406: 'otherwise' callback must have at most 1 parameter, got ${callback.params.length}`);
+                continue;
+              }
+              const _unused = this.expression(callback, scope);
+              // V23: el checker sobre una ArrowFunctionExpression devuelve el tipo
+              // function (`(T) => R`), no el `R` del body. Para el resultado del
+              // match queremos el `R` real. Si el lambda tiene returnType declarado
+              // lo usamos; si no, inferimos del body.
+              let callbackReturnType: TypeName;
+              if (callback.returnType) {
+                callbackReturnType = callback.returnType;
+              } else if (callback.body.kind !== "BlockStatement") {
+                callbackReturnType = this.expression(callback.body, scope);
+              } else {
+                callbackReturnType = "void";
+              }
+              returnTypes.push(callbackReturnType);
+            } else if (element.kind === "SpreadElement") {
+              this.report(element, `E4408: 'match' cases cannot use spread elements`);
+            } else {
+              this.report(element, `E4409: 'match' cases must be calls to 'when', 'whenType' or 'otherwise', got ${(element as any).kind}`);
+            }
+          }
+          // Calculamos el tipo del resultado: unión de los retornos.
+          node.matchedKind = "match";
+          if (returnTypes.length > 0) {
+            // Simplificación: si todos los retornos son el mismo tipo, usar ese.
+            // Si hay variación, usamos union. Para V1, usamos el primer tipo si todos
+            // son iguales; si no, usamos un unionType genérico.
+            const first = returnTypes[0];
+            const allSame = returnTypes.every(t => t === first);
+            if (allSame) result = first;
+            else {
+              // Para V1: union pipe-delimited ("A|B|C"). Deduplicamos.
+              const unique = Array.from(new Set(returnTypes));
+              result = unique.join("|") as TypeName;
+            }
+            node.matchedResultType = result;
+          } else {
+            result = "void";
+            node.matchedResultType = "void";
+          }
+          // Si no hay otherwise y el subject es union, advertencia: puede no matchear.
+          if (!hasOtherwise) {
+            // V1: no enforce exhaustividad para la nueva forma. Solo informativo.
+            // (El V2 keyword sí enforce exhaustividad con `validateExhaustiveMatch`.)
+          }
+          break;
+        }
+        // V23: `when(...)` / `whenType(...)` / `otherwise(...)` SUELTOS (fuera de un `match`).
+        // El checker deja pasar la validación normal (los trata como CallExpression)
+        // pero reporta un warning si aparecen sin estar dentro de un match.
+        // Para V1, lo dejamos pasar sin warning — el codegen emitirá la llamada
+        // normal y el linker fallará. Si quieres warning estricto, podemos añadirlo.
+        // Por ahora solo validamos que coincidan con el metadata:
+        if (node.callee === "when" || node.callee === "whenType" || node.callee === "otherwise") {
+          const meta = HELPER_METADATA[node.callee];
+          if (meta && node.args.length < meta.minParams) {
+            this.report(node, `'${node.callee}' expects at least ${meta.minParams} argument(s), got ${node.args.length}`);
+          }
+          // No marcamos matchedKind: serán tratados como CallExpression normal.
+          // El codegen + linker fallarán en runtime si están fuera de match().
         }
         if (OPTIONAL_HELPERS[node.callee]) {
           const helper = OPTIONAL_HELPERS[node.callee];

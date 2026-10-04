@@ -2,6 +2,87 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v0.28.0 (2026-10-04) — V23 BREAKING: TS-compatible match() syntax
+
+### Breaking
+
+- **V23 — Sintaxis TC39 de `match` eliminada**: la forma
+  `match (subject) { when (pattern) => result; }` ya NO se acepta. El
+  parser la diagnostica con `E4400`. Migración:
+
+  ```ets
+  // Antes (V1.10, eliminado en V23):
+  return match (x) {
+    when (0) => "zero";
+    when (_) => "many";
+  }
+
+  // Ahora (V23):
+  return match(x, [
+    when(0, (v: number): string => "zero"),
+    otherwise((): string => "many"),
+  ]);
+  ```
+
+  La forma V2 destructurada (`match (r) { case { kind: "X", x }: ...; }`)
+  **se mantiene** y sigue siendo la única con enforcement de
+  exhaustividad.
+
+### Added
+
+- **V23 — `match(value, [when(pattern, callback), ...])`**: nueva
+  forma de pattern matching compatible con TypeScript. El codegen
+  intercepta la `CallExpression` con `matchedKind === "match"` y emite
+  un IIFE con if/else chain en lugar de una llamada a función. Tres
+  intrinsics:
+  - `when(pattern, callback)`: compara con `==` y ejecuta el callback
+    pasando el subject. El callback puede tener 0 o 1 parámetros.
+  - `whenType<T>(callback)`: tipo-based dispatch. **Limitación V23.1**:
+    NO narrowa el subject (issue #95). El callback se invoca sin
+    argumentos; si hay varios `whenType` consecutivos, solo el primero
+    es la rama activa, los siguientes se marcan como `unreachable`.
+  - `otherwise(callback)`: default, siempre se ejecuta si ningún
+    `when` previo matcheó. Si no hay `otherwise` (ni `whenType`), el
+    else final hace `std::abort()`.
+
+- **V23 — forma con discriminator**: `match(value, "key", [when(...)])`
+  compara `value.key` contra los patrones. Útil para pattern matching
+  estilo "tagged" sobre clases con campo `kind`.
+
+- **V23 — declaraciones para el editor** en `types/estatic.d.ts`:
+  interfaces `MatchValueCase`, `MatchTypeCase`, `MatchDefaultCase`; type
+  union `MatchCase`; type helper `MatchResult<Cases>`; funciones
+  `when`, `whenType`, `otherwise`, `match` con inferencia condicional
+  del tipo de retorno. El LSP puede hacer hover y completions sobre la
+  nueva sintaxis.
+
+- **V23 — `match` y `when` dejan de ser keywords del lexer**: ahora
+  son identificadores normales. La distinción entre la forma V2
+  (`match (x) { ... }`, con `{`) y la nueva (`match(x, [...])`, con
+  `[`) la hace el parser por lookahead. Esto permite que `when` y
+  `match` vuelvan a ser nombres de variable válidos (raro pero
+  legal).
+
+- **V23 — trailing commas en arrays literales**: `[a, b,]` ya no
+  emite error. Necesario para que la nueva sintaxis admita el estilo
+  idiomático TS.
+
+- **V23 — tests**: 7 nuevos unit tests del codegen + 3 nuevos e2e
+  (`match-value-pattern`, `match-type-pattern`, `match-exhaustive-union`)
+  + migración de `examples/match-demo.ets` y
+  `test/e2e/basics/switch-when/source.ets`.
+
+### Removed
+
+- **V23 — forma TC39 `when (p) => r` dentro de `match`**: ya no
+  compila. El parser reporta `E4400`.
+
+### Fixed
+
+- **V23 — `match` con `match` anidado**: la nueva forma usa
+  `match(x, [...])` en vez de `match (x) {...}`, así que el problema
+  de anidamiento de la forma TC39 con wildcard `_` desaparece.
+
 ## v0.27.1 (2026-10-04) — V22 subtareas: make_unique, move(), diagnósticos de borrows
 
 ### Added

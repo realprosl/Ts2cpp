@@ -1253,6 +1253,174 @@ export class CppGenerator {
     return t ? cppType(t) : "auto";
   }
 
+  // V23: codegen de la nueva forma `match(value, [when(...), otherwise(...)])`
+  // o `match(value, "discriminator", [when(...), otherwise(...)])`.
+  //
+  // Estrategia: emitir un IIFE que capture el subject en una variable local y
+  // construya un if/else chain. Es estructuralmente análogo al V2 destructurado
+  // (`emitV2Match`) pero más simple: cada arm tiene una condición de igualdad
+  // directa, no hay extracción de `std::get<i>`.
+  //
+  // Limitaciones documentadas (issue #95):
+  //   - `whenType<T>(cb)` NO narrowa el tipo del subject en V23.1. El
+  //     callback se trata como "siempre matchea" y se emite como rama
+  //     fallback (else). Si hay varios `whenType` consecutivos sin
+  //     `otherwise`, solo el ÚLTIMO se usa como fallback real; los
+  //     anteriores reciben un comentario `// unreachable` porque no
+  //     podemos emitir `if constexpr` sin información de tipo del
+  //     checker. Esto es un compromiso explícito del diseño V23.1.
+  //   - Si no hay `otherwise` ni `whenType`, el else final aborta con
+  //     `std::abort()`. La exhaustividad NO se valida en la nueva forma
+  //     (solo V2 destructurado la enforce con `validateExhaustiveMatch`).
+  private emitNewMatch(node: { args: Expression[]; matchedDiscriminator?: string; matchedResultType?: TypeName }): string {
+    // El checker garantiza `args.length ∈ {2, 3}`. args[0] es el subject;
+    // args[1] (o args[2] con discriminator) es el array literal de cases.
+    const subject = node.args[0]!;
+    const caseList = (node.args.length === 3 ? node.args[2] : node.args[1]) as { kind: "ArrayLiteralExpression"; elements: Expression[] };
+    const discriminator = node.matchedDiscriminator;
+    // Si el checker reportó un error y no tenemos `ArrayLiteralExpression`,
+    // emitimos un comentario para que el .cpp siga siendo parseable y los
+    // demás errores se vean en cascada.
+    if (!caseList || caseList.kind !== "ArrayLiteralExpression") return "/* match: case list inválida */";
+    // Clasificamos cada elemento. `when` produce una rama if; `whenType` y
+    // `otherwise` son fallbacks. Solo el PRIMER fallback que encontremos
+    // (recorriendo en orden) es el `else` real; los siguientes son
+    // unreachable (per #95 — sin narrowing).
+    type When = { kind: "when"; pattern: Expression; callback: Expression };
+    type Fallback = { kind: "whenType" | "otherwise"; callback: Expression };
+    const whens: When[] = [];
+    const fallbacks: Fallback[] = [];
+    for (const element of caseList.elements) {
+      if (element.kind === "CallExpression") {
+        const callee = (element as { callee: string }).callee;
+        const args = (element as { args: Expression[] }).args;
+        if (callee === "when" && args.length === 2) whens.push({ kind: "when", pattern: args[0]!, callback: args[1]! });
+        else if (callee === "whenType" && args.length === 1) fallbacks.push({ kind: "whenType", callback: args[0]! });
+        else if (callee === "otherwise" && args.length === 1) fallbacks.push({ kind: "otherwise", callback: args[0]! });
+        // Otros elementos (los que dispararon E4404–E4409) se ignoran aquí;
+        // el checker ya reportó el error, así que no emitimos nada.
+      }
+    }
+    // Tipo de retorno: lo que calculó el checker uniendo los retornos de los
+    // callbacks. Si todos coinciden, ese; si no, unión pipe-delimited. Aquí
+    // simplemente emitimos el tipo C++ correspondiente. Si el checker no
+    // dejó `matchedResultType` (caso degenerado sin arms), usamos `void`.
+    const resultType = node.matchedResultType ? cppType(node.matchedResultType) : "void";
+    const subjectText = this.emitExpression(subject);
+    // Acceso al subject: con discriminator se hace `subj.<key>`, sin él se
+    // usa el subject directamente. En ambos casos, el callback recibe el
+    // subject por valor (los callbacks declaran su parámetro como copia
+    // por valor o por referencia según el dialecto — el codegen del
+    // `ArrowFunctionExpression` ya emite la firma correcta).
+    const subjectAccess = discriminator ? `${subjectText}.${this.cppName(discriminator)}` : subjectText;
+    // Patrón textual para comparar. Como el `emitExpression` ya envuelve
+    // strings en `std::string(...)` y numéricos como literales C++ válidos,
+    // la comparación `subjAccess == patternText` funciona tal cual para
+    // los tipos de caso comunes.
+    const whensLines = whens.map(w => {
+      const patternText = this.emitExpression(w.pattern);
+      // El callback puede tener 0 o 1 parámetro. Si tiene 1, le pasamos
+      // el subject. Si tiene 0, lo invocamos sin argumentos (p.ej.
+      // `otherwise(() => "default")`).
+      const cb = w.callback;
+      let callArgs = "";
+      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
+      const callbackCall = `${this.emitExpression(cb)}(${callArgs})`;
+      return `        if ((${subjectAccess}) == (${patternText})) { return ${callbackCall}; }`;
+    });
+    // Forma del fallback según haya `whens` o no. Si hay `whens`, el
+    // fallback es un `else`; si no, se ejecuta directamente (sin `else`
+    // huérfano). Si no hay fallback en absoluto y tampoco `whens`, el
+    // IIFE no tiene cuerpo útil: emitimos un comentario.
+    //
+    // `whenType<T>(cb)` se emite igual que `when` (rama `if`/`else if` con
+    // condición siempre-true) pero SIN narrowing real del subject — #95
+    // deja el narrowing explícitamente fuera de alcance para V23.1. Por
+    // eso el callback se invoca SIN argumentos: el usuario no puede
+    // esperar tener el valor narrowed a `T` (sería un type-cast
+    // inseguro). El callback puede capturar el subject por referencia
+    // (`[&]`) si lo necesita, pero debe tratarlo como el tipo original.
+    // Si hay varios `whenType` consecutivos, el primero es el activo y
+    // los siguientes reciben un comentario `unreachable`. Si aparece
+    // un `otherwise` después, el `otherwise` SIEMPRE gana (es
+    // semánticamente el "default").
+    const liveFallback = fallbacks.find(f => f.kind === "otherwise");
+    const firstWhenType = fallbacks.find(f => f.kind === "whenType");
+    const unreachableComments: string[] = [];
+    for (const f of fallbacks) {
+      if (f === liveFallback) continue;
+      if (f === firstWhenType) continue;
+      if (f.kind === "whenType") unreachableComments.push("whenType (unreachable: hay un whenType anterior que ya matchea siempre)");
+      else unreachableComments.push("otherwise (unreachable: ya hay un otherwise anterior)");
+    }
+    let body: string;
+    // Construimos las ramas en orden: primero las `when`, luego los
+    // `whenType` (que actúan como fallbacks en orden de aparición), y
+    // finalmente el `otherwise` (que es el fallback definitivo).
+    // Cada `whenType` se emite como `else if` con condición `true` y
+    // callback invocado sin args.
+    const whenTypeBranches: string[] = [];
+    if (firstWhenType) {
+      const cb = firstWhenType.callback;
+      // Callback invocado con 0 args (no narrowing — el subject no se
+      // pasa al callback de whenType, igual que en el original).
+      const callbackCall = `${this.emitExpression(cb)}()`;
+      whenTypeBranches.push(`        else { return ${callbackCall}; }`);
+    }
+    let otherwiseBranch: string | undefined;
+    if (liveFallback) {
+      const cb = liveFallback.callback;
+      let callArgs = "";
+      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
+      const callbackCall = `${this.emitExpression(cb)}(${callArgs})`;
+      otherwiseBranch = `        else { return ${callbackCall}; }`;
+    }
+    // Encadenamos: `whens` con `if`/`else if`, luego `whenType` (que
+    // actúa como un `else if (true) { ... }`), luego `otherwise` como
+    // el `else` final. Si no hay nada antes, el `else` se convierte en
+    // un bloque directo para evitar `else` huérfano.
+    const allBranches: string[] = [];
+    for (let i = 0; i < whensLines.length; i++) {
+      const w = whensLines[i]!;
+      // Reemplazamos el `if` por `else if` para todos los whens
+      // excepto el primero, evitando el `else` huérfano cuando solo
+      // hay un when.
+      if (i === 0) allBranches.push(w);
+      else allBranches.push(w.replace(/^        if \(/, "        else if ("));
+    }
+    for (const wt of whenTypeBranches) allBranches.push(wt);
+    if (otherwiseBranch) allBranches.push(otherwiseBranch);
+    if (allBranches.length === 0) {
+      // Array vacío o todos los elementos eran inválidos. El checker
+      // ya reportó el error; emitimos un comentario para no romper el
+      // .cpp.
+      body = `        // match: sin cases válidos`;
+    } else if (allBranches.length === 1 && !liveFallback && !firstWhenType) {
+      // Solo hay `whens` (sin fallback). El último `if` no debe tener
+      // `else` colgando — añadimos un else con `std::abort()`.
+      const last = allBranches[0]!;
+      body = `${last}\n        else { [[unlikely]] std::abort(); }`;
+    } else if (allBranches.length === 1) {
+      // Solo hay un fallback (whenType u otherwise) sin whens. Lo
+      // emitimos como bloque directo sin `if/else`.
+      const last = allBranches[0]!;
+      body = last.replace(/^        (else )?\{/, "        {");
+    } else {
+      body = allBranches.join("\n");
+    }
+    if (unreachableComments.length > 0) {
+      body = unreachableComments.map(c => `        // ${c}`).join("\n") + "\n" + body;
+    }
+    const allLines = body;
+    // IIFE estilo `emitV2Match`: captura por referencia `[&]`, deduce
+    // tipo de retorno con `-> R`, y devuelve el resultado. Si el tipo de
+    // retorno es `void`, omitimos la flecha y los returns.
+    if (resultType === "void") {
+      return `([&]() { ${allLines} }())`;
+    }
+    return `([&]() -> ${resultType} { ${allLines} }())`;
+  }
+
   // Emite `for (const auto& name : iterable)` para arrays y strings, envuelve
   // tuplas en un bloque con una única iteración, y proyecta pares de Map<K,V>
   // en tuplas `[K,V]` para mantener la semántica de indexación.
@@ -1683,6 +1851,15 @@ export class CppGenerator {
       case "MatchExpression": return this.emitMatch(node);
       case "SatisfiesExpression": return this.emitExpression(node.operand);
       case "CallExpression": {
+        // V23: si el type-checker validó este nodo como `match(value, [...])`
+        // o `match(value, "key", [...])`, NO emitimos una llamada normal. En
+        // su lugar generamos un IIFE con un if/else chain equivalente al
+        // `MatchExpression` V2. Esto evita que se intente enlazar con una
+        // función `match`/`when`/`whenType`/`otherwise` que no existe en el
+        // runtime. El checker deja `node.matchedKind = "match"` y
+        // `node.matchedDiscriminator?` / `node.matchedResultType?` como
+        // metadata para que esta función decida el formato.
+        if (node.matchedKind === "match") return this.emitNewMatch(node);
         // V3: cast explícito entre tipos numéricos concretos. `i32(x)` se
         // reescribe a `static_cast<int32_t>(x)`. El callee es uno de los
         // 10 primitivos numéricos (i8..u64, f32, f64) y debe tener exactamente

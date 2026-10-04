@@ -107,6 +107,20 @@ test("init-project: estatic.d.ts declara los built-ins del dialecto", async () =
   assert.match(dts, /\bfunction\s+numberToString\b/);
   // declare global para que estén disponibles sin imports.
   assert.match(dts, /declare\s+global\s*\{/);
+
+  // V23: match intrinsics con sintaxis compatible con TypeScript. El
+  // dialecto expone 3 interfaces (MatchValueCase, MatchTypeCase,
+  // MatchDefaultCase), un type union (MatchCase) y 4 funciones globales
+  // (match, when, whenType, otherwise). Las funciones se declaran dentro
+  // de `declare global` para que estén disponibles sin imports.
+  assert.match(dts, /\binterface\s+MatchValueCase\b/);
+  assert.match(dts, /\binterface\s+MatchTypeCase\b/);
+  assert.match(dts, /\binterface\s+MatchDefaultCase\b/);
+  assert.match(dts, /\btype\s+MatchCase\b/);
+  assert.match(dts, /\bfunction\s+when\b/);
+  assert.match(dts, /\bfunction\s+whenType\b/);
+  assert.match(dts, /\bfunction\s+otherwise\b/);
+  assert.match(dts, /\bfunction\s+match\b/);
 });
 
 test("init-project: estatic.d.ts declara métodos de instancia de Result<T, E>", async () => {

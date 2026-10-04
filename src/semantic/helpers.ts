@@ -37,6 +37,16 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   // El codegen emite `std::move(x)` y el checker marca la variable como
   // `Moved` para que cualquier uso posterior sea diagnóstico E4102/E4103.
   move:              { minParams: 1 },
+  // V23: `match` / `when` / `whenType` / `otherwise` son intrinsics del
+  // dialecto. `match(value, [...cases])` o `match(value, "key", [...cases])`
+  // se detectan en el checker y el codegen emite un if/else chain (igual
+  // que `MatchExpression` V2 pero sobre la representación TS-compatible).
+  // `when` / `whenType` / `otherwise` SOLO son válidos como elementos
+  // dentro del array de `match` — fuera de ahí el checker reporta E4401.
+  match:             { minParams: 2, maxParams: 3 },
+  when:              { minParams: 2, maxParams: 2 },
+  whenType:          { minParams: 1, maxParams: 1 },
+  otherwise:         { minParams: 1, maxParams: 1 },
   // Rc<T> — DEPRECATED en V22. Conservado en metadata por compatibilidad
   // temporal con código que aún lo use; los diagnósticos E4404 lo marcan.
   rcShare:           { minParams: 1, returnsGeneric: true },

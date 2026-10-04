@@ -122,7 +122,13 @@ export interface TemplateLiteralExpression { kind: "TemplateLiteralExpression"; 
 export interface UnaryExpression { kind: "UnaryExpression"; operator: "!" | "-" | "+" | "typeof"; operand: Expression; span: Span }
 export interface AwaitExpression { kind: "AwaitExpression"; operand: Expression; span: Span }
 export interface BinaryExpression { kind: "BinaryExpression"; operator: string; left: Expression; right: Expression; span: Span }
-export interface CallExpression { kind: "CallExpression"; callee: string; typeArguments: TypeName[]; args: Expression[]; span: Span }
+export interface CallExpression { kind: "CallExpression"; callee: string; typeArguments: TypeName[]; args: Expression[]; /** V23 (match new syntax): cuando `callee === "match"` y la llamada se validó
+ *  con la nueva forma `match(v, [...])`, el codegen intercepta y emite un
+ *  if/else chain. Sin esto, sería una llamada a función normal. */
+  matchedKind?: "match"; /** V23: discriminador para `match` de 3 args (`match(v, "key", [...])`). */
+  matchedDiscriminator?: string; /** V23: tipo del resultado del match (R | R | R | ...) calculado
+   *  por el checker uniendo los retornos de cada callback. */
+  matchedResultType?: TypeName; span: Span }
 export interface MemberExpression { kind: "MemberExpression"; object: Expression; member: string; optional?: boolean; span: Span }
 export interface MemberCallExpression { kind: "MemberCallExpression"; object: Expression; method: string; typeArguments: TypeName[]; args: Expression[]; optional?: boolean; span: Span }
 export interface IndexExpression { kind: "IndexExpression"; object: Expression; index: Expression; span: Span }
