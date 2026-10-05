@@ -1,32 +1,39 @@
-# Validador de la arquitectura libuv → corutinas C++20.
+# Validador de la arquitectura libuv → corutinas C++20 + tests de Fase 2B.
 #
 # No es parte del runtime de Ts2cpp. Es standalone, sirve para validar
-# la Fase 1 antes de tocar el EventLoop real.
+# cada iteración de la migración a libuv antes de tocar el EventLoop real.
 #
 # Uso:
 #   cd runtime/libuv && make
-#   ./build/validate_architecture
+#   ./build/validate_architecture    # Fase 1: spike arquitectónico
+#   ./build/test_wait_until          # Fase 2B.1: waitUntil
+#   make run                         # corre todos
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra
 LDLIBS   ?= -luv
 
 BUILD_DIR = build
-SOURCES   = validate_architecture.cpp
-TARGETS   = $(BUILD_DIR)/validate_architecture
+TARGETS   = $(BUILD_DIR)/validate_architecture \
+            $(BUILD_DIR)/test_wait_until
+ALL_SRCS  = validate_architecture.cpp \
+            tests/test_wait_until.cpp
 
 .PHONY: all clean run
 
 all: $(TARGETS)
 
-$(BUILD_DIR)/validate_architecture: $(SOURCES) | $(BUILD_DIR)
+$(BUILD_DIR)/validate_architecture: validate_architecture.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
+
+$(BUILD_DIR)/test_wait_until: tests/test_wait_until.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
 
 $(BUILD_DIR):
 	mkdir -p $@
 
 run: $(TARGETS)
-	$(TARGETS)
+	@for t in $(TARGETS); do echo "== running $$t =="; $$t || exit 1; echo; done
 
 clean:
 	rm -rf $(BUILD_DIR)
