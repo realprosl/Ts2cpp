@@ -17,11 +17,13 @@ BUILD_DIR = build
 TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/test_wait_until \
             $(BUILD_DIR)/test_notify_post \
-            $(BUILD_DIR)/test_wait_for
+            $(BUILD_DIR)/test_wait_for \
+            $(BUILD_DIR)/test_detach
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
-            tests/test_wait_for.cpp
+            tests/test_wait_for.cpp \
+            tests/test_detach.cpp
 
 .PHONY: all clean run
 
@@ -37,6 +39,9 @@ $(BUILD_DIR)/test_notify_post: tests/test_notify_post.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_wait_for: tests/test_wait_for.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
+
+$(BUILD_DIR)/test_detach: tests/test_detach.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR):
