@@ -202,10 +202,32 @@ public:
                 if (!e.fired && e.token.isCancelled()) {
                     e.fired = true;
                     if (e.result) *e.result = WaitResult::cancelled;
-                    if (e.timeoutTimer) { uv_timer_stop(&e.timeoutTimer->handle); e.timeoutTimer->fired = true; }
+                    if (e.timeoutTimer) {
+                        uv_timer_stop(&e.timeoutTimer->handle);
+                        // CRÍTICO: hacer uv_close ANTES de uv_run, no
+                        // después. Si no, uv_run(UV_RUN_ONCE) ve el
+                        // handle activo y bloquea esperando aunque
+                        // esté parado. El destructor cierra lo que
+                        // quede.
+                        uv_close(reinterpret_cast<uv_handle_t*>(&e.timeoutTimer->handle), nullptr);
+                        e.timeoutTimer->fired = true;
+                        e.timeoutTimer->closed = true;
+                    }
                     ready_.push_back(e.handle);
                 }
             }
+        }
+        // Tambien limpiar timers fired de iteraciones anteriores
+        // antes de uv_run, para no contaminar el conteo de handles
+        // activos de libuv.
+        for (auto it = timers_.begin(); it != timers_.end(); ) {
+            if (it->fired) {
+                if (!it->closed) {
+                    uv_close(reinterpret_cast<uv_handle_t*>(&it->handle), nullptr);
+                    it->closed = true;
+                }
+                it = timers_.erase(it);
+            } else ++it;
         }
         bool hasPosted;
         { std::lock_guard lock(postedMutex_); hasPosted = !posted_.empty(); }
@@ -219,10 +241,13 @@ public:
         std::vector<std::coroutine_handle<>> rt;
         rt.swap(ready_);
         for (auto h : rt) if (h && !h.done()) h.resume();
-        // Limpiar timers fired.
+        // Cleanup de timers fired por esta iteración (uv_timer callback).
         for (auto it = timers_.begin(); it != timers_.end(); ) {
             if (it->fired) {
-                uv_close((uv_handle_t*)&it->handle, nullptr);
+                if (!it->closed) {
+                    uv_close(reinterpret_cast<uv_handle_t*>(&it->handle), nullptr);
+                    it->closed = true;
+                }
                 it = timers_.erase(it);
             } else ++it;
         }
@@ -241,6 +266,7 @@ private:
         uv_timer_t handle{};
         std::coroutine_handle<> coroutine;
         bool fired = false;
+        bool closed = false;   // uv_close ya invocado (idempotente)
         // Si este timer es el timeout de un waitForUntil, apunta al
         // PollEntry asociado. Permite al onTimer marcar el PollEntry
         // como fired y asignar WaitResult::timedOut.
@@ -412,15 +438,8 @@ int main() {
     test_1_wait_for_read();
     std::printf("=== test 2 ===\n"); std::fflush(stdout);
     test_2_wait_for_until_timeout();
-    // test 3 (cancelación + waitForUntil) tiene un bug conocido en el
-    // patrón "drain() con polls cancelados + timer activo": la
-    // cancelación no interrumpe el uv_run que espera el timer. El
-    // runtime real de Ts2cpp maneja esto porque cs.cancel() siempre
-    // se llama junto con loop.notify() a través del wrapper
-    // `ets::cancel(cs, &loop)`. En V1 del backend libuv, la
-    // integración will solve this at the higher level.
-    // std::printf("=== test 3 ===\n"); std::fflush(stdout);
-    // test_3_wait_for_until_cancelled();
+    std::printf("=== test 3 ===\n"); std::fflush(stdout);
+    test_3_wait_for_until_cancelled();
     std::printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
