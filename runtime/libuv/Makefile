@@ -15,9 +15,11 @@ LDLIBS   ?= -luv
 
 BUILD_DIR = build
 TARGETS   = $(BUILD_DIR)/validate_architecture \
-            $(BUILD_DIR)/test_wait_until
+            $(BUILD_DIR)/test_wait_until \
+            $(BUILD_DIR)/test_notify_post
 ALL_SRCS  = validate_architecture.cpp \
-            tests/test_wait_until.cpp
+            tests/test_wait_until.cpp \
+            tests/test_notify_post.cpp
 
 .PHONY: all clean run
 
@@ -28,6 +30,9 @@ $(BUILD_DIR)/validate_architecture: validate_architecture.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_wait_until: tests/test_wait_until.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
+
+$(BUILD_DIR)/test_notify_post: tests/test_notify_post.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
