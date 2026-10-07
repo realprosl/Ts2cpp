@@ -255,27 +255,9 @@ struct SleepAwaiter {
 
 inline Task<void> sleep(double milliseconds) { co_await SleepAwaiter{milliseconds}; }
 
-struct FdAwaiter {
-    int fd;
-    short events;
-    bool await_ready() const noexcept { return false; }
-    void await_suspend(std::coroutine_handle<> handle) const { defaultEventLoop.waitFor(fd, events, handle); }
-    void await_resume() const noexcept {}
-};
-
-struct CancellableFdAwaiter {
-    int fd;
-    short events;
-    std::chrono::steady_clock::time_point deadline;
-    CancellationToken token;
-    WaitResult result = WaitResult::ready;
-    bool await_ready() noexcept {
-        if (token.isCancelled()) { result = WaitResult::cancelled; return true; }
-        if (deadline <= std::chrono::steady_clock::now()) { result = WaitResult::timedOut; return true; }
-        return false;
-    }
-    void await_suspend(std::coroutine_handle<> handle) { defaultEventLoop.waitForUntil(fd, events, deadline, token, &result, handle); }
-    WaitResult await_resume() const noexcept { return result; }
-};
+// Nota V25 Fase 4.3: FdAwaiter y CancellableFdAwaiter se han movido a
+// runtime/ets_net_poll_api.hpp + runtime_ets_net.cpp (pre-compilados).
+// Su declaracion vive en runtime/ets_net.hpp via el selector bajo
+// -DETS_EVENT_BACKEND_LIBUV.
 
 } // namespace ets

@@ -59,6 +59,23 @@ else
     echo "    -> $(du -h "${POLL_OBJ}" | cut -f1)"
 fi
 
+# V25 Fase 4.3: FdAwaiter / CancellableFdAwaiter (backend poll).
+NET_POLL_SRC="${REPO_ROOT}/runtime/runtime_ets_net.cpp"
+NET_POLL_OBJ="${BUILD_DIR}/runtime_ets_net.o"
+cache_hit_net_poll() {
+    [[ -f "${NET_POLL_OBJ}" ]] && \
+    [[ "${NET_POLL_OBJ}" -nt "${NET_POLL_SRC}" ]]
+}
+if [[ -f "${NET_POLL_SRC}" ]]; then
+    if cache_hit_net_poll; then
+        echo "==> Cache HIT: runtime_ets_net.o ($(du -h "${NET_POLL_OBJ}" | cut -f1))"
+    else
+        echo "==> Compilando runtime_ets_net.o (FdAwaiter)"
+        g++ -std=c++20 -O2 -Wall -Wextra -I"${REPO_ROOT}" -c "${NET_POLL_SRC}" -o "${NET_POLL_OBJ}"
+        echo "    -> $(du -h "${NET_POLL_OBJ}" | cut -f1)"
+    fi
+fi
+
 # Compilar runtime_ets_libuv.o (solo si el submódulo de libuv esta
 # inicializado Y los headers de libuv estan disponibles).
 LIBUV_SRC="${REPO_ROOT}/runtime/runtime_ets_libuv.cpp"
@@ -90,6 +107,26 @@ elif [[ -f "${LIBUV_SRC}" ]] && [[ -f /usr/include/uv.h ]]; then
     fi
 else
     echo "==> runtime_ets_libuv.o: SKIP (libuv no disponible)"
+fi
+
+# V25 Fase 4.3: UvFdAwaiter / UvCancellableFdAwaiter (backend libuv).
+NET_LIBUV_SRC="${REPO_ROOT}/runtime/runtime_ets_net_libuv.cpp"
+NET_LIBUV_OBJ="${BUILD_DIR}/runtime_ets_net_libuv.o"
+cache_hit_net_libuv() {
+    [[ -f "${NET_LIBUV_OBJ}" ]] && \
+    [[ "${NET_LIBUV_OBJ}" -nt "${NET_LIBUV_SRC}" ]]
+}
+if [[ -f "${NET_LIBUV_SRC}" ]] && [[ -d "${LIBUV_INC}" || -f /usr/include/uv.h ]]; then
+    if cache_hit_net_libuv; then
+        echo "==> Cache HIT: runtime_ets_net_libuv.o ($(du -h "${NET_LIBUV_OBJ}" | cut -f1))"
+    else
+        echo "==> Compilando runtime_ets_net_libuv.o (UvFdAwaiter)"
+        INC_FLAG=""
+        [[ -d "${LIBUV_INC}" ]] && INC_FLAG="-I${LIBUV_INC}"
+        g++ -std=c++20 -O2 -Wall -Wextra -I"${REPO_ROOT}" ${INC_FLAG} \
+            -DETS_EVENT_BACKEND_LIBUV -c "${NET_LIBUV_SRC}" -o "${NET_LIBUV_OBJ}"
+        echo "    -> $(du -h "${NET_LIBUV_OBJ}" | cut -f1)"
+    fi
 fi
 
 echo ""

@@ -22,13 +22,18 @@
 // basados en libuv (uv_poll_t). V1 mantiene la API publica intacta:
 // acceptTcp, readTcp, writeTcp, etc. siguen funcionando igual, solo
 // cambia el backend de espera interna.
+//
+// Las definiciones de los awaitables viven en runtime_ets_net.cpp o
+// runtime_ets_net_libuv.cpp (pre-compilados a .o cacheados por V25
+// Fase 4.3). Aqui solo se re-exportan los tipos via el _api.hpp.
 #ifdef ETS_EVENT_BACKEND_LIBUV
-  #include "runtime/ets_net_libuv.hpp"
+  #include "runtime/ets_net_libuv_api.hpp"
   namespace ets {
       using NetFdAwaiter = UvFdAwaiter;
       using NetCancellableFdAwaiter = UvCancellableFdAwaiter;
   }
 #else
+  #include "runtime/ets_net_poll_api.hpp"
   namespace ets {
       using NetFdAwaiter = FdAwaiter;
       using NetCancellableFdAwaiter = CancellableFdAwaiter;
