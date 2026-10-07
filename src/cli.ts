@@ -245,6 +245,18 @@ try {
         script: "build-libuv.sh",
         libPath: () => join(compilerRoot, "build", "libs", "libuv", "lib", "libuv.a"),
       },
+      // Fase 2: BoringSSL vendoreada.
+      // linkLibraries: ["ssl", "crypto"] resuelve a los .a estaticos
+      // de BoringSSL (libssl.a + libcrypto.a). Mantener el orden:
+      // crypto antes de ssl (algunos simbolos de ssl llaman a crypto).
+      ssl: {
+        script: "build-boringssl.sh",
+        libPath: () => join(compilerRoot, "build", "libs", "boringssl", "lib", "libssl.a"),
+      },
+      crypto: {
+        script: "build-boringssl.sh",
+        libPath: () => join(compilerRoot, "build", "libs", "boringssl", "lib", "libcrypto.a"),
+      },
     };
 
     async function ensureVendoredLib(name: string): Promise<string | null> {
