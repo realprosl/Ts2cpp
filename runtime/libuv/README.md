@@ -121,3 +121,10 @@ make run     # ejecuta todos en secuencia
 - Los tests se compilan con `-O0` por bug latente con `-O2` en
   `test_integration` test 3 (waitUntil). No es bloqueante para
   producción; investigar en una fase posterior si se necesita `-O2`.
+- V25 Fase 4: el runtime se pre-compila a `.o` cacheados en
+  `build/runtime_ets_libuv.o` y `build/runtime_ets_poll.o` por el
+  script `scripts/build-runtime.sh` (150× speedup warm cache).
+  Los tests del Makefile enlazan estos `.o` automáticamente. Las
+  definiciones no-template de la `LibuvEventLoop` están en
+  `runtime/runtime_ets_libuv.cpp`; el header
+  `runtime/ets_event_loop_libuv_api.hpp` solo contiene declaraciones.
