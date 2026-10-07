@@ -27,7 +27,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/test_tcp_server \
             $(BUILD_DIR)/test_uv_fd_awaiter \
             $(BUILD_DIR)/test_tcp_client \
-            $(BUILD_DIR)/test_tcp_client_loop
+            $(BUILD_DIR)/test_tcp_client_loop \
+            $(BUILD_DIR)/benchmark_poll_vs_libuv
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -37,7 +38,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/test_tcp_server.cpp \
             tests/test_uv_fd_awaiter.cpp \
             tests/test_tcp_client.cpp \
-            tests/test_tcp_client_loop.cpp
+            tests/test_tcp_client_loop.cpp \
+            tests/benchmark_poll_vs_libuv.cpp
 
 .PHONY: all clean run
 
@@ -72,6 +74,9 @@ $(BUILD_DIR)/test_tcp_client: tests/test_tcp_client.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_tcp_client_loop: tests/test_tcp_client_loop.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(LDLIBS) -pthread
+
+$(BUILD_DIR)/benchmark_poll_vs_libuv: tests/benchmark_poll_vs_libuv.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -O2 -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
