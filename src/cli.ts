@@ -227,12 +227,55 @@ try {
     if (existsSync(runtimePollObj)) {
       runtimeObjs.push(runtimePollObj);
     }
-    const libraries = [
-      ...config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`),
-      // V18: link flags declarados en el .lib.ets vía `@cpp_link("...")`.
-      // El codegen los extrae durante `prepare()` y los expone aquí.
-      ...(result.linkFlags ?? []),
-    ];
+    // V25 Fase 6: si el usuario pide una libreria que tenemos
+    // vendoreada (libuv hoy; libcurl/openssl en Fases 2-3), la
+    // auto-construimos desde fuentes con scripts/build-<lib>.sh y la
+    // enlazamos en lugar de la version del sistema. Asi el usuario
+    // no necesita `apt install libuv-dev` etc.
+    //
+    // Lista de librerias con auto-vendoring. Cada entrada mapea el
+    // nombre que el usuario pone en linkLibraries al script que lo
+    // construye. Vacío por defecto; se iran anadiendo conforme las
+    // Fases 1-3 se mergeen.
+    const vendoredLibs: Record<string, { script: string; libPath: () => string }> = {
+      // Fase 1: libuv vendoreada.
+      // Si el usuario pone linkLibraries: ["uv"], el CLI resuelve
+      // build/libs/libuv/lib/libuv.a y lo usa en lugar de -luv.
+      uv: {
+        script: "build-libuv.sh",
+        libPath: () => join(compilerRoot, "build", "libs", "libuv", "lib", "libuv.a"),
+      },
+    };
+
+    async function ensureVendoredLib(name: string): Promise<string | null> {
+      const vendored = vendoredLibs[name];
+      if (!vendored) return null;
+      const libPath = vendored.libPath();
+      if (existsSync(libPath)) return libPath;
+      // Cache MISS: build la libreria desde fuentes.
+      try {
+        console.log(`[vendoring] Primera vez usando ${name}; compilando desde fuentes...`);
+        execFileSync("bash", [join(compilerRoot, "scripts", vendored.script)], { stdio: "inherit" });
+        if (existsSync(libPath)) return libPath;
+      } catch (e) {
+        console.warn(`[vendoring] Aviso: ${vendored.script} fallo (${e}). Usando -l${name} del sistema como fallback.`);
+      }
+      return null;
+    }
+
+    const libraries: string[] = [];
+    for (const rawLib of config.linkLibraries) {
+      if (rawLib.startsWith("-")) { libraries.push(rawLib); continue; }
+      // Quitar 'l' o '-l' prefix si lo tiene
+      const libName = rawLib.replace(/^-l/, "");
+      const vendoredPath = await ensureVendoredLib(libName);
+      if (vendoredPath) {
+        libraries.push(vendoredPath);
+      } else {
+        libraries.push(`-l${libName}`);
+      }
+    }
+    libraries.push(...(result.linkFlags ?? []));
     // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
     // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
     // el objeto para resolver símbolos externos en las libs.
