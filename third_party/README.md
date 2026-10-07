@@ -10,6 +10,10 @@ transpilador no necesite `npm install`, `git submodule` ni nada similar.
   Alimenta a `runtime/ets_syntax.hpp`.
 - **`tree-sitter-typescript/`** — grammar TypeScript de Tree-sitter. Se compila
   a `tree-sitter-typescript-parser.o` + `tree-sitter-typescript-scanner.o`.
+- **`libuv/`** — librería de I/O asíncrono (submódulo git). Compilada estáticamente
+  a `build/libs/libuv/lib/libuv.a` por `scripts/build-libuv.sh`. Alimenta al
+  backend alternativo `LibuvEventLoop` en `runtime/ets_event_loop_libuv.hpp`.
+  Ver `libuv/README.md` para detalle del vendoring.
 
 ## Cómo se mantiene sincronizada
 
