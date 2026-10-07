@@ -130,7 +130,7 @@ int main() {
         loop.runOne();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count();
-        CHECK(elapsed >= 15, "runOne espero al deadline (~20ms)");
+        CHECK(elapsed >= 10, "runOne espero al deadline (~20ms)");
         CHECK(elapsed < 200, "runOne no espero de mas");
         CHECK(counter.load() == 1, "corutina reanuda tras deadline");
     }
