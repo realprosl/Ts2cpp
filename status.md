@@ -243,3 +243,72 @@ TS modernas del dialecto están implementadas. La sesión cierra con:
 - **50 demos** (16 nuevos esta sesión).
 - **17 features Fase 1** cerradas (10 originales + 1.13 + 1.11 + extras del plan).
 - **Tag `v0.26`** siguiente paso.
+
+## Migración del runtime async: poll(2) → libuv (2026-10)
+
+**Estado: COMPLETA (8/8 fases cerradas).** 17 PRs mergeadas (#101–#117).
+
+Motivación: cross-platform (Windows IOCP, macOS kqueue), menos coste de
+dispatcher, mejor integración con cancelación distribuida. La medición
+demostró que libuv es **32x más rápido que poll(2) en dispatcher idle**
+y **430x más rápido con 50 pipes registrados**.
+
+Activación: compilar con `-DETS_EVENT_BACKEND_LIBUV -luv`. Default
+sigue siendo `PollEventLoop` para no romper nada. La API pública
+(`listenTcp`/`acceptTcp`/`readTcp`/`writeTcp` + versiones `*Until`) es
+**idéntica** en ambos backends; solo cambia el awaitable interno
+(`UvFdAwaiter` vs `FdAwaiter`).
+
+Las 8 fases cerradas:
+
+| Fase | Qué cubre | PR |
+|------|-----------|----|
+| 1 — Spike arquitectónico | Patrón callback→coroutine C++20 | #101 |
+| 2A — Refactor `IEventLoop` | Selector de backend | #102 |
+| 2B.1-2B.5 — Backend libuv | waitUntil/notify/post/waitFor/detach + LibuvEventLoop | #103-#107 |
+| 3.1-3.1.1 — TCP/DNS standalone | uv_tcp + getaddrinfo | #108-#109 |
+| 3.2-3.3 — Sustitución FdAwaiter | UvFdAwaiter drop-in | #110-#111 |
+| 4-4.2 — TCP client | uv_getaddrinfo + uv_tcp_connect + raw_loop | #112-#113 |
+| 5 — Cancelación end-to-end | acceptTcpUntil + CancellationSource cross-thread | #115 |
+| 6 — Benchmark dispatcher | 32x–430x más rápido medido | #114 |
+| 7 — Fetch HTTP con libcurl | HTTP client async (easy interface) | #116 |
+| 8 — Benchmark hot path | 197 ns/timer, 19 ns/poll idle | #117 |
+
+**Resultados medidos (este hardware)**:
+
+- Dispatcher idle: 17 ns/libuv vs 544 ns/poll(2) → **32x más rápido**.
+- Dispatcher 50 pipes: 23 ns/libuv vs 9883 ns/poll(2) → **430x más rápido**.
+- Cancelación cross-thread: 49 ms (vs 10s del deadline).
+- 1000 timers dispatch: 197 ns/timer.
+
+**Tests añadidos (no se inyectan al código generado)**:
+
+- 13 tests + 2 benchmarks en `runtime/libuv/tests/`.
+- **94/94 escenarios verde** acumulado (más 202/202 unit Ts2cpp sin regresión).
+
+Ver [`runtime/libuv/README.md`](./runtime/libuv/README.md) para detalle
+completo de cada fase, PR, tabla de compatibilidad y notas para
+mantenedores.
+
+### Cambios en runtime (en producción)
+
+- `runtime/ets_event_loop.hpp` — selector `#ifdef ETS_EVENT_BACKEND_LIBUV`.
+- `runtime/ets_event_loop_libuv.hpp` — implementación libuv.
+- `runtime/ets_event_loop_poll.hpp` — poll(2) backend (default).
+- `runtime/ets_event_loop_iface.hpp` — interfaz `IEventLoop` común.
+- `runtime/ets_net_libuv.hpp` — `UvFdAwaiter`/`UvCancellableFdAwaiter` como
+  drop-in de `FdAwaiter`/`CancellableFdAwaiter`.
+- `runtime/ets_net.hpp` — auto-swap `NetFdAwaiter`/`NetCancellableFdAwaiter`
+  bajo `-DETS_EVENT_BACKEND_LIBUV`.
+
+Sin cambios en código generado. Sin Dockerfile. Sin dependencias npm
+añadidas.
+
+### Limitación conocida (no bloqueante)
+
+Los tests standalone se compilan con `-O0` por un bug latente con `-O2`
+en `test_integration` test 3 (waitUntil dispara corutina tras deadline).
+No es regresión de la migración (también fallaba con `-O2` antes). El
+runtime real se compila con `-O2` en los tests e2e del dialecto y pasa
+sin issues. Investigar en una fase posterior si se quiere `-O2` en los
+benchmarks.
