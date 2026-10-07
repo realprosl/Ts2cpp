@@ -148,6 +148,32 @@ try {
     }
     const pchFlag = existsSync(pchFile) ? ["-include", pchFile] : [];
     const tlsLibraries = unified.includes("runtime/ets_tls.hpp") ? ["-lssl", "-lcrypto"] : [];
+    // V25 Fase 4.6: si el .o del runtime esta pre-compilado en
+    // build/runtime_ets_libuv.o (Fase 4 lo genera scripts/build-runtime.sh),
+    // lo enlazamos directamente en lugar de recompilar el codigo inline
+    // de ets_event_loop_libuv.hpp. Esto evita el coste de re-procesar
+    // las 300+ lineas del header en cada build.
+    //
+    // Deteccion:
+    //   - Si unified contiene "runtime/ets_event_loop_libuv", el programa
+    //     usa LibuvEventLoop -> necesitamos runtime_ets_libuv.o.
+    //   - En cualquier caso, PollEventLoop esta siempre disponible
+    //     (selector runtime/ets_event_loop.hpp lo incluye via poll
+    //     como fallback). Lo pre-compilamos siempre.
+    //
+    // Si los .o no existen (caso fresh install), caemos al path inline
+    // de back-compat: el header los define y se compilan en cada TU.
+    const useLibuvBackend = unified.includes("runtime/ets_event_loop_libuv");
+    const runtimeObjDir = join(compilerRoot, "build");
+    const runtimeLibuvObj = join(runtimeObjDir, "runtime_ets_libuv.o");
+    const runtimePollObj = join(runtimeObjDir, "runtime_ets_poll.o");
+    const runtimeObjs: string[] = [];
+    if (useLibuvBackend && existsSync(runtimeLibuvObj)) {
+      runtimeObjs.push(runtimeLibuvObj);
+    }
+    if (existsSync(runtimePollObj)) {
+      runtimeObjs.push(runtimePollObj);
+    }
     const libraries = [
       ...config.linkLibraries.map(library => library.startsWith("-") ? library : `-l${library}`),
       // V18: link flags declarados en el .lib.ets vía `@cpp_link("...")`.
@@ -157,8 +183,8 @@ try {
     // Con `-flto` (Link-Time Optimization) el orden importa: las librerías
     // DEBEN ir después del archivo objeto. g++ con LTO necesita ver primero
     // el objeto para resolver símbolos externos en las libs.
-    await command(config.compiler.command, [...pchFlag, ...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...libraries, ...tlsLibraries], logger);
-    console.log(`Compilado ${config.output.binary}${existsSync(pchFile) ? " (con PCH)" : ""}`);
+    await command(config.compiler.command, [...pchFlag, ...config.compiler.flags, `-I${config.baseDirectory}`, `-I${compilerRoot}`, "-o", config.output.binary, ...config.compiler.linkFlags, output, ...runtimeObjs, ...libraries, ...tlsLibraries], logger);
+    console.log(`Compilado ${config.output.binary}${existsSync(pchFile) ? " (con PCH)" : ""}${runtimeObjs.length ? ` (+ ${runtimeObjs.length} runtime .o)` : ""}`);
   }
   await logger?.record("info", "transpile", "finished", { output, binary: nativeBuild ? config?.output.binary : undefined });
   await logger?.flush();
