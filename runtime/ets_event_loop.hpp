@@ -1,22 +1,31 @@
 // Selector de backend de EventLoop.
 //
-// Por ahora solo el backend poll (ETS_EVENT_BACKEND=poll) está
-// implementado. El backend libuv se añadirá en Fase 2B en un PR
-// separado, una vez validado standalone.
+// Backends disponibles:
+//   - poll (ETS_EVENT_BACKEND_POLL o default): implementación con
+//     ::poll(2) + self-pipe. Estable, portable, sin dependencias.
+//   - libuv (ETS_EVENT_BACKEND_LIBUV): implementación con libuv.
+//     Requiere enlazar contra libuv (-luv). Activo desde Fase 2B.5.
 //
 // Uso por parte del resto del runtime:
 //   #include "ets_event_loop.hpp"
 //   // ets::EventLoop es el alias del backend elegido.
+//
+// Selección:
+//   - Si ETS_EVENT_BACKEND_LIBUV está definido → LibuvEventLoop.
+//   - Si ETS_EVENT_BACKEND_POLL está definido, o no se ha definido
+//     ningún backend → PollEventLoop.
+//   - En caso contrario, error de compilación.
 
 #pragma once
 
 #include "ets_event_loop_iface.hpp"
 
 #if defined(ETS_EVENT_BACKEND_LIBUV)
-  #error "Backend libuv no disponible todavía. Ver runtime/ets_event_loop.hpp."
+  #include "ets_event_loop_libuv.hpp"
+  namespace ets { using EventLoop = LibuvEventLoop; }
 #elif defined(ETS_EVENT_BACKEND_POLL) || !defined(ETS_EVENT_BACKEND)
   #include "ets_event_loop_poll.hpp"
   namespace ets { using EventLoop = PollEventLoop; }
 #else
-  #error "ETS_EVENT_BACKEND desconocido. Valores válidos: poll."
+  #error "ETS_EVENT_BACKEND desconocido. Valores válidos: poll, libuv."
 #endif
