@@ -14,6 +14,10 @@ transpilador no necesite `npm install`, `git submodule` ni nada similar.
   a `build/libs/libuv/lib/libuv.a` por `scripts/build-libuv.sh`. Alimenta al
   backend alternativo `LibuvEventLoop` en `runtime/ets_event_loop_libuv.hpp`.
   Ver `libuv/README.md` para detalle del vendoring.
+- **`boringssl/`** — fork de OpenSSL mantenido por Google (submódulo git, `--depth 1`).
+  Compilado estáticamente a `build/libs/boringssl/lib/{libssl,libcrypto}.a` por
+  `scripts/build-boringssl.sh`. Alimenta `runtime/ets_tls.hpp`. Ver
+  `boringssl/VENDORED-NOTES.md` para detalle del vendoring.
 
 ## Cómo se mantiene sincronizada
 
