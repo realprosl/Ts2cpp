@@ -76,7 +76,7 @@ public:
                            ets::CancellationToken token)
         : loop_(loop), fd_(fd), events_(events),
           deadline_(deadline), token_(std::move(token)) {}
-    bool await_ready() const noexcept { return false; }
+    bool await_ready() noexcept { return false; }
     void await_suspend(std::coroutine_handle<> h) noexcept {
         loop_->waitForUntil(fd_, events_, deadline_, token_, &result_, h);
     }
