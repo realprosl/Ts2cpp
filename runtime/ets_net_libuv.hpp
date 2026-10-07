@@ -32,6 +32,11 @@ namespace ets {
 // para esperar a que un fd este listo para lectura/escritura.
 class UvFdAwaiter {
 public:
+    // Constructor 2-arg: usa el defaultEventLoop global (compatible
+    // con FdAwaiter{fd, events}).
+    UvFdAwaiter(int fd, short events)
+        : loop_(&defaultEventLoop), fd_(fd), events_(events) {}
+    // Constructor 3-arg: loop custom.
     UvFdAwaiter(ets::EventLoop& loop, int fd, short events)
         : loop_(&loop), fd_(fd), events_(events) {}
     UvFdAwaiter(ets::EventLoop* loop, int fd, short events)
@@ -53,6 +58,14 @@ private:
 // Combina uv_poll_t con deadline + CancellationToken (idem Fase 2B.3).
 class UvCancellableFdAwaiter {
 public:
+    // Constructor 4-arg: usa el defaultEventLoop global (compatible
+    // con CancellableFdAwaiter{fd, events, deadline, token}).
+    UvCancellableFdAwaiter(int fd, short events,
+                           std::chrono::steady_clock::time_point deadline,
+                           ets::CancellationToken token)
+        : loop_(&defaultEventLoop), fd_(fd), events_(events),
+          deadline_(deadline), token_(std::move(token)) {}
+    // Constructor 5-arg: loop custom.
     UvCancellableFdAwaiter(ets::EventLoop& loop, int fd, short events,
                            std::chrono::steady_clock::time_point deadline,
                            ets::CancellationToken token)

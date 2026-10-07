@@ -16,6 +16,25 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+// Selector de awaitables de red: por defecto usa FdAwaiter /
+// CancellableFdAwaiter basados en poll(2). Bajo
+// -DETS_EVENT_BACKEND_LIBUV usa UvFdAwaiter / UvCancellableFdAwaiter
+// basados en libuv (uv_poll_t). V1 mantiene la API publica intacta:
+// acceptTcp, readTcp, writeTcp, etc. siguen funcionando igual, solo
+// cambia el backend de espera interna.
+#ifdef ETS_EVENT_BACKEND_LIBUV
+  #include "runtime/ets_net_libuv.hpp"
+  namespace ets {
+      using NetFdAwaiter = UvFdAwaiter;
+      using NetCancellableFdAwaiter = UvCancellableFdAwaiter;
+  }
+#else
+  namespace ets {
+      using NetFdAwaiter = FdAwaiter;
+      using NetCancellableFdAwaiter = CancellableFdAwaiter;
+  }
+#endif
+
 namespace ets {
 
 struct SocketState {
@@ -89,7 +108,7 @@ inline Task<Result<TcpConnection>> acceptTcp(TcpListener listener) {
         }
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<TcpConnection>::failure(socketError("Error aceptando conexión"));
         if (errno == EINTR) continue;
-        co_await FdAwaiter{listener.fd(), POLLIN};
+        co_await NetFdAwaiter{listener.fd(), POLLIN};
     }
 }
 
@@ -103,7 +122,7 @@ inline Task<Result<std::string>> readTcp(TcpConnection connection, double reques
         if (received >= 0) { buffer.resize(static_cast<std::size_t>(received)); co_return Result<std::string>::success(std::move(buffer)); }
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<std::string>::failure(socketError("Error leyendo conexión"));
         if (errno == EINTR) continue;
-        co_await FdAwaiter{connection.fd(), POLLIN};
+        co_await NetFdAwaiter{connection.fd(), POLLIN};
     }
 }
 
@@ -114,7 +133,7 @@ inline Task<Result<double>> writeTcp(TcpConnection connection, std::string data)
         const ssize_t sent = ::send(connection.fd(), data.data() + written, data.size() - written, MSG_NOSIGNAL);
         if (sent > 0) { written += static_cast<std::size_t>(sent); continue; }
         if (sent < 0 && errno == EINTR) continue;
-        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { co_await FdAwaiter{connection.fd(), POLLOUT}; continue; }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { co_await NetFdAwaiter{connection.fd(), POLLOUT}; continue; }
         co_return Result<double>::failure(socketError("Error escribiendo conexión"));
     }
     co_return Result<double>::success(static_cast<double>(written));
@@ -140,7 +159,7 @@ inline Task<Result<TcpConnection>> acceptTcpUntil(TcpListener listener, double t
         }
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<TcpConnection>::failure(socketError("Error aceptando conexión"));
         if (errno == EINTR) continue;
-        const auto waited = co_await CancellableFdAwaiter{listener.fd(), POLLIN, deadline, token};
+        const auto waited = co_await NetCancellableFdAwaiter{listener.fd(), POLLIN, deadline, token};
         if (waited != WaitResult::ready) co_return Result<TcpConnection>::failure(waitError(waited, "Accept TCP"));
     }
 }
@@ -156,7 +175,7 @@ inline Task<Result<std::string>> readTcpUntil(TcpConnection connection, double r
         if (received >= 0) { buffer.resize(static_cast<std::size_t>(received)); co_return Result<std::string>::success(std::move(buffer)); }
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<std::string>::failure(socketError("Error leyendo conexión"));
         if (errno == EINTR) continue;
-        const auto waited = co_await CancellableFdAwaiter{connection.fd(), POLLIN, deadline, token};
+        const auto waited = co_await NetCancellableFdAwaiter{connection.fd(), POLLIN, deadline, token};
         if (waited != WaitResult::ready) co_return Result<std::string>::failure(waitError(waited, "Lectura TCP"));
     }
 }
@@ -170,7 +189,7 @@ inline Task<Result<double>> writeTcpUntil(TcpConnection connection, std::string 
         if (sent > 0) { written += static_cast<std::size_t>(sent); continue; }
         if (sent < 0 && errno == EINTR) continue;
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            const auto waited = co_await CancellableFdAwaiter{connection.fd(), POLLOUT, deadline, token};
+            const auto waited = co_await NetCancellableFdAwaiter{connection.fd(), POLLOUT, deadline, token};
             if (waited != WaitResult::ready) co_return Result<double>::failure(waitError(waited, "Escritura TCP"));
             continue;
         }
