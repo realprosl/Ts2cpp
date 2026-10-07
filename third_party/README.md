@@ -18,6 +18,10 @@ transpilador no necesite `npm install`, `git submodule` ni nada similar.
   Compilado estáticamente a `build/libs/boringssl/lib/{libssl,libcrypto}.a` por
   `scripts/build-boringssl.sh`. Alimenta `runtime/ets_tls.hpp`. Ver
   `boringssl/VENDORED-NOTES.md` para detalle del vendoring.
+- **`curl/`** — librería cliente HTTP/HTTPS (submódulo git, `--depth 1`).
+  Compilada estáticamente a `build/libs/curl/lib/libcurl.a` por
+  `scripts/build-curl.sh`. Enlaza contra BoringSSL vendoreada. Ver
+  `curl/VENDORED-NOTES.md` para detalle del vendoring.
 
 ## Cómo se mantiene sincronizada
 
