@@ -154,19 +154,72 @@ try {
     // de ets_event_loop_libuv.hpp. Esto evita el coste de re-procesar
     // las 300+ lineas del header en cada build.
     //
+    // V25 Fase 5: cache global en ~/.cache/etsc/runtime/<ver>/<backend>/<hash>/
+    // ademas del local build/. El cache global se consulta primero (es el
+    // compartido entre todos los proyectos del usuario). Si existe, se
+    // copia al build/ local y se usa. Si no, fallback al local.
+    //
     // Deteccion:
     //   - Si unified contiene "runtime/ets_event_loop_libuv", el programa
     //     usa LibuvEventLoop -> necesitamos runtime_ets_libuv.o.
-    //   - En cualquier caso, PollEventLoop esta siempre disponible
-    //     (selector runtime/ets_event_loop.hpp lo incluye via poll
-    //     como fallback). Lo pre-compilamos siempre.
+    //   - PollEventLoop siempre (selector lo incluye via poll como fallback).
     //
     // Si los .o no existen (caso fresh install), caemos al path inline
     // de back-compat: el header los define y se compilan en cada TU.
     const useLibuvBackend = unified.includes("runtime/ets_event_loop_libuv");
+
+    // Lee la version de Ts2cpp desde package.json (cacheado para no
+    // leerlo cada build).
+    const ts2cppVersion = (await import("./core/ts2cpp-version.ts" as string)).getTs2cppVersion();
+
+    // Hash del cache: incluye version Ts2cpp + backend + subset de flags
+    // que afectan la ABI de cargo/runtime (-std=, -fno-exceptions, etc).
+    // Flags como -O2 o -march=native NO afectan la ABI, no entran al hash.
+    const flagHashInput = config.compiler.flags
+      .filter(f => /^-std=|-fno-exceptions|-fexceptions|-DETS_/.test(f))
+      .sort()
+      .join("\n");
+    const backend = useLibuvBackend ? "libuv" : "poll";
+    const cacheKey = createHash("sha256")
+      .update(`${ts2cppVersion}\n${backend}\n${flagHashInput}`)
+      .digest("hex")
+      .slice(0, 16);
+    const globalCacheDir = join(process.env.HOME ?? process.env.USERPROFILE ?? "/tmp", ".cache", "etsc", "runtime", ts2cppVersion, backend, cacheKey);
     const runtimeObjDir = join(compilerRoot, "build");
     const runtimeLibuvObj = join(runtimeObjDir, "runtime_ets_libuv.o");
     const runtimePollObj = join(runtimeObjDir, "runtime_ets_poll.o");
+    const globalLibuvObj = join(globalCacheDir, "runtime_ets_libuv.o");
+    const globalPollObj = join(globalCacheDir, "runtime_ets_poll.o");
+
+    // Resolucion de cache: si no esta en build/, intenta copiar desde
+    // ~/.cache/etsc/. Si tampoco esta, llama a scripts/build-runtime.sh
+    // (best-effort; si falla, sigue con fallback inline).
+    const { copyFile } = await import("node:fs/promises");
+    const { execFileSync } = await import("node:child_process");
+    async function ensureRuntimeObj(localPath: string, globalPath: string): Promise<void> {
+      if (existsSync(localPath)) return;
+      if (existsSync(globalPath)) {
+        await mkdir(dirname(localPath), { recursive: true });
+        await copyFile(globalPath, localPath);
+        return;
+      }
+      // Cache MISS completo. Llamamos a scripts/build-runtime.sh para
+      // poblar build/ y luego copiar a ~/.cache/etsc/.
+      try {
+        execFileSync("bash", [join(compilerRoot, "scripts", "build-runtime.sh")], { stdio: "ignore" });
+        if (existsSync(localPath)) {
+          // Poblar cache global para futuros proyectos.
+          await mkdir(globalCacheDir, { recursive: true });
+          await copyFile(localPath, globalPath);
+        }
+      } catch (e) {
+        // build-runtime.sh fallo: caer al path inline (header re-compilado).
+        console.warn(`[runtime-cache] Aviso: build-runtime.sh fallo (${e}). Continuando con fallback inline.`);
+      }
+    }
+    await ensureRuntimeObj(runtimeLibuvObj, globalLibuvObj);
+    await ensureRuntimeObj(runtimePollObj, globalPollObj);
+
     const runtimeObjs: string[] = [];
     if (useLibuvBackend && existsSync(runtimeLibuvObj)) {
       runtimeObjs.push(runtimeLibuvObj);
