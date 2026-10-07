@@ -21,7 +21,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/test_detach \
             $(BUILD_DIR)/test_integration \
             $(BUILD_DIR)/test_tcp_server \
-            $(BUILD_DIR)/test_uv_fd_awaiter
+            $(BUILD_DIR)/test_uv_fd_awaiter \
+            $(BUILD_DIR)/test_tcp_client
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -29,7 +30,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/test_detach.cpp \
             tests/test_integration.cpp \
             tests/test_tcp_server.cpp \
-            tests/test_uv_fd_awaiter.cpp
+            tests/test_uv_fd_awaiter.cpp \
+            tests/test_tcp_client.cpp
 
 .PHONY: all clean run
 
@@ -58,6 +60,9 @@ $(BUILD_DIR)/test_tcp_server: tests/test_tcp_server.cpp | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_uv_fd_awaiter: tests/test_uv_fd_awaiter.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(LDLIBS) -pthread
+
+$(BUILD_DIR)/test_tcp_client: tests/test_tcp_client.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
