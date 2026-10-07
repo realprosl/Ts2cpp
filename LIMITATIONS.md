@@ -67,10 +67,14 @@ Lista no exhaustiva — ver `README.md`, `examples/` y los nodos AST en
   cast explícito. Funciona con la sintaxis object-variant
   `{ ok: true; value: T } | { ok: false; error: E }` (V1.4) y con unions
   nombradas (V1.2+).
-- **Escape implícito** (V8.0): si la firma de retorno es `Unq<T>` o
-  `Rc<T>`, `return new T()` o `return x` se envuelve automáticamente con
-  `unSome<T>(...)` o `rcShare<T>(...)`. El usuario no tiene que
-  escribir el envoltorio manualmente.
+- **Escape implícito** (V8.0, deprecado en V22): si la firma de
+  retorno es `Unq<T>` o `Rc<T>`, `return new T()` o `return x` se
+  envolvía automáticamente con `unSome<T>(...)` o `rcShare<T>(...)`.
+  V22 elimina `Unq<T>` y `Rc<T>`; la regla se reemplaza por
+  `return new T()` que infiere `ptr<T>` por contexto, y
+  `make_unique<T>(...)` se aplica automáticamente cuando el destino
+  es `ptr<T>` (`std::unique_ptr<T>`). Ver [CHANGELOG.md](./CHANGELOG.md)
+  y `docs/memory-model.md`.
 
 ### Strings y literales
 

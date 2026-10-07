@@ -10,10 +10,10 @@ y macOS; no hay backend Windows/IOCP.
 |---|---|
 | `ets_runtime.hpp` | Umbrella + `Map<K,V>`/`Set<T>` (envoltorios sobre STL); facades estilo Node (`console`, `fs`, `path`, `process`, `JSON`); `print`/`write`/`printError`/`writeError` variádicos; `typeofOf<T>()`; helpers argv/imports. |
 | `ets_string.hpp` | `concat(...)` fold-template, `numberToString` (`std::to_chars`), `length`, `substring`, `indexOf`, `trim`, etc. |
-| `ets_async.hpp` | `Task<T>` (coroutine promise C++20), `EventLoop` con `::poll` + self-pipe para wake, `CancellationToken/Source`, `syncWait`, `spawn`, `runBlocking`, `BlockingExecutor` (pool 2-4 hilos). |
+| `ets_async.hpp` | `Task<T>` (coroutine promise C++20), `EventLoop` (selector entre `PollEventLoop` y `LibuvEventLoop`), `CancellationToken/Source`, `syncWait`, `spawn`, `runBlocking`, `BlockingExecutor` (pool 2-4 hilos). |
 | `ets_file.hpp` | `readFile/writeFile/appendFile/...` con overloads `Result<T>` y `out error`; versiones `*Async` (vía `runBlocking`) y `*Until` (deadline + cancellation). |
-| `ets_net.hpp` | `listenTcp`/`acceptTcp`/`readTcp`/`writeTcp`/`closeTcp` no bloqueantes; `*Until` con timeout y `CancellationToken`. |
-| `libuv/` | Spike de la Fase 1 de la migración a libuv. NO se inyecta al código generado; standalone. Valida el patrón callback→coroutine C++20 antes de empezar a migrar el `EventLoop` real. Ver `libuv/README.md`. |
+| `ets_net.hpp` | `listenTcp`/`acceptTcp`/`readTcp`/`writeTcp`/`closeTcp` no bloqueantes; `*Until` con timeout y `CancellationToken`. Bajo `-DETS_EVENT_BACKEND_LIBUV` los awaiterables usan `UvFdAwaiter`/`UvCancellableFdAwaiter` (drop-in libuv). |
+| `libuv/` | Backend alternativo de `EventLoop` basado en libuv. Activo bajo `-DETS_EVENT_BACKEND_LIBUV` (ver `libuv/README.md`). Migración completa (PRs #101–#117). |
 | `ets_tls.hpp` | `createTlsServer`/`acceptTls`/`readTls`/`writeTls`/`closeTls` sobre OpenSSL; TLS ≥ 1.2; encola solo si el programa usa tipos TLS. |
 | `ets_io_uring.hpp` | Linux-only (`__NR_io_uring_*`), ring reusado por worker; usado por fs async cuando disponible, fallback POSIX. |
 | `ets_syntax.hpp` | Validación sintáctica paralela con Tree-sitter; rechaza `throw`/`try`/`extends` (consistente con `Result<T>`-sin-excepciones). |

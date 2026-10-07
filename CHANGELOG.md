@@ -2,6 +2,85 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v0.29.0 (2026-10-07) — Backend alternativo de EventLoop basado en libuv
+
+### Added
+
+- **Backend libuv para `ets::EventLoop`**: nueva implementación
+  `LibuvEventLoop` basada en libuv 1.48, seleccionable con
+  `-DETS_EVENT_BACKEND_LIBUV`. Activar con `-luv` al enlazar.
+
+  ```bash
+  # Default (poll(2), sin cambios):
+  g++ -std=c++20 programa.cpp -o programa -pthread
+
+  # Con backend libuv:
+  g++ -std=c++20 -DETS_EVENT_BACKEND_LIBUV programa.cpp -o programa -luv -pthread
+  ```
+
+- **`UvFdAwaiter` / `UvCancellableFdAwaiter`**: drop-in libuv de
+  `FdAwaiter` / `CancellableFdAwaiter`. Bajo
+  `-DETS_EVENT_BACKEND_LIBUV`, `ets::listenTcp` / `acceptTcp` /
+  `readTcp` / `writeTcp` y versiones `*Until` usan `uv_poll_t`
+  internamente. La API pública es **idéntica**.
+
+- **Benchmarks medidos** (`runtime/libuv/tests/benchmark_*.cpp`):
+  - dispatcher idle (1 fd): **libuv 32x más rápido** (17 ns vs 544 ns).
+  - dispatcher 50 pipes: **libuv 430x más rápido** (23 ns vs 9883 ns).
+  - 1000 timers dispatch: 197 ns/timer.
+  - Wake roundtrip cross-thread: 23.7 µs.
+  - HTTP fetch end-to-end (libcurl): funciona con status 200, body
+    correcto.
+
+- **Tests añadidos (no se inyectan al código generado)** en
+  `runtime/libuv/tests/`:
+  - `test_wait_until.cpp` (Fase 2B.1, PR #103)
+  - `test_notify_post.cpp` (Fase 2B.2, PR #104)
+  - `test_wait_for.cpp` (Fase 2B.3, PR #105)
+  - `test_detach.cpp` (Fase 2B.4, PR #106)
+  - `test_integration.cpp` (Fase 2B.5, PR #107, 12 tests)
+  - `test_tcp_server.cpp` (Fase 3.1, PR #108)
+  - `test_dns_resolve.cpp` (Fase 3.1.1, PR #109)
+  - `test_uv_fd_awaiter.cpp` (Fase 3.2, PR #110)
+  - `test_tcp_client.cpp` (Fase 4, PR #112)
+  - `test_tcp_client_loop.cpp` (Fase 4.2, PR #113)
+  - `test_cancel_network.cpp` (Fase 5, PR #115)
+  - `test_curl_fetch.cpp` (Fase 7, PR #116)
+  - `benchmark_poll_vs_libuv.cpp` (Fase 6, PR #114)
+  - `benchmark_libuv_hotpath.cpp` (Fase 8, PR #117)
+
+  Total: **13 tests + 2 benchmarks, 94/94 escenarios verde**. Más
+  **202/202 unit Ts2cpp sin regresión**.
+
+- **Nuevos headers en runtime**:
+  - `runtime/ets_event_loop_iface.hpp` — interfaz `IEventLoop` común.
+  - `runtime/ets_event_loop_poll.hpp` — backend poll(2) (default).
+  - `runtime/ets_event_loop_libuv.hpp` — backend libuv (opt-in).
+  - `runtime/ets_event_loop.hpp` — selector por macro.
+  - `runtime/ets_net_libuv.hpp` — drop-in de awaitables de red.
+
+### Changed
+
+- `runtime/ets_async.hpp` — `EventLoop` ahora es un alias
+  (`PollEventLoop` o `LibuvEventLoop` según macro).
+- `runtime/ets_net.hpp` — `NetFdAwaiter` y `NetCancellableFdAwaiter`
+  son alias que apuntan al awaitable libuv bajo la macro.
+
+### Compatibility
+
+- **100% backwards compatible**: bajo default (sin macro), todo se
+  comporta exactamente igual.
+- **Cero cambios al código generado** (Ts2cpp no necesita modificarse).
+- **Cero Dockerfile**, integración por flag de compilación.
+- **Cero dependencias npm** añadidas.
+
+### Known Limitations
+
+- Los tests standalone en `runtime/libuv/` se compilan con `-O0` por
+  un bug latente con `-O2` en `test_integration` test 3
+  (waitUntil). El runtime real compila con `-O2` y funciona sin
+  issues. No es bloqueante.
+
 ## v0.28.0 (2026-10-04) — V23 BREAKING: TS-compatible match() syntax
 
 ### Breaking

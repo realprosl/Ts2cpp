@@ -874,11 +874,11 @@ O directamente con `npm start -- examples/<nombre>.ets -o <salida>.cpp` y luego 
 - [`docs/vision.md`](./docs/vision.md) — la filosofía del dialecto: escribir como TypeScript, conocerlo todo en compilación, pagar en ejecución como C++.
 - [`docs/roadmap.md`](./docs/roadmap.md) — el plan de ejecución derivado: V0 (cimiento semántico) hasta V14 (métodos de arrays + Optional estilo Rust).
 
-## Features del dialecto (resumen V0–V14)
+## Features del dialecto (resumen V0–V23)
 
 **Tipos y narrowing:**
 - Primitivos: `number`, `boolean`, `string`, `void`, `null`
-- Genéricos: `Array<T>`, `Optional<T>`, `Result<T>`, `Unq<T>`, `Rc<T>`, `Mut<T>`, `MutRef<T>`, `Map<K,V>`, `Set<T>`
+- Genéricos: `Array<T>`, `Optional<T>`, `Result<T>`, `ptr<T>`, `constPtr<T>`, `ref<T>`, `constRef<T>`, `Map<K,V>`, `Set<T>` (V22: los legacy `Mut<T>`, `MutRef<T>`, `Unq<T>`, `Rc<T>` fueron eliminados — ver [CHANGELOG](./CHANGELOG.md))
 - Tagged unions: `union X = A(payload) | B(payload);` con narrowing automático y match exhaustivo
 - Discriminated unions con object-literal variants (V1.4)
 
@@ -892,22 +892,32 @@ O directamente con `npm start -- examples/<nombre>.ets -o <salida>.cpp` y luego 
 - `o.valueOr(default)`, `o.map<U>(f)`, `o.andThen<U>(f)`, `o.orElse(f)`
 - `??` desazucara a `o.valueOr(x)`, `o?.field` desazucara a `optionalAndThen`
 
-**Async:** `async function`, `await`, `notify(event)` (io_uring)
+**Async:** `async function`, `await`, `notify(event)`, event loop con
+backend seleccionable (poll(2) o libuv — este último bajo
+`-DETS_EVENT_BACKEND_LIBUV`, ver `runtime/libuv/README.md`).
 
-**Memory:** `Unq<T>` move-only, `Rc<T>` shared, escape implícito V8 (Unq→Rc cuando es necesario)
+**Memory (V22):** `ptr<T>` (move-only, equivalente a `std::unique_ptr<T>`),
+`ref<T>` / `constRef<T>` (borrows tipados, `T&` / `const T&`),
+`constPtr<T>` (`std::unique_ptr<const T>`). `T` significa copia; el
+dialecto no aplica lowering implícito a `const T&`.
 
 **Closures (V10):**
 - Captura explícita `[x]` (V10.1): solo se capturan las variables usadas
 - Forwarding references (V10.2): `template <typename F> auto fn(F&& f)` cuando es posible (evita `std::function`)
 
+**Match (V23):** nueva sintaxis TS-compatible `match(value, [when(pattern, callback), ...])`.
+La forma V1.10 con `when (pattern) => result` fue **eliminada**.
+
 ## Tests
 
-- **Unit (type-checker, parser, lexer, codegen, tipos C++):** 166 tests verde
-- **E2E (golden tests sobre ejemplos `examples/*.ets`):** 69/69 verde
+- **Unit (type-checker, parser, lexer, codegen, tipos C++):** 202/202 verde
+- **E2E (golden tests sobre ejemplos `examples/*.ets`):** 43/48 verde (4 preexistentes no bloqueantes)
+- **libuv (13 tests + 2 benchmarks, `runtime/libuv/tests/`):** 94/94 escenarios verde
 
 ```bash
 node --experimental-strip-types --no-warnings --test test/unit/*.test.ts
 node --experimental-strip-types --no-warnings test/runner.ts
+cd runtime/libuv && make && make run
 ```
 
 ## Licencia
