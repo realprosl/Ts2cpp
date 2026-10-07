@@ -140,6 +140,12 @@ public:
     }
     void notify() noexcept override { uv_async_send(&wake_); }
 
+    // Acceso al uv_loop_t raw. Para integracion con APIs y event loop
+    // externos (e.g. uv_getaddrinfo directo). El caller es responsable
+    // de no corromper el estado interno.
+    uv_loop_t* raw_loop() noexcept { return &loop_; }
+    uv_async_t* raw_wake() noexcept { return &wake_; }
+
     void runOne() override {
         // 1. Limpiar timers fired antes de uv_run.
         for (auto it = timers_.begin(); it != timers_.end(); ) {
