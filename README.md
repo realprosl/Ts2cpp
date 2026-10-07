@@ -908,6 +908,62 @@ dialecto no aplica lowering implícito a `const T&`.
 **Match (V23):** nueva sintaxis TS-compatible `match(value, [when(pattern, callback), ...])`.
 La forma V1.10 con `when (pattern) => result` fue **eliminada**.
 
+## Sistema de build (V25 — "transpilador en un solo bloque")
+
+V25 introduce un build system que permite compilar programas Ts2cpp sin
+necesidad de instalar librerías de C++ externas en el sistema. Las
+librerías que el backend C++ necesita (**libuv**, **BoringSSL** y **libcurl**)
+están vendoreadas como submódulos git en `third_party/` y se compilan
+estáticamente desde fuentes.
+
+### Instalación mínima
+
+```bash
+# Requisitos del sistema:
+sudo apt install g++ cmake make git   # Debian/Ubuntu
+# brew install gcc cmake make git       # macOS
+
+# Clonar el repo (incluye los submódulos):
+git clone --recurse-submodules https://github.com/realprosl/Ts2cpp.git
+cd Ts2cpp
+```
+
+### Compilar las dependencias vendoreadas (solo la primera vez)
+
+```bash
+scripts/build-boringssl.sh   # ~2 min cold (~30s warm)
+scripts/build-libuv.sh        # ~35s cold (~28ms warm)
+scripts/build-curl.sh         # ~30s cold (~1s warm)
+scripts/build-runtime.sh      # ~6s cold (~40ms warm)
+```
+
+El CLI las invoca automáticamente la primera vez que se compila un
+proyecto que las necesita, pero hacerlo manualmente acelera el primer
+build del usuario.
+
+### Compilar un proyecto Ts2cpp
+
+```bash
+npm start -- build mi-programa
+```
+
+El CLI:
+1. Transpila `mi-programa.ets` → `mi-programa.cpp`.
+2. Compila el `.cpp` usando `.o` pre-compilados del runtime
+   (`build/runtime_ets_*.o`).
+3. Enlaza con `.a` vendoreadas (libuv, libssl, libcrypto, libcurl).
+4. Cache global en `~/.cache/etsc/` para reuso entre proyectos.
+
+### Performance
+
+| Escenario | Tiempo |
+|---|---|
+| Cold compile (primer build) | ~10s |
+| Warm cache (mismo proyecto) | ~100ms |
+| Cache global hit (proyecto nuevo) | ~100ms |
+
+Más detalle en [`docs/build-system.md`](docs/build-system.md).
+
 ## Tests
 
 - **Unit (type-checker, parser, lexer, codegen, tipos C++):** 202/202 verde

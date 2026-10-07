@@ -1,5 +1,85 @@
 # `scripts/` — utilidades de build
 
+Scripts bash y TypeScript. Algunos se invocan manualmente, otros los llama el
+CLI (`src/cli.ts`) automáticamente (V25).
+
+## Scripts de V25 (Build System — ver `docs/build-system.md`)
+
+Estos scripts son invocados **manualmente** por el usuario la primera vez,
+y **automáticamente por el CLI** cuando detecta que faltan `.a`/`.o` en el
+build local.
+
+### `build-libuv.sh`
+
+Compila libuv estáticamente desde `third_party/libuv/` (submódulo git) hacia
+`build/libs/libuv/`.
+
+```
+scripts/build-libuv.sh [VERSION]    # default v1.48.0
+```
+
+Salidas:
+
+- `build/libs/libuv/lib/libuv.a` (~364 KB)
+- `build/libs/libuv/include/uv.h` (cabeceras)
+
+Cache HIT/MISS por presencia de `libuv.a`. Cold compile: ~35s. Warm: 28ms.
+Requiere `cmake`.
+
+### `build-boringssl.sh`
+
+Compila BoringSSL estáticamente desde `third_party/boringssl/` (submódulo git)
+hacia `build/libs/boringssl/`.
+
+```
+scripts/build-boringssl.sh
+```
+
+Salidas:
+
+- `build/libs/boringssl/lib/libssl.a` (~14 MB)
+- `build/libs/boringssl/lib/libcrypto.a` (~39 MB)
+- `build/libs/boringssl/include/openssl/*.h`
+
+Cache HIT/MISS por presencia de `libssl.a` + `libcrypto.a`. Cold compile:
+~2 min. Warm: 2s. Requiere `cmake`.
+
+### `build-curl.sh`
+
+Compila libcurl estáticamente desde `third_party/curl/` (submódulo git),
+**enlazando contra la BoringSSL vendoreada** (no contra OpenSSL del sistema).
+
+```
+scripts/build-curl.sh
+```
+
+Salidas:
+
+- `build/libs/curl/lib/libcurl.a` (~6 MB)
+- `build/libs/curl/include/curl/*.h` (12 headers)
+
+Cache HIT/MISS por presencia de `libcurl.a`. Cold compile: ~30s. Warm: 1s.
+Requiere `cmake`.
+
+### `build-runtime.sh`
+
+Pre-compila el runtime C++ de Ts2cpp (`runtime/runtime_ets_*.cpp`) a `.o`
+cacheados en `build/`.
+
+```
+scripts/build-runtime.sh
+```
+
+Salidas:
+
+- `build/runtime_ets_poll.o` (~24 KB) — siempre
+- `build/runtime_ets_libuv.o` (~36 KB) — si libuv está disponible
+
+Cache HIT/MISS por timestamp del `.o` vs `.cpp`. Cold compile: ~6s.
+Warm: 40ms (150x speedup).
+
+## Scripts pre-V25 (Tree-sitter + AST)
+
 Tres scripts bash invocados manualmente (no los usa `npm start`). Tratan solo
 las dependencias externas (`third_party/`) y el dumper de AST.
 

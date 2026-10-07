@@ -2,6 +2,56 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.0.0 (2026-10-07) — V25 Build System: "transpilador en un solo bloque"
+
+### Added
+
+- **Build system con `.a` estáticas vendoreadas**: libuv, BoringSSL
+  (OpenSSL-compatible), libcurl. El usuario ya no necesita
+  `apt install libuv-dev libssl-dev libcurl4-openssl-dev`; solo
+  `g++`, `cmake` y `make`.
+- **Tres librerías como submódulos git** (`third_party/libuv/`,
+  `third_party/boringssl/`, `third_party/curl/`). Cada una con
+  `VENDORED-NOTES.md` específico.
+- **Cuatro scripts de build** (`scripts/build-{libuv,boringssl,curl,runtime}.sh`)
+  con cache HIT/MISS. Cold compile ~3 min total; warm cache <5s.
+- **Pre-compilación del runtime a `.o`** (`runtime/runtime_ets_*.cpp` →
+  `build/runtime_ets_*.o`). 150x speedup warm cache. Header ligero
+  `*_api.hpp` con solo declaraciones para el code que va a `.cpp`.
+- **Cache global** del usuario en `~/.cache/etsc/runtime/<ver>/<backend>/<hash>/`.
+  Compartido entre proyectos del mismo usuario.
+- **Integración transparente en el CLI** (`src/cli.ts`):
+  - Detección automática de librerías vendoreadas en `linkLibraries`.
+  - Auto-ejecución de `scripts/build-<lib>.sh` cuando faltan `.a`.
+  - Auto-ejecución de `scripts/build-runtime.sh` cuando faltan `.o`.
+  - Auto-poblamiento del cache global.
+
+### Changed
+
+- `runtime/ets_event_loop_libuv.hpp` y `runtime/ets_event_loop_poll.hpp`
+  son ahora **wrappers back-compat** que incluyen los `_api.hpp`. Las
+  definiciones no-template se movieron a los `.cpp`.
+- El CLI ya no requiere que el usuario ejecute los scripts de build
+  manualmente.
+
+### Performance
+
+| Escenario | Antes (V24) | Ahora (V25) | Speedup |
+|---|---|---|---|
+| Cold compile (primer build) | ~5s | ~10s (con cache miss de vendoring) | 0.5x (penalty de 5s) |
+| Warm cache (libs + runtime) | ~2s | ~100ms | **20x** |
+| Cache global hit (proyecto nuevo) | N/A | ~100ms | nuevo |
+
+### Documentation
+
+- `docs/build-system.md` (nuevo, ~280 líneas): guía completa del
+  build system V25.
+- `scripts/README.md`: documenta los 4 scripts de V25.
+- `third_party/libuv/README.md`, `third_party/boringssl/VENDORED-NOTES.md`,
+  `third_party/curl/VENDORED-NOTES.md`: docs de cada librería vendoreada.
+- `runtime/libuv/README.md`: nota sobre pre-compilación.
+- `CHANGELOG.md`, `README.md`, `status.md`: actualizados a V25.
+
 ## v0.29.0 (2026-10-07) — Backend alternativo de EventLoop basado en libuv
 
 ### Added

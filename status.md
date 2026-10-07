@@ -312,3 +312,48 @@ No es regresión de la migración (también fallaba con `-O2` antes). El
 runtime real se compila con `-O2` en los tests e2e del dialecto y pasa
 sin issues. Investigar en una fase posterior si se quiere `-O2` en los
 benchmarks.
+
+## V25 — Build System: "transpilador en un solo bloque" (2026-10)
+
+**Estado: COMPLETO.** 7 PRs mergeadas (#119, #120, #121, #122, #123,
+#124, #125), 1 PR abierta (#126 docs finales). Cierra el ciclo de
+"transpilador en un solo bloque": el usuario **NO** necesita instalar
+`libuv-dev`, `libssl-dev`, `libcurl4-openssl-dev`. Solo `g++`, `cmake`,
+`make`, `git`.
+
+### Fases entregadas
+
+| Fase | PR | Descripción |
+|---|---|---|
+| 1 | #119 | Vendoring libuv (submódulo git) |
+| 4 | #120 | Pre-compilar runtime a `.o` (150x speedup) |
+| 4.6 | #121 | CLI integra `.o` (auto-build) |
+| 5 | #122 | Cache global en `~/.cache/etsc/` |
+| 6 | #123 | UX transparente (auto-build libs) |
+| 2 | #124 | Vendoring BoringSSL (submódulo git) |
+| 3 | #125 | Vendoring libcurl (submódulo git) |
+| 7 | #126 | Documentación final (este doc) |
+
+### Métricas finales
+
+| Componente | Cold compile | Warm cache |
+|---|---|---|
+| libuv (`build-libuv.sh`) | ~35s | 28ms |
+| BoringSSL (`build-boringssl.sh`) | ~2 min | 2s |
+| libcurl (`build-curl.sh`) | ~30s | 1s |
+| runtime `.o` (`build-runtime.sh`) | ~6s | 40ms |
+| **Build completo de un programa Ts2cpp** | ~10s | **~100ms (20x)** |
+
+### Tests verde (2026-10-07)
+
+- **202/202 unit Ts2cpp**.
+- **14/14 libuv** (94/94 escenarios) — incluye `benchmark_libuv_hotpath`
+  con 182 ns/timer dispatch.
+- **3/3 e2e runner**.
+
+### Próximos pasos (no V25)
+
+- **V26** (Alberto roadmap): reactor async O(conexiones) → O(eventos
+  activos). Eliminar O(N) en detached_/cancel/cleanup. buffer pool.
+- **V24.x**: memory model subtareas pendientes.
+- **V23.x**: forma con discriminator en runtime.
