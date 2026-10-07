@@ -42,6 +42,16 @@ if [[ "${CURRENT_TAG}" != "${VERSION}" ]]; then
     (cd "${LIBUV_SRC}" && git fetch --tags --quiet && git checkout "${VERSION}" --quiet)
 fi
 
+# Cache HIT: si ya tenemos la versión compilada y estamos en el tag correcto,
+# saltar la recompilación.
+STATIC_LIB="${BUILD_DIR}/lib/libuv.a"
+if [[ -f "${STATIC_LIB}" ]] && [[ "${CURRENT_TAG}" == "${VERSION}" ]]; then
+    SIZE=$(du -h "${STATIC_LIB}" | cut -f1)
+    echo "==> Cache HIT: libuv ${VERSION} ya compilado en ${STATIC_LIB} (${SIZE})"
+    echo "    Para forzar recompilación: rm -rf ${BUILD_DIR}"
+    exit 0
+fi
+
 # Validar cmake.
 if ! command -v cmake >/dev/null 2>&1; then
     echo "ERROR: cmake no está instalado. Instala con:"
@@ -69,6 +79,9 @@ echo "==> Instalando en ${BUILD_DIR}"
 
 # Limpiar artefactos del build (no los queremos en el repo).
 rm -rf "${BUILD_WORK}"
+
+# Limpiar .so* y .la (no necesarios para enlace estático).
+rm -f "${BUILD_DIR}"/lib/libuv.so* "${BUILD_DIR}"/lib/libuv.la
 
 # Verificar.
 STATIC_LIB="${BUILD_DIR}/lib/libuv.a"
