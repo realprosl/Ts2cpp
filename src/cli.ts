@@ -257,6 +257,12 @@ try {
         script: "build-boringssl.sh",
         libPath: () => join(compilerRoot, "build", "libs", "boringssl", "lib", "libcrypto.a"),
       },
+      // Fase 3: libcurl vendoreada.
+      // linkLibraries: ["curl"] resuelve a build/libs/curl/lib/libcurl.a.
+      curl: {
+        script: "build-curl.sh",
+        libPath: () => join(compilerRoot, "build", "libs", "curl", "lib", "libcurl.a"),
+      },
     };
 
     async function ensureVendoredLib(name: string): Promise<string | null> {
