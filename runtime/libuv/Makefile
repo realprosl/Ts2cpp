@@ -45,7 +45,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/benchmark_libuv_hotpath \
             $(BUILD_DIR)/benchmark_poll_vs_libuv \
             $(BUILD_DIR)/benchmark_buffer_pool \
-            $(BUILD_DIR)/benchmark_accept4
+            $(BUILD_DIR)/benchmark_accept4 \
+            $(BUILD_DIR)/test_multi_loop
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -61,7 +62,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/benchmark_libuv_hotpath.cpp \
             tests/benchmark_poll_vs_libuv.cpp \
             tests/benchmark_buffer_pool.cpp \
-            tests/benchmark_accept4.cpp
+            tests/benchmark_accept4.cpp \
+            tests/test_multi_loop.cpp
 
 .PHONY: all clean run
 
@@ -114,6 +116,9 @@ $(BUILD_DIR)/benchmark_buffer_pool: tests/benchmark_buffer_pool.cpp | $(BUILD_DI
 
 $(BUILD_DIR)/benchmark_accept4: tests/benchmark_accept4.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -O2 -o $@ $< -pthread
+
+$(BUILD_DIR)/test_multi_loop: tests/test_multi_loop.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
