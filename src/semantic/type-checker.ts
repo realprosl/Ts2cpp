@@ -1960,6 +1960,15 @@ export class TypeChecker {
         if (this.currentAsync === false) this.report(node, "await solo es válido dentro de una función async o en el nivel superior");
         const operand = this.expression(node.operand, scope);
         if (!isPromiseType(operand)) this.report(node.operand, `await requiere Promise<T>, no '${operand}'`);
+        // V22 PR#8: E4210 - cualquier borrow activo (ref<T>/constRef<T>)
+        // que sobreviva a un await es potencialmente dangling. Reportamos
+        // el error en el momento del await (no en la declaracion) para no
+        // quejarnos de borrows que solo viven despues del await.
+        for (const frame of this.borrowStack) {
+          for (const [sourceName, mode] of frame.entries()) {
+            this.report(node, `E4210: borrowed reference '${sourceName}' (${mode}) cannot cross an await point in an async function. Move ownership into the function (ptr<T>) or refactor to avoid the await.`);
+          }
+        }
         result = promiseResult(operand);
         break;
       }
