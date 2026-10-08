@@ -37,6 +37,13 @@ export const HELPER_METADATA: Record<string, { minParams: number; returnsGeneric
   // El codegen emite `std::move(x)` y el checker marca la variable como
   // `Moved` para que cualquier uso posterior sea diagnóstico E4102/E4103.
   move:              { minParams: 1 },
+  // V22 (Memory Model v2): `ref(x)` y `constRef(x)` crean un borrow de un
+  // lvalue. `ref(x)` retorna `ref<T>` (T&); `constRef(x)` retorna `constRef<T>`
+  // (const T&). El codegen los emite como el lvalue directo sin transformacion;
+  // el "&" en el tipo declarado lo anade `expressionReturnsRef()` via
+  // `returnsRef: true` en esta metadata.
+  ref:               { minParams: 1, returnsGeneric: true, returnsRef: true },
+  constRef:          { minParams: 1, returnsGeneric: true, returnsRef: true },
   // V23: `match` / `when` / `whenType` / `otherwise` son intrinsics del
   // dialecto. `match(value, [...cases])` o `match(value, "key", [...cases])`
   // se detectan en el checker y el codegen emite un if/else chain (igual

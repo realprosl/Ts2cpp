@@ -820,3 +820,72 @@ test("V14: Optional con método inexistente reporta error", () => {
     o.foo();
   `, "no tiene el método");
 });
+
+// =============================================================================
+// V22 PR#133: Sintaxis ref(x) y constRef(x) — borrows locales
+// =============================================================================
+// El parser del dialecto requiere campos de clase SIN inicializador (declarados
+// con `;`); un constructor separado se encarga de inicializarlos. Los tests
+// siguen ese patron.
+
+test("V22 PR#133: acepta ref(x) con lvalue identifier", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const x: User = new User();
+      const a: ref<User> = ref(x);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#133: acepta constRef(x) con lvalue identifier", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const x: User = new User();
+      const a: constRef<User> = constRef(x);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#133: acepta ref(x.member) con MemberExpression", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const x: User = new User();
+      const a: ref<string> = ref(x.name);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#133: rechaza ref() con un literal NewExpression (no es lvalue)", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const a: ref<User> = ref(new User());
+    }
+  `, "E4208");
+});
+
+test("V22 PR#133: rechaza ref() con un literal numerico (no es lvalue)", () => {
+  expectError(`
+    function test(): void {
+      const a: ref<number> = ref(42);
+    }
+  `, "E4208");
+});
