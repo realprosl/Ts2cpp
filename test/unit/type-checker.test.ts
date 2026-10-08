@@ -1056,3 +1056,77 @@ test("V22 PR#7: E4205 (Array<ref<T>>) ya implementado", () => {
     }
   `, "E4205");
 });
+
+// =============================================================================
+// V22 PR#8: Async borrows cross-fn (E4210)
+// =============================================================================
+
+test("V22 PR#8: ref<T> local en async con await -> E4210", () => {
+  expectError(`
+    class Session {
+      id: number;
+      constructor(id: number) { this.id = id; }
+    }
+    async function test(s: Session): Promise<number> {
+      const a: ref<Session> = ref(s);
+      await sleep(10);
+      return a.id;
+    }
+  `, "E4210");
+});
+
+test("V22 PR#8: constRef<T> local en async con await -> E4210", () => {
+  expectError(`
+    class Session {
+      id: number;
+      constructor(id: number) { this.id = id; }
+    }
+    async function test(s: Session): Promise<number> {
+      const a: constRef<Session> = constRef(s);
+      await sleep(10);
+      return a.id;
+    }
+  `, "E4210");
+});
+
+test("V22 PR#8: ref<T> local en async SIN await -> OK", () => {
+  const { checker } = check(`
+    class Session {
+      id: number;
+      constructor(id: number) { this.id = id; }
+    }
+    async function test(s: Session): Promise<number> {
+      const a: ref<Session> = ref(s);
+      return a.id;
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#8: ref<T> local en funcion NO-async -> OK (caso normal)", () => {
+  const { checker } = check(`
+    class Session {
+      id: number;
+      constructor(id: number) { this.id = id; }
+    }
+    function test(s: Session): number {
+      const a: ref<Session> = ref(s);
+      return a.id;
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#8: ptr<T> local en async con await -> OK (no es borrow)", () => {
+  const { checker } = check(`
+    class Session {
+      id: number;
+      constructor(id: number) { this.id = id; }
+    }
+    async function test(s: ptr<Session>): Promise<number> {
+      await sleep(10);
+      return s.id;
+    }
+  `);
+  assert.ok(checker);
+});
