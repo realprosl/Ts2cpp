@@ -55,6 +55,7 @@ public:
 
 private:
     struct TimerEntry;
+    struct PollState;
     struct PollEntry {
         int fd = -1;
         short events = 0;
@@ -66,11 +67,13 @@ private:
         bool closed = false;
         PollEntry* pollPtr = nullptr;
         TimerEntry* timeoutTimer = nullptr;
+        PollState* parent = nullptr;  // V26: back-pointer para callback pools
     };
     struct PollState {
         uv_poll_t poll{};
         std::vector<PollEntry> entries;
         bool closed = false;
+        LibuvEventLoop* loop = nullptr;  // V26: back-pointer al Loop
     };
     struct TimerEntry {
         uv_timer_t handle{};
@@ -94,6 +97,11 @@ private:
     std::mutex postedMutex_;
     std::vector<std::coroutine_handle<>> posted_;
     std::vector<std::coroutine_handle<>> ready_;
+    // V26: listas de fired, para cleanup event-driven sin scan O(N).
+    std::vector<TimerEntry*> timers_to_reap_;
+    std::vector<PollEntry*> entries_to_reap_;
+    std::vector<int> polls_to_close_;
+    std::vector<std::coroutine_handle<>> detached_to_reap_;
 };
 
 }  // namespace ets
