@@ -1130,3 +1130,44 @@ test("V22 PR#8: ptr<T> local en async con await -> OK (no es borrow)", () => {
   `);
   assert.ok(checker);
 });
+
+// =============================================================================
+// V22 PR#9a: Deprecation warning E4404 para Rc<T>
+// =============================================================================
+
+test("V22 PR#9a: Rc<T> en declaracion de variable -> E4404 warning", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const r: Rc<User> = rcShare(new User());
+    }
+  `, "E4404");
+});
+
+test("V22 PR#9a: Rc<T> en parametro de funcion -> E4404 warning", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(r: Rc<User>): void {
+      return;
+    }
+  `, "E4404");
+});
+
+test("V22 PR#9a: ptr<T> en declaracion -> OK (no Rc)", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: ptr<User>): void {
+      return;
+    }
+  `);
+  assert.ok(checker);
+});

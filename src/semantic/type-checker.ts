@@ -1209,6 +1209,13 @@ export class TypeChecker {
         const inner = arguments_[0];
         if (inner && isPrimitive(inner)) this.report(node, `'${base}<${inner}>' no soporta primitivos (los primitivos van por valor)`);
         this.validateType(inner, node, false, primitiveOnly, scope);
+        // V22 PR#9a: E4404 - deprecation warning para Rc<T>. Se debe migrar
+        // a ptr<T> (unique ownership) o weak<T> (shared ownership circular,
+        // PR#9b). Reportamos como warning (no error) para no romper código
+        // existente durante la migracion.
+        if (base === "Rc") {
+          this.report(node, `E4404: 'Rc<T>' is deprecated. Use 'ptr<T>' for unique ownership or 'weak<T>' for shared ownership that breaks cycles (V22 PR#9b).`);
+        }
         return type;
       }
       if (base === "Set") {
