@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/ets_async.hpp"
+#include "runtime/ets_buffer_pool.hpp"
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -121,11 +122,26 @@ inline Task<Result<std::string>> readTcp(TcpConnection connection, double reques
     if (!connection.valid()) co_return Result<std::string>::failure("Conexión TCP cerrada");
     std::size_t size = requestedBytes <= 0 ? 1 : static_cast<std::size_t>(requestedBytes);
     if (size > 1024 * 1024) size = 1024 * 1024;
-    std::string buffer(size, '\0');
+    // V26: buffer pool reutilizable en vez de alocar fresh cada vez.
+    // NOTA: capacity >= size, y recv escribe hasta `capacity` bytes. El
+    // resultado final es un std::string del tamano exacto leido; el
+    // buffer del pool se devuelve al pool (no se transfiere al caller,
+    // porque el caller recibe por valor y debe poder mantener el string
+    // tras la siguiente llamada a readTcp).
+    std::string buffer = ets::BufferPool::instance().acquire(size);
+    const std::size_t capacity = buffer.capacity();
     for (;;) {
-        const ssize_t received = ::recv(connection.fd(), buffer.data(), buffer.size(), 0);
-        if (received >= 0) { buffer.resize(static_cast<std::size_t>(received)); co_return Result<std::string>::success(std::move(buffer)); }
-        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<std::string>::failure(socketError("Error leyendo conexión"));
+        const ssize_t received = ::recv(connection.fd(), buffer.data(), capacity, 0);
+        if (received >= 0) {
+            std::string result(received, '\0');
+            std::memcpy(result.data(), buffer.data(), static_cast<std::size_t>(received));
+            ets::BufferPool::instance().release(std::move(buffer));
+            co_return Result<std::string>::success(std::move(result));
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            ets::BufferPool::instance().release(std::move(buffer));
+            co_return Result<std::string>::failure(socketError("Error leyendo conexión"));
+        }
         if (errno == EINTR) continue;
         co_await NetFdAwaiter{connection.fd(), POLLIN};
     }

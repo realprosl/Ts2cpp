@@ -43,7 +43,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/test_cancel_network \
             $(BUILD_DIR)/test_curl_fetch \
             $(BUILD_DIR)/benchmark_libuv_hotpath \
-            $(BUILD_DIR)/benchmark_poll_vs_libuv
+            $(BUILD_DIR)/benchmark_poll_vs_libuv \
+            $(BUILD_DIR)/benchmark_buffer_pool
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -57,7 +58,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/test_cancel_network.cpp \
             tests/test_curl_fetch.cpp \
             tests/benchmark_libuv_hotpath.cpp \
-            tests/benchmark_poll_vs_libuv.cpp
+            tests/benchmark_poll_vs_libuv.cpp \
+            tests/benchmark_buffer_pool.cpp
 
 .PHONY: all clean run
 
@@ -104,6 +106,9 @@ $(BUILD_DIR)/benchmark_libuv_hotpath: tests/benchmark_libuv_hotpath.cpp $(RUNTIM
 
 $(BUILD_DIR)/benchmark_poll_vs_libuv: tests/benchmark_poll_vs_libuv.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -O2 -o $@ $< $(LDLIBS) -pthread
+
+$(BUILD_DIR)/benchmark_buffer_pool: tests/benchmark_buffer_pool.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -O2 -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
