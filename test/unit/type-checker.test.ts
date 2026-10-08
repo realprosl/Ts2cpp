@@ -889,3 +889,109 @@ test("V22 PR#133: rechaza ref() con un literal numerico (no es lvalue)", () => {
     }
   `, "E4208");
 });
+
+// =============================================================================
+// V22 PR#134: Borrow conflicts (E4206, E4207) — aliasing mutable detection
+// =============================================================================
+// Patron consistente: User declarado con campo name + constructor.
+// function test(): void declara los borrows.
+// Los borrows viven hasta el final del bloque.
+
+test("V22 PR#134: ref<T>+ref<T> en mismo scope -> E4206", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: ref<User> = ref(u);
+    }
+  `, "E4206");
+});
+
+test("V22 PR#134: ref<T>+constRef<T> en mismo scope -> E4207", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: constRef<User> = constRef(u);
+    }
+  `, "E4207");
+});
+
+test("V22 PR#134: constRef<T>+ref<T> en mismo scope -> E4207 (orden importa)", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: constRef<User> = constRef(u);
+      const b: ref<User> = ref(u);
+    }
+  `, "E4207");
+});
+
+test("V22 PR#134: constRef<T>+constRef<T> en mismo scope -> OK (shared + shared)", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: constRef<User> = constRef(u);
+      const b: constRef<User> = constRef(u);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#134: ref<T> a fuentes distintas -> OK", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(x: User, y: User): void {
+      const a: ref<User> = ref(x);
+      const b: ref<User> = ref(y);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#134: ref<T> que sale del scope antes del segundo -> OK (lexical end)", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      {
+        const a: ref<User> = ref(u);
+      }
+      const b: ref<User> = ref(u);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#134: ref<T> en if, otro ref<T> despues del if -> OK (rama termina)", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User, cond: boolean): void {
+      if (cond) {
+        const a: ref<User> = ref(u);
+      }
+      const b: ref<User> = ref(u);
+    }
+  `);
+  assert.ok(checker);
+});
