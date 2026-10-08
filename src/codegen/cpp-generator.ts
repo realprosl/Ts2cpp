@@ -2056,6 +2056,13 @@ export class CppGenerator {
         if (node.callee === "move" && node.args.length === 1) {
           return `std::move(${this.emitExpression(node.args[0])})`;
         }
+        // V22 (Memory Model v2): `ref(x)` y `constRef(x)` se traducen al
+        // lvalue directo. El "&" en el tipo declarado lo añade
+        // `expressionReturnsRef()` (HELPER_METADATA.returnsRef = true).
+        // Aqui solo emitimos el argumento sin transformar.
+        if ((node.callee === "ref" || node.callee === "constRef") && node.args.length === 1) {
+          return this.emitExpression(node.args[0]);
+        }
         const args = node.args.map((argument, index) => {
           let text = this.emitExpression(argument, expectedParamTypes[index]);
           if (this.expressionIsVariadic(argument)) text += "...";

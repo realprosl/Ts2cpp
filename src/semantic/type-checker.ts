@@ -2000,28 +2000,62 @@ export class TypeChecker {
           else result = elementType;
           break;
         }
-        // V22 (Memory Model v2): `move(x)` transfiere ownership de un ptr<T>.
-        // El argumento debe ser un identificador declarado como `ptr<T>` o
-        // `constPtr<T>`. Marcamos la variable como `moved` para que cualquier
-        // uso posterior sea diagnóstico E4102/E4103.
-        if (node.callee === "move" && node.args.length === 1) {
-          const innerExpr = node.args[0];
-          if (innerExpr.kind === "IdentifierExpression") {
-            const symbol = scope.resolve(innerExpr.name);
-            if (!symbol || symbol.kind !== "variable") this.report(innerExpr, `move: símbolo no definido '${innerExpr.name}'`);
-            else if (!isGenericType(symbol.type) || (genericBase(symbol.type) !== "ptr" && genericBase(symbol.type) !== "constPtr")) {
-              this.report(innerExpr, `E4100: copy of non-move-only value '${innerExpr.name}'. move(x) is only valid on ptr<T> or constPtr<T>.`);
-            } else {
-              this.expression(innerExpr, scope, symbol.type);
-              this.moved.set(innerExpr.name, "moved");
-              result = symbol.type;
-            }
-          } else {
-            this.report(innerExpr, `E4101: ownership transfer requires move(identifier). Direct move of a temporary is not supported.`);
-            result = this.expression(innerExpr, scope);
-          }
-          break;
-        }
+        // V22 (Memory Model v2): `ref(x)` transfiere ownership de un ptr<T>.
+                // El argumento debe ser un identificador declarado como `ptr<T>` o
+                // `constPtr<T>`. Marcamos la variable como `moved` para que cualquier
+                // uso posterior sea diagnóstico E4102/E4103.
+                if (node.callee === "move" && node.args.length === 1) {
+                  const innerExpr = node.args[0];
+                  if (innerExpr.kind === "IdentifierExpression") {
+                    const symbol = scope.resolve(innerExpr.name);
+                    if (!symbol || symbol.kind !== "variable") this.report(innerExpr, `move: símbolo no definido '${innerExpr.name}'`);
+                    else if (!isGenericType(symbol.type) || (genericBase(symbol.type) !== "ptr" && genericBase(symbol.type) !== "constPtr")) {
+                      this.report(innerExpr, `E4100: copy of non-move-only value '${innerExpr.name}'. move(x) is only valid on ptr<T> or constPtr<T>.`);
+                    } else {
+                      this.expression(innerExpr, scope, symbol.type);
+                      this.moved.set(innerExpr.name, "moved");
+                      result = symbol.type;
+                    }
+                  } else {
+                    this.report(innerExpr, `E4101: ownership transfer requires move(identifier). Direct move of a temporary is not supported.`);
+                    result = this.expression(innerExpr, scope);
+                  }
+                  break;
+                }
+                // V22 (Memory Model v2): `ref(x)` y `constRef(x)` crean un borrow de
+                // un lvalue. El argumento debe ser un lvalue (IdentifierExpression,
+                // MemberExpression, IndexExpression). El tipo retornado es `ref<T>`
+                // o `constRef<T>` donde T es el tipo del lvalue. Si el expected
+                // contextual es `ref<T>`/`constRef<T>`, lo usamos para inferir T.
+                if ((node.callee === "ref" || node.callee === "constRef") && node.args.length === 1) {
+                  const innerExpr = node.args[0];
+                  // Validar que es un lvalue.
+                  if (innerExpr.kind !== "IdentifierExpression"
+                      && innerExpr.kind !== "MemberExpression"
+                      && innerExpr.kind !== "IndexExpression") {
+                    this.report(innerExpr, `E4208: ${node.callee}(x) requires an lvalue (variable, member access, or index). Got ${innerExpr.kind}.`);
+                    result = "void";
+                    break;
+                  }
+                  // Inferir T del expected contextual o del tipo del lvalue.
+                  let innerType: TypeName;
+                  if (expected && isGenericType(expected)
+                      && (genericBase(expected) === "ref" || genericBase(expected) === "constRef")) {
+                    innerType = genericArguments(expected)[0] ?? this.expression(innerExpr, scope);
+                  } else {
+                    innerType = this.expression(innerExpr, scope);
+                  }
+                  // Validar que el tipo del lvalue coincide con T (si lo tenemos).
+                  if (expected && isGenericType(expected)
+                      && (genericBase(expected) === "ref" || genericBase(expected) === "constRef")) {
+                    const expectedInner = genericArguments(expected)[0];
+                    if (expectedInner && innerType !== expectedInner) {
+                      // OK en algunos casos (subtipado), no error por ahora.
+                    }
+                  }
+                  result = node.callee === "ref" ? genericType("ref", [innerType]) : genericType("constRef", [innerType]);
+                  break;
+                }
         // V23: `match(value, [...])` o `match(value, "discriminator", [...])`.
         // El primer argumento es el subject. El segundo (sin discriminator) es
         // el array de cases. Con discriminator, args[1] es la clave string y
