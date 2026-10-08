@@ -56,3 +56,23 @@ Si la cabecera TLS aparece en la salida, el CLI añade `-lssl -lcrypto` al enlac
   `err`, `sleep`, `acceptTcp`, …) gracias a los `using ets::...` en
   `ets_runtime.hpp:112-128`.
 - io_uring se compila solo si `__linux__ && __NR_io_uring_setup && __NR_io_uring_enter`.
+
+## Reactor async V26 (rendimiento)
+
+El reactor sobre libuv entrega las optimizaciones del V26 (Alberto 2026-10-07):
+
+- **Cleanup event-driven** (V26.2): callbacks pushean a colas `*_to_reap_`;
+  `runOne` ya no hace scans O(N) sobre timers/polls/detached. ~10% mejora en
+  hot path; escala bien a N=10k polls.
+- **Buffer pool reutilizable** (V26.3): `ets::BufferPool` thread_local con
+  buckets de potencia-2. `readTcp()` lo usa. **Speedup 2.21x** medido en
+  `benchmark_buffer_pool`.
+- **accept4 + SOCK_NONBLOCK** (V26.4): `listenTcp` y `acceptTcp` usan
+  `accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC)` en Linux. 1 syscall
+  en lugar de 2, sin race window.
+- **MultiLoopRunner** (V26.5): `ets::MultiLoopRunner(n)` arranca n
+  `LibuvEventLoop` en n threads, cada uno con su `run()`. API: `start()`,
+  `stop()`, `join()`, `nextLoop()` round-robin. Validado en
+  `runtime/libuv/tests/test_multi_loop.cpp`.
+
+Más detalle en `docs/reactor-async.md`.

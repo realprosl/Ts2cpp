@@ -357,3 +357,42 @@ benchmarks.
   activos). Eliminar O(N) en detached_/cancel/cleanup. buffer pool.
 - **V24.x**: memory model subtareas pendientes.
 - **V23.x**: forma con discriminator en runtime.
+
+## V26 — Reactor async optimizations (2026-10-08)
+
+**Estado: COMPLETO.** 4 PRs mergeadas (#128, #129, #130, #131), 1 PR
+abierta (#132 docs). Las 5 mejoras del V26 roadmap (Alberto 2026-10-07)
+estan entregadas.
+
+### Fases entregadas
+
+| #  | PR     | Mejora                                              | Speedup medido |
+| --- | ------ | ----------------------------------------------------- | --------------- |
+| 1 | #128 | correctness PollEntry + masked wanted por FD        | estructural   |
+| 2 | #128 | cleanup event-driven O(N)→O(activos)                 | 1.10x hot path |
+| 3 | #129 | buffer reuse readTcp                                  | **2.21x**     |
+| 4 | #130 | accept4 + SOCK_NONBLOCK                              | 1.04x (micro) |
+| 5 | #131 | multicore N loops (MultiLoopRunner)                   | 4x (4 cores)  |
+
+### Benchmarks clave (V26 vs V25)
+
+| Bench                         | V25      | V26       | Speedup |
+|------------------------------|----------|-----------|---------|
+| 1000 timers dispatch         | 197 ns/timer | 178 ns/timer | 1.10x |
+| readTcp alloc fresh vs pool  | 137 ns/op   | 62 ns/op    | 2.21x |
+| accept4 vs accept+fcntl      | 74.2 us/op | 71.7 us/op  | 1.04x |
+| MultiLoopRunner (4 loops, 200ms) | 1 loop (20 ticks) | 4 loops (76 ticks) | 4x |
+
+### Tests verde (2026-10-08)
+
+- **202/202 unit Ts2cpp**.
+- **94/94 libuv (14/14 tests)**.
+- **4/4 test_multi_loop** (NUEVO en V26.5).
+- **3/3 e2e runner**.
+
+### Próximos pasos (no V26)
+
+- **V22.x / V24.x**: memory model subtareas pendientes.
+- **Cross-loop messaging helper** sobre `uv_async_send` (V26+
+  seguimiento; permite que los loops se pasen conexiones).
+- **HTTP dispatcher** que reparte accept entre loops.
