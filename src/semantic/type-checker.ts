@@ -1870,6 +1870,18 @@ export class TypeChecker {
         const isGlobalSymbol = (name: string): boolean => !!rootScope.resolveLocal(name);
         const capturedList = Array.from(captured).filter(name => !isGlobalSymbol(name));
         node.capturedSymbols = capturedList;
+        // V22 PR#7: E4209 - closure que captura una variable ref<T>/constRef<T>.
+        // Una closure no puede "escapar" con un borrow porque el borrow
+        // esta atado al scope local del caller. Por ahora, TODA captura de
+        // ref<T>/constRef<T> en una closure reporta E4209 (conservador;
+        // escape analysis vendra en una fase posterior).
+        for (const capturedName of capturedList) {
+          const symbol = scope.resolve(capturedName);
+          if (symbol && symbol.kind === "variable" && isGenericType(symbol.type)
+              && (genericBase(symbol.type) === "ref" || genericBase(symbol.type) === "constRef")) {
+            this.report(node, `E4209: closure captures borrowed reference '${capturedName}' (${symbol.type}). Borrowed references cannot escape their scope via closures. Pass the value explicitly as a closure parameter.`);
+          }
+        }
         if (node.body.kind === "BlockStatement") {
           if (!declaredResult) this.report(node, "Una función flecha con bloque necesita tipo de retorno");
           const previous = this.currentReturn; this.currentReturn = declaredResult ?? "void";

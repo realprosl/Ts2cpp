@@ -995,3 +995,64 @@ test("V22 PR#134: ref<T> en if, otro ref<T> despues del if -> OK (rama termina)"
   `);
   assert.ok(checker);
 });
+
+// =============================================================================
+// V22 PR#7: Async/closures/generics restrictions
+// =============================================================================
+
+test("V22 PR#7: closure que captura ref<T> retorna -> E4209", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const getName = (): string => a.name;
+    }
+  `, "E4209");
+});
+
+test("V22 PR#7: closure que captura constRef<T> retorna -> E4209", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: constRef<User> = constRef(u);
+      const getName = (): string => a.name;
+    }
+  `, "E4209");
+});
+
+test("V22 PR#7: closure sin captura de ref<T> -> OK", () => {
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      // Closure que usa 'a' pero NO captura (la closure es no-escape, ejecutada in situ).
+      // Por ahora: TODA closure que use ref<T> en su body reporta E4209 (conservador).
+      // El caso no-escape se detectara en una segunda pasada con escape analysis.
+      // Para este test usamos solo variables que NO son ref.
+      const b: number = 42;
+      const getB = (): number => b;
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V22 PR#7: E4205 (Array<ref<T>>) ya implementado", () => {
+  expectError(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(): void {
+      const arr: Array<ref<User>> = [];
+    }
+  `, "E4205");
+});
