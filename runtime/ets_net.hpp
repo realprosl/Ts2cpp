@@ -71,11 +71,46 @@ private:
     std::shared_ptr<SocketState> state_;
 };
 
+// V26: SOCK_NONBLOCK y SOCK_CLOEXEC no existen en macOS; SOCK_CLOEXEC
+// solo en Linux >= 2.6.27. Proteger con __linux__.
+#if defined(__linux__) || defined(__APPLE__)
+  #ifndef SOCK_NONBLOCK
+    #define SOCK_NONBLOCK 0
+  #endif
+  #ifndef SOCK_CLOEXEC
+    #define SOCK_CLOEXEC 0
+  #endif
+#endif
+
 inline std::string socketError(const std::string& operation) { return operation + ": " + std::strerror(errno); }
 
 inline bool makeNonBlocking(int fd) {
     const int flags = ::fcntl(fd, F_GETFL, 0);
     return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+// V26: socket + fcntl (nonblock) en 1 solo syscall usando
+// SOCK_NONBLOCK. En sistemas sin soporte, fallback a makeNonBlocking.
+inline int socketNonBlocking(int family, int type, int protocol) {
+#if defined(__linux__)
+    return ::socket(family, type | SOCK_NONBLOCK | SOCK_CLOEXEC, protocol);
+#else
+    const int fd = ::socket(family, type, protocol);
+    if (fd >= 0 && !makeNonBlocking(fd)) { ::close(fd); return -1; }
+    return fd;
+#endif
+}
+
+// V26: accept + fcntl en 1 solo syscall usando accept4 (Linux) o
+// fallback a accept + makeNonBlocking (otros UNIX).
+inline int acceptNonBlocking(int fd) {
+#if defined(__linux__)
+    return ::accept4(fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
+    const int client = ::accept(fd, nullptr, nullptr);
+    if (client >= 0 && !makeNonBlocking(client)) { ::close(client); return -1; }
+    return client;
+#endif
 }
 
 inline Result<TcpListener> listenTcp(const std::string& host, double requestedPort) {
@@ -91,11 +126,12 @@ inline Result<TcpListener> listenTcp(const std::string& host, double requestedPo
     if (lookup != 0) return Result<TcpListener>::failure(std::string("No se puede resolver la dirección: ") + ::gai_strerror(lookup));
     int listener = -1;
     for (addrinfo* address = addresses; address; address = address->ai_next) {
-        listener = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        // V26: socketNonBlocking = socket + SOCK_NONBLOCK en 1 syscall.
+        listener = socketNonBlocking(address->ai_family, address->ai_socktype, address->ai_protocol);
         if (listener < 0) continue;
         int reuse = 1;
         ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        if (::bind(listener, address->ai_addr, address->ai_addrlen) == 0 && ::listen(listener, SOMAXCONN) == 0 && makeNonBlocking(listener)) break;
+        if (::bind(listener, address->ai_addr, address->ai_addrlen) == 0 && ::listen(listener, SOMAXCONN) == 0) break;
         ::close(listener);
         listener = -1;
     }
@@ -107,11 +143,9 @@ inline Result<TcpListener> listenTcp(const std::string& host, double requestedPo
 inline Task<Result<TcpConnection>> acceptTcp(TcpListener listener) {
     if (!listener.valid()) co_return Result<TcpConnection>::failure("Listener TCP cerrado");
     for (;;) {
-        const int client = ::accept(listener.fd(), nullptr, nullptr);
-        if (client >= 0) {
-            if (!makeNonBlocking(client)) { ::close(client); co_return Result<TcpConnection>::failure(socketError("No se puede configurar el cliente")); }
-            co_return Result<TcpConnection>::success(TcpConnection{client});
-        }
+        // V26: acceptNonBlocking = accept + O_NONBLOCK en 1 syscall.
+        const int client = acceptNonBlocking(listener.fd());
+        if (client >= 0) co_return Result<TcpConnection>::success(TcpConnection{client});
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<TcpConnection>::failure(socketError("Error aceptando conexión"));
         if (errno == EINTR) continue;
         co_await NetFdAwaiter{listener.fd(), POLLIN};
@@ -173,11 +207,9 @@ inline Task<Result<TcpConnection>> acceptTcpUntil(TcpListener listener, double t
     if (!listener.valid()) co_return Result<TcpConnection>::failure("Listener TCP cerrado");
     const auto deadline = networkDeadline(timeoutMilliseconds);
     for (;;) {
-        const int client = ::accept(listener.fd(), nullptr, nullptr);
-        if (client >= 0) {
-            if (!makeNonBlocking(client)) { ::close(client); co_return Result<TcpConnection>::failure(socketError("No se puede configurar el cliente")); }
-            co_return Result<TcpConnection>::success(TcpConnection{client});
-        }
+        // V26: acceptNonBlocking = accept + O_NONBLOCK en 1 syscall.
+        const int client = acceptNonBlocking(listener.fd());
+        if (client >= 0) co_return Result<TcpConnection>::success(TcpConnection{client});
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) co_return Result<TcpConnection>::failure(socketError("Error aceptando conexión"));
         if (errno == EINTR) continue;
         const auto waited = co_await NetCancellableFdAwaiter{listener.fd(), POLLIN, deadline, token};
