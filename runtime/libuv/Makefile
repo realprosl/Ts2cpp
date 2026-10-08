@@ -23,9 +23,11 @@ LDLIBS   ?= -luv
 # "header inline -> header ligero + .cpp" no rompe nada.
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 RUNTIME_LIBUV_O := $(REPO_ROOT)/build/runtime_ets_libuv.o
+RUNTIME_NET_LIBUV_O := $(REPO_ROOT)/build/runtime_ets_net_libuv.o
 RUNTIME_POLL_O  := $(REPO_ROOT)/build/runtime_ets_poll.o
-RUNTIME_OBJS_LIBUV := $(RUNTIME_LIBUV_O)
-RUNTIME_OBJS_POLL  := $(RUNTIME_POLL_O)
+RUNTIME_NET_POLL_O := $(REPO_ROOT)/build/runtime_ets_net.o
+RUNTIME_OBJS_LIBUV := $(RUNTIME_LIBUV_O) $(RUNTIME_NET_LIBUV_O)
+RUNTIME_OBJS_POLL  := $(RUNTIME_POLL_O) $(RUNTIME_NET_POLL_O)
 
 BUILD_DIR = build
 TARGETS   = $(BUILD_DIR)/validate_architecture \
@@ -76,29 +78,29 @@ $(BUILD_DIR)/test_wait_for: tests/test_wait_for.cpp | $(BUILD_DIR)
 $(BUILD_DIR)/test_detach: tests/test_detach.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
-$(BUILD_DIR)/test_integration: tests/test_integration.cpp $(RUNTIME_LIBUV_O) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -o $@ $< $(RUNTIME_LIBUV_O) $(LDLIBS) -pthread
+$(BUILD_DIR)/test_integration: tests/test_integration.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_tcp_server: tests/test_tcp_server.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
-$(BUILD_DIR)/test_uv_fd_awaiter: tests/test_uv_fd_awaiter.cpp $(RUNTIME_LIBUV_O) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_LIBUV_O) $(LDLIBS) -pthread
+$(BUILD_DIR)/test_uv_fd_awaiter: tests/test_uv_fd_awaiter.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_tcp_client: tests/test_tcp_client.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
-$(BUILD_DIR)/test_tcp_client_loop: tests/test_tcp_client_loop.cpp $(RUNTIME_LIBUV_O) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_LIBUV_O) $(LDLIBS) -pthread
+$(BUILD_DIR)/test_tcp_client_loop: tests/test_tcp_client_loop.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
-$(BUILD_DIR)/test_cancel_network: tests/test_cancel_network.cpp $(RUNTIME_LIBUV_O) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_LIBUV_O) $(LDLIBS) -pthread
+$(BUILD_DIR)/test_cancel_network: tests/test_cancel_network.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_curl_fetch: tests/test_curl_fetch.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< -lcurl $(LDLIBS)
 
-$(BUILD_DIR)/benchmark_libuv_hotpath: tests/benchmark_libuv_hotpath.cpp $(RUNTIME_LIBUV_O) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -O2 -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_LIBUV_O) $(LDLIBS) -pthread
+$(BUILD_DIR)/benchmark_libuv_hotpath: tests/benchmark_libuv_hotpath.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -O2 -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/benchmark_poll_vs_libuv: tests/benchmark_poll_vs_libuv.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -O2 -o $@ $< $(LDLIBS) -pthread

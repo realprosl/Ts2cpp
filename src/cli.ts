@@ -188,8 +188,12 @@ try {
     const runtimeObjDir = join(compilerRoot, "build");
     const runtimeLibuvObj = join(runtimeObjDir, "runtime_ets_libuv.o");
     const runtimePollObj = join(runtimeObjDir, "runtime_ets_poll.o");
+    const runtimeNetLibuvObj = join(runtimeObjDir, "runtime_ets_net_libuv.o");
+    const runtimeNetPollObj = join(runtimeObjDir, "runtime_ets_net.o");
     const globalLibuvObj = join(globalCacheDir, "runtime_ets_libuv.o");
     const globalPollObj = join(globalCacheDir, "runtime_ets_poll.o");
+    const globalNetLibuvObj = join(globalCacheDir, "runtime_ets_net_libuv.o");
+    const globalNetPollObj = join(globalCacheDir, "runtime_ets_net.o");
 
     // Resolucion de cache: si no esta en build/, intenta copiar desde
     // ~/.cache/etsc/. Si tampoco esta, llama a scripts/build-runtime.sh
@@ -219,6 +223,8 @@ try {
     }
     await ensureRuntimeObj(runtimeLibuvObj, globalLibuvObj);
     await ensureRuntimeObj(runtimePollObj, globalPollObj);
+    await ensureRuntimeObj(runtimeNetLibuvObj, globalNetLibuvObj);
+    await ensureRuntimeObj(runtimeNetPollObj, globalNetPollObj);
 
     const runtimeObjs: string[] = [];
     if (useLibuvBackend && existsSync(runtimeLibuvObj)) {
@@ -226,6 +232,12 @@ try {
     }
     if (existsSync(runtimePollObj)) {
       runtimeObjs.push(runtimePollObj);
+    }
+    if (useLibuvBackend && existsSync(runtimeNetLibuvObj)) {
+      runtimeObjs.push(runtimeNetLibuvObj);
+    }
+    if (existsSync(runtimeNetPollObj)) {
+      runtimeObjs.push(runtimeNetPollObj);
     }
     // V25 Fase 6: si el usuario pide una libreria que tenemos
     // vendoreada (libuv hoy; libcurl/openssl en Fases 2-3), la
