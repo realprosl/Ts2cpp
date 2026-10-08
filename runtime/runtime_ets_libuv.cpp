@@ -141,6 +141,23 @@ void LibuvEventLoop::post(std::coroutine_handle<> handle) {
 
 void LibuvEventLoop::notify() noexcept { uv_async_send(&wake_); }
 
+void LibuvEventLoop::stop() noexcept {
+    stop_.store(true, std::memory_order_release);
+    uv_async_send(&wake_);  // despierta al loop si esta bloqueado
+}
+
+// V26: run() bloquea hasta que stop() se llame desde otro thread.
+// Cada iteracion hace uv_run(UV_RUN_ONCE). Asi onWake tiene la
+// oportunidad de ejecutarse (consume posted_/ready_ y procesa stop_).
+// El cleanup final de handles lo hace el destructor; run() solo
+// sale del bucle.
+void LibuvEventLoop::run() {
+    stop_.store(false, std::memory_order_release);
+    while (!stop_.load(std::memory_order_acquire)) {
+        uv_run(&loop_, UV_RUN_ONCE);
+    }
+}
+
 uv_loop_t* LibuvEventLoop::raw_loop() noexcept { return &loop_; }
 uv_async_t* LibuvEventLoop::raw_wake() noexcept { return &wake_; }
 

@@ -52,6 +52,14 @@ public:
     uv_async_t* raw_wake() noexcept;
 
     void runOne() override;
+    // V26: run() bloquea el thread actual hasta que stop() se llame.
+    // Pensado para ejecutarse en un thread dedicado de un
+    // MultiLoopRunner. NO es seguro llamar runOne() y run() en el
+    // mismo loop.
+    void run();
+    // V26: solicita a run() que termine tras el `it` ciclo de eventos.
+    // Thread-safe (puede llamarse desde otro thread).
+    void stop() noexcept;
 
 private:
     struct TimerEntry;
@@ -102,6 +110,8 @@ private:
     std::vector<PollEntry*> entries_to_reap_;
     std::vector<int> polls_to_close_;
     std::vector<std::coroutine_handle<>> detached_to_reap_;
+    // V26: stop() solicita al run() terminar.
+    std::atomic<bool> stop_{false};
 };
 
 }  // namespace ets
