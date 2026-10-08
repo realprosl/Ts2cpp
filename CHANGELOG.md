@@ -2,6 +2,53 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.1.0 (2026-10-08) — V26 reactor async optimizations
+
+### Added
+
+- **Cleanup event-driven O(activos)** en `LibuvEventLoop` (V26.2):
+  callbacks (`onPoll`, `onTimerForPoll`, `onTimerForWait`, `onWake`)
+  pushean a colas `*_to_reap_` cuando marcan fired. `runOne` ya no
+  scan O(N) sobre timers/polls/detached. ~10% mejora hot path,
+  escala bien a N=10k polls.
+- **Bugfix memory leak** en `detach()`: si el handle ya está done,
+  ahora se llama `handle.destroy()` en lugar de retornar sin liberar.
+- **Buffer pool reutilizable** (V26.3): `runtime/ets_buffer_pool.hpp`
+  singleton thread_local con buckets de potencia-2 (1K..1M).
+  `readTcp()` lo usa. **Speedup 2.21x** medido en
+  `runtime/libuv/tests/benchmark_buffer_pool.cpp`.
+- **accept4 + SOCK_NONBLOCK** (V26.4): `socketNonBlocking()` y
+  `acceptNonBlocking()` envuelven `socket(..., SOCK_NONBLOCK |
+  SOCK_CLOEXEC, ...)` y `accept4(fd, NULL, NULL, SOCK_NONBLOCK |
+  SOCK_CLOEXEC)` en Linux. Fallback a socket+fcntl/accept+fcntl en
+  otros UNIX. `listenTcp`, `acceptTcp`, `acceptTcpUntil` usan los
+  wrappers. -1 syscall por accept.
+- **MultiLoopRunner** (V26.5): `runtime/ets_multi_loop.hpp` arranca
+  n `LibuvEventLoop` en n threads, cada uno con su `run()`.
+  API: `start()`, `stop()`, `join()`, `nextLoop()` round-robin.
+  Validado en `runtime/libuv/tests/test_multi_loop.cpp` (4 loops,
+  19 ticks cada uno en 200ms).
+- **`LibuvEventLoop::run()` / `stop()`** (V26): bucle bloqueante
+  que ejecuta `uv_run(UV_RUN_ONCE)` hasta que `stop()` (thread-safe)
+  lo solicite.
+
+### Performance
+
+| Bench                          | V25     | V26    | Speedup |
+|--------------------------------|---------|--------|---------|
+| 1000 timers dispatch           | 197 ns  | 178 ns | 1.10x   |
+| readTcp buffer allocation      | 137 ns  | 62 ns  | 2.21x   |
+| accept (10k connects+accepts)  | 74.2 us | 71.7 us | 1.04x  |
+| MultiLoopRunner (4 loops, 200ms) | 1 loop | 4 loops | 4x   |
+
+### Documentation
+
+- `docs/reactor-async.md` (nuevo, ~300 lineas): guía completa del V26.
+- `runtime/README.md`: seccion "Reactor async V26" con resumen.
+- `docs/build-system.md`: sin cambios (V26 no toco build system).
+- `CHANGELOG.md`: entrada v1.1.0.
+- `status.md`: seccion final V26.
+
 ## v1.0.0 (2026-10-07) — V25 Build System: "transpilador en un solo bloque"
 
 ### Added
