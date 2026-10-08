@@ -285,6 +285,11 @@ export class TypeChecker {
   // mutable (no readonly) porque IfStatement hace snapshots y los restaura
   // para implementar el join de estados entre ramas.
   private moved = new Map<string, "moved" | "maybe-moved">();
+  // V22 PR#134: stack de borrows activos por scope. Cada entrada es un
+  // Map<nombre-de-la-fuente, modo> ("mut" para ref<T>, "shared" para
+  // constRef<T>). push/pop en cada BlockStatement. Las declaraciones
+  // `ref(x)` y `constRef(x)` consultan y actualizan el stack.
+  private borrowStack: Map<string, "mut" | "shared">[] = [new Map()];
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
   private inConstructor = false;
@@ -1294,6 +1299,35 @@ export class TypeChecker {
           && this.classes.has(actual)
           && actual !== "void";
         if (!typeMatches(actual, expected) && !isPtrImplicit) this.report(node, `Se esperaba ${expected}, pero se obtuvo ${actual}`);
+        // V22 PR#134: detectar borrow conflicts. Si el tipo declarado es
+        // `ref<T>`/`constRef<T>` y el initializer es `ref(x)`/`constRef(x)`,
+        // registramos el borrow sobre la fuente `x` y comprobamos aliasing
+        // con borrows activos en el scope actual.
+        if (expected && isGenericType(expected)
+            && (genericBase(expected) === "ref" || genericBase(expected) === "constRef")
+            && node.initializer.kind === "CallExpression"
+            && (node.initializer.callee === "ref" || node.initializer.callee === "constRef")
+            && node.initializer.args.length === 1
+            && node.initializer.args[0].kind === "IdentifierExpression") {
+          const sourceName = node.initializer.args[0].name;
+          const newMode: "mut" | "shared" = node.initializer.callee === "ref" ? "mut" : "shared";
+          // Buscar borrows activos en el scope actual sobre la misma fuente.
+          const currentScope = this.borrowStack[this.borrowStack.length - 1];
+          const existing = currentScope.get(sourceName);
+          if (existing !== undefined) {
+            if (existing === "mut" || newMode === "mut") {
+              // Cualquier combinacion que incluya un "mut" es conflicto.
+              // E4206: mut+mut. E4207: mut+shared (cualquier orden).
+              const code = existing === "mut" && newMode === "mut" ? "E4206" : "E4207";
+              const msg = existing === "mut" && newMode === "mut"
+                ? `E4206: mutable borrow conflict. '${sourceName}' is already borrowed as 'ref<T>' in this scope; cannot borrow again as 'ref<T>' (would create two mutable references). Use 'constRef(${sourceName})' if shared access is enough.`
+                : `E4207: mutable/shared borrow conflict. '${sourceName}' is already borrowed ${existing === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} in this scope; cannot borrow ${newMode === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} because it would violate Rust-like aliasing rules.`;
+              this.report(node.initializer, msg);
+            }
+          }
+          // Registrar este borrow en el scope actual.
+          currentScope.set(sourceName, newMode);
+        }
         // V6: si es `const` y el initializer es un literal puro, anotamos el
         // valor para que el codegen pueda emitir `constexpr` y propagar el
         // valor a usos posteriores (tamaños de arrays fijos, branches con
@@ -1403,7 +1437,16 @@ export class TypeChecker {
         break;
       }
       case "EnumDeclaration": break;
-      case "BlockStatement": { const child = new Scope(scope); for (const s of node.statements) this.statement(s, child); break; }
+      case "BlockStatement": {
+        const child = new Scope(scope);
+        // V22 PR#134: push borrow scope. Las declaraciones ref()/constRef()
+        // dentro de este bloque se registran en el nuevo nivel y se limpian
+        // al hacer pop (lexical end-of-block).
+        this.borrowStack.push(new Map());
+        for (const s of node.statements) this.statement(s, child);
+        this.borrowStack.pop();
+        break;
+      }
       case "ExpressionStatement": this.expression(node.expression, scope); break;
       case "IfStatement": {
         const condType = this.expression(node.condition, scope);
