@@ -81,10 +81,37 @@ declare global {
   // Para el editor son alias de T; el type-checker enforce la
   // semántica (no fields refT, no retornos refT, no borrows en async,
   // move() solo sobre ptrT, etc.). Ver docs/memory-model.md.
+  //
+  // constPtr<T> y constRef<T> se proyectan como readonly profundos para
+  // que el LSP muestre los miembros de T como readonly en hover. Asi
+  // cuando el usuario escribe constRef sobre una clase Foo, el editor
+  // le dice que foo.bar es readonly. Esto NO cambia el codegen (sigue
+  // siendo T&) ni la semantica que enforce el type-checker (mensajes
+  // E4203..E4207); solo afecta a lo que muestra el editor.
+  // Fuente: src/project/init-project.ts:constRefType
+  type constPtr<T> = T extends (...args: any[]) => any
+    ? T
+    : T extends object
+      ? { readonly [K in keyof T]: constPtr<T[K]> }
+      : T;
+  type constRef<T> = T extends (...args: any[]) => any
+    ? T
+    : T extends object
+      ? { readonly [K in keyof T]: constRef<T[K]> }
+      : T;
+  // ptr<T> y ref<T> son alias de T (mismo tipo que T). El type-checker
+  // enforce la semantica de ownership/borrowing (E4100..E4103, E4206..E4210).
+  // Distinguirlos como tipos separados seria ideal (para que el LSP marque
+  // error si pasas un ptr<T> donde se espera un ref<T>), pero romperia la
+  // ergonomia del dialecto (no podrias asignar un T literal a un ptr<T>).
+  // Asi que son alias puros. Si necesitas distinguirlos, haz un type guard
+  // con isPtr<T>(x) o usa los E4xxx del type-checker.
   type ptr<T> = T;
-  type constPtr<T> = T;
   type ref<T> = T;
-  type constRef<T> = T;
+  /** Marcar el tipo de un valor con un fantasma (phantom) para distinguir
+   *  ptr<Foo> de un Foo crudo en APIs que lo necesitan. NO cambia el
+   *  codegen. Usar solo si sabes lo que haces. */
+  type Phantom<T, Brand extends string> = T;
 
   // ─── Inmutabilidad (existente desde antes de V22) ────────────────────
   // 'readonlyT' marca inmutabilidad. En el dialecto el checker rechaza
@@ -167,8 +194,22 @@ declare global {
   type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
   // ─── Helpers de runtime (runtime/ets_core.hpp) ──────────────────────
+  /** Imprime los valores en stdout separados por espacios, seguidos de newline. */
   function print(...values: unknown[]): void;
+  /** Convierte un numero a su representacion en string. */
   function numberToString(n: number): string;
+  /** Sale del proceso con el codigo dado. NUNCA retorna (decorado con @noreturn). */
+  function exitProcess(code: number): never;
+  /** Reporta un mensaje de error via out-param (estilo C). Usado por el runtime. */
+  function fail(message: string, error: string): boolean;
+  /** Limpia el buffer de error. */
+  function clearError(error: string): void;
+  /** true si hay un mensaje de error pendiente. */
+  function hasError(error: string): boolean;
+  /** Devuelve el numero de argumentos pasados al programa (equivalente a process.argv.length - 1). */
+  function argumentCount(): number;
+  /** Asegura que el directorio padre del path existe. Crea los directorios necesarios. */
+  function ensureParentDirectory(path: string, error: string): boolean;
 
   // ─── Transferencia de ownership (V22 Memory Model v2) ───────────────
   // move(x) es la única forma de transferir ownership de un 'ptrT' sin
@@ -293,8 +334,31 @@ declare global {
   // ─── Built-in globals (RUNTIME_GLOBAL_NAMES en type-checker) ───────
   namespace console {
     function log(...values: unknown[]): void;
-    function error(...values: unknown[]): void;
+    function info(...values: unknown[]): void;
+    function debug(...values: unknown[]): void;
+    function trace(...values: unknown[]): void;
     function warn(...values: unknown[]): void;
+    function error(...values: unknown[]): void;
+    /** Lanza AssertionError si value es falsy. */
+    function assert(value: unknown, message?: string): void;
+  }
+  /** Funciones matematicas basicas estilo JavaScript (envoltorio de <cmath>). */
+  namespace Math {
+    function floor(value: number): number;
+    function ceil(value: number): number;
+    function round(value: number): number;
+    function abs(value: number): number;
+    function sqrt(value: number): number;
+    function pow(base: number, exponent: number): number;
+    function min(a: number, b: number): number;
+    function max(a: number, b: number): number;
+  }
+  /** API minima estilo JavaScript para tiempo. */
+  namespace Date {
+    /** ms desde epoch (1970-01-01T00:00:00Z). */
+    function now(): number;
+    /** ms UTC desde epoch para (year, month, day). month es 0-based. */
+    function utc(year: number, month: number, day: number): number;
   }
   namespace fs {
     // Versiones *Sync (devuelven Result<...> o boolean). Cobertura mínima:
