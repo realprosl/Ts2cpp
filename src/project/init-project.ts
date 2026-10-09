@@ -81,10 +81,26 @@ declare global {
   // Para el editor son alias de T; el type-checker enforce la
   // semántica (no fields refT, no retornos refT, no borrows en async,
   // move() solo sobre ptrT, etc.). Ver docs/memory-model.md.
+  //
+  // constPtr<T> y constRef<T> se proyectan como readonly profundos para
+  // que el LSP muestre los miembros de T como readonly en hover. Asi
+  // cuando el usuario escribe constRef sobre una clase Foo, el editor
+  // le dice que foo.bar es readonly. Esto NO cambia el codegen (sigue
+  // siendo T&) ni la semantica que enforce el type-checker (mensajes
+  // E4203..E4207); solo afecta a lo que muestra el editor.
+  // Fuente: src/project/init-project.ts:constRefType
+  type constPtr<T> = T extends (...args: any[]) => any
+    ? T
+    : T extends object
+      ? { readonly [K in keyof T]: constPtr<T[K]> }
+      : T;
+  type constRef<T> = T extends (...args: any[]) => any
+    ? T
+    : T extends object
+      ? { readonly [K in keyof T]: constRef<T[K]> }
+      : T;
   type ptr<T> = T;
-  type constPtr<T> = T;
   type ref<T> = T;
-  type constRef<T> = T;
 
   // ─── Inmutabilidad (existente desde antes de V22) ────────────────────
   // 'readonlyT' marca inmutabilidad. En el dialecto el checker rechaza
