@@ -132,11 +132,11 @@ test("init-project: estatic.d.ts declara métodos de instancia de Result<T, E>",
   const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
   await initializeProject(directory);
   const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
-  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*isOk\(\):\s*boolean/s,
+  assert.match(dts, /class\s+Result<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*isOk\(\):\s*boolean/s,
     "Result.isOk() no está declarado");
-  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*value\(\):\s*T/s,
+  assert.match(dts, /class\s+Result<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*value\(\):\s*T/s,
     "Result.value() no está declarado");
-  assert.match(dts, /class\s+Result<[^>]+>\s*\{[^}]*error\(\):\s*E/s,
+  assert.match(dts, /class\s+Result<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*error\(\):\s*E/s,
     "Result.error() no está declarado");
 });
 
@@ -146,13 +146,13 @@ test("init-project: estatic.d.ts declara métodos de instancia de Optional<T>", 
   const directory = mkdtempSync(join(tmpdir(), "estatic-init-"));
   await initializeProject(directory);
   const dts = readFileSync(join(directory, "types/estatic.d.ts"), "utf8");
-  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*isPresent\(\):\s*boolean/s,
+  assert.match(dts, /class\s+Optional<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*isPresent\(\):\s*boolean/s,
     "Optional.isPresent() no está declarado");
-  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*isEmpty\(\):\s*boolean/s,
+  assert.match(dts, /class\s+Optional<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*isEmpty\(\):\s*boolean/s,
     "Optional.isEmpty() no está declarado");
-  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*value\(\):\s*T/s,
+  assert.match(dts, /class\s+Optional<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*value\(\):\s*T/s,
     "Optional.value() no está declarado");
-  assert.match(dts, /class\s+Optional<[^>]+>\s*\{[^}]*valueOr\([^)]+\):\s*T/s,
+  assert.match(dts, /class\s+Optional<[^>]+>\s+(?:extends\s+\S+\s+)?\{[^}]*valueOr\([^)]+\):\s*T/s,
     "Optional.valueOr() no está declarado");
 });
 

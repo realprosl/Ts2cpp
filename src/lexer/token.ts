@@ -7,6 +7,10 @@ export type TokenKind =
   | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?" | "@"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
   | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "eof"
+  // Salto de linea significativo. El lexer lo emite cuando encuentra \n
+  // fuera de strings/comentarios; el parser lo usa como terminador
+  // alternativo de statement (junto con ';' y '}').
+  | "newline"
   // V19: modificadores de encapsulación.
   | "private" | "public" | "protected"
   // V22-gap-#1: `import type` en el parser (consume solo los tokens).

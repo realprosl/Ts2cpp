@@ -15,6 +15,10 @@ export class Parser {
 
   parseProgram(): Program {
     const statements: Statement[] = [];
+    // Saltamos los newlines iniciales por si el archivo empieza con lineas
+    // en blanco o comentarios entre statements. La semantica de newline
+    // significativo la gestiona cada statement internamente.
+    this.skipNewlines();
     // V18: los `.lib.ets` empiezan con cero o más declaraciones `ModuleHeader`.
     // El bloque ModuleHeader agrupa SOLO `@link` / `@include` (declaraciones
     // a nivel de archivo). Otros decoradores (`@cpp_name`, `@cpp_type`)
@@ -31,17 +35,34 @@ export class Parser {
       // consumir los siguientes. Para ello llamamos a una versión "single"
       // de parseDecorators: lee el `@`, el nombre y los args, sin buclear.
       headerDecorators.push(this.parseSingleDecorator());
+      // Saltamos los newlines que pueda haber entre el ultimo header
+      // decorator y el siguiente, igual que en parseDecorators() para
+      // los decorators a nivel de statement.
+      this.skipNewlines();
     }
     if (headerDecorators.length > 0) {
       const lastToken = this.tokens[this.current - 1] ?? headerDecorators.at(-1)!;
       statements.push({ kind: "ModuleHeaderDeclaration", decorators: headerDecorators, span: span(this.tokens[0].span.start, lastToken.span.end) });
     }
-    while (!this.check("eof")) statements.push(this.statement(true));
+    // El bucle principal: saltamos newlines (lineas en blanco) ANTES de
+    // chequear eof, porque entre statements puede haber multiples newlines
+    // que no cuentan como contenido. Esto evita confundir una linea en
+    // blanco al final del archivo con un statement vacio.
+    while (true) {
+      this.skipNewlines();
+      if (this.check("eof")) break;
+      statements.push(this.statement(true));
+    }
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
     return { kind: "Program", statements, span: span(this.tokens[0].span.start, this.peek().span.end) };
   }
 
   private statement(topLevel = false): Statement {
+    // Los saltos de linea entre statements son whitespace a nivel de
+    // parsing: los salta ANTES de intentar reconocer el siguiente
+    // statement. La semantica de "newline = ;" ya la gestiona
+    // consumeStatementTerminator() en cada caso.
+    this.skipNewlines();
     // V18: decoradores (`@cpp_name(...)`) pueden ir ANTES o DESPUÉS de `export`.
     // Probamos ambas posiciones; el que consuma tokens primero gana.
     const leadingDecorators = this.parseDecorators();
@@ -97,14 +118,14 @@ export class Parser {
     if (this.match("{")) return this.block(this.previous());
     if (this.match("delete")) return this.deleteStatement(this.previous());
     const expr = this.expression();
-    const end = this.consume(";", "Se esperaba ';' después de la expresión");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de la expresión");
     return { kind: "ExpressionStatement", expression: expr, span: span(expr.span.start, end.span.end) };
   }
 
   private deleteStatement(keyword: Token): Statement {
     const target = this.expression();
     if (target.kind !== "IndexExpression") this.error(target.span, "delete requiere un acceso por índice (map[k], set[v], arr[i])");
-    const end = this.consume(";", "Se esperaba ';' después de 'delete'");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de 'delete'");
     return { kind: "DeleteStatement", target: target as IndexExpression, span: span(keyword.span.start, end.span.end) };
   }
 
@@ -129,7 +150,7 @@ export class Parser {
       if (this.match(":")) declaredType = this.typeName();
       this.consume("=", "Toda variable debe tener un inicializador");
       const initializer = this.expression();
-      const end = this.consume(";", "Se esperaba ';' después de la declaración");
+      const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración");
       return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: "", declaredType, initializer, arrayBindings: bindings, span: span(keyword.span.start, end.span.end) };
     }
     const name = this.consume("identifier", "Se esperaba el nombre de la variable");
@@ -137,7 +158,7 @@ export class Parser {
     if (this.match(":")) declaredType = this.typeName();
     this.consume("=", "Toda variable debe tener un inicializador");
     const initializer = this.expression();
-    const end = this.consume(";", "Se esperaba ';' después de la declaración");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración");
     return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
   }
 
@@ -154,7 +175,7 @@ export class Parser {
     if (this.match(":")) declaredType = this.typeName();
     this.consume("=", "Toda declaración 'using' debe tener un inicializador");
     const initializer = this.expression();
-    const end = this.consume(";", "Se esperaba ';' después de la declaración 'using'");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración 'using'");
     return { kind: "UsingDeclaration", exported, name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
   }
 
@@ -229,7 +250,7 @@ export class Parser {
       this.consume(")", "Se esperaba ')' después de los parámetros");
       this.consume(":", "El método necesita un tipo de retorno");
       const returnType = this.typeName();
-      const end = this.consume(";", "Se esperaba ';' después del método");
+      const end = this.consumeStatementTerminator("Se esperaba ';' después del método");
       methods.push({ name: methodName.lexeme, params, returnType, decorators: methodDecorators, span: span(methodName.span.start, end.span.end) });
     }
     const close = this.consume("}", "Se esperaba '}' después de la interfaz");
@@ -258,7 +279,7 @@ export class Parser {
       const member = this.consume("identifier", "Se esperaba un campo o método");
       if (this.match(":")) {
         const type = this.typeName();
-        const end = this.consume(";", "Se esperaba ';' después del campo");
+        const end = this.consumeStatementTerminator("Se esperaba ';' después del campo");
         fields.push({ name: member.lexeme, type, readonly, access, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
       } else {
         const generics = this.typeParameterNames();
@@ -332,6 +353,11 @@ export class Parser {
         this.consume(")", "Se esperaba ')' después de los argumentos del decorador");
       }
       decorators.push({ name: name.lexeme, args });
+      // Saltamos los newlines que pueda haber entre decorators
+      // consecutivos. Sin esto, el parser trata cada decorator como
+      // un statement independiente y falla con "Se esperaba una
+      // expresión" en la linea del siguiente @.
+      this.skipNewlines();
     }
     return decorators;
   }
@@ -353,7 +379,7 @@ export class Parser {
     }
     this.consume("=", "Se esperaba '=' en la declaración de alias de tipo");
     const type = this.typeName();
-    const end = this.consume(";", "Se esperaba ';' después del alias de tipo");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después del alias de tipo");
     return { kind: "TypeAliasDeclaration", exported, name: name.lexeme, typeParameters, type, span: span(keyword.span.start, end.span.end) };
   }
 
@@ -378,7 +404,7 @@ export class Parser {
       declaration = this.variable(this.previous(), false);
     } else {
       declaration = this.expression();
-      this.consume(";", "Se esperaba ';' después de la expresión de 'export default'");
+      this.consumeStatementTerminator("Se esperaba ';' después de la expresión de 'export default'");
     }
     const endSpan = (declaration as { span?: import("../core/span.ts").Span }).span;
     return { kind: "ExportDefaultDeclaration", declaration, span: span(start, endSpan?.end ?? start) };
@@ -437,7 +463,7 @@ export class Parser {
       const sourceToken = this.consume("string", "Se esperaba un literal de módulo después de 'from'");
       source = (sourceToken as { literal?: string }).literal;
     }
-    this.consume(";", "Se esperaba ';' después de 'export {...}'");
+    this.consumeStatementTerminator("Se esperaba ';' después de 'export {...}'");
     return { kind: "ExportNamedDeclaration", specifiers, source, span: span(start, this.peek().span.start) };
   }
 
@@ -525,7 +551,7 @@ export class Parser {
         variants.push({ name: variantName.lexeme, payload, span: span(variantName.span.start, (this.previous()).span.end) });
       }
     } while (this.match("|"));
-    const end = this.consume(";", "Se esperaba ';' después de la unión");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de la unión");
     if (!variants.length) this.error(end, "La unión debe tener al menos una variante");
     const node: UnionDeclaration = { kind: "UnionDeclaration", exported, name: name.lexeme, typeParameters, variants, span: span(keyword.span.start, end.span.end) };
     return node;
@@ -596,10 +622,13 @@ export class Parser {
     if (this.match(";")) initializer = undefined;
     else if (this.match("let", "const")) initializer = this.variable(this.previous()) as import("../ast/nodes.ts").VariableDeclaration;
     else {
-      const expression = this.expression(); const end = this.consume(";", "Se esperaba ';' después del inicializador de for");
+      const expression = this.expression(); const end = this.consumeStatementTerminator("Se esperaba ';' después del inicializador de for"); 
       initializer = { kind: "ExpressionStatement", expression, span: span(expression.span.start, end.span.end) };
     }
     const condition = this.check(";") ? undefined : this.expression();
+    // El ';' aqui es un separador interno del for (init; cond; update),
+    // no un terminador de statement. NO se acepta newline: la gramatica
+    // C-style de 3 componentes exige ';' literal entre ellos.
     this.consume(";", "Se esperaba ';' después de la condición de for");
     const increment = this.check(")") ? undefined : this.expression();
     this.consume(")", "Se esperaba ')' después de for");
@@ -677,7 +706,7 @@ export class Parser {
 
   private returnStatement(keyword: Token): Statement {
     const value = this.check(";") ? undefined : this.expression();
-    const end = this.consume(";", "Se esperaba ';' después de return");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después de return");
     return { kind: "ReturnStatement", value, span: span(keyword.span.start, end.span.end) };
   }
 
@@ -777,7 +806,7 @@ export class Parser {
       this.advance();
       this.consume(":", "Se esperaba ':' después del pattern de 'case'");
       const result = this.expression();
-      const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+      const end = this.consumeStatementTerminator("Se esperaba ';' después del arm de 'match'");
       return {
         pattern: { kind: "IdentifierExpression", name: "_", span: span(start, end.span.start) },
         result,
@@ -803,7 +832,7 @@ export class Parser {
     this.consume("}", "Se esperaba '}' para cerrar el pattern de 'case'");
     this.consume(":", "Se esperaba ':' después del pattern de 'case'");
     const result = this.expression();
-    const end = this.consume(";", "Se esperaba ';' después del arm de 'match'");
+    const end = this.consumeStatementTerminator("Se esperaba ';' después del arm de 'match'");
     return {
       pattern: { kind: "IdentifierExpression", name: variantName, span: span(start, this.peek().span.start) },
       result,
@@ -1190,7 +1219,38 @@ export class Parser {
     }
     return false;
   }
+  // Salta cualquier cantidad de tokens 'newline' consecutivos. Se usa al
+  // inicio de cada statement (incluido el primer statement del programa)
+  // para que lineas en blanco o comentarios entre statements no
+  // interrumpan el reconocimiento. La semantica de newline significativo
+  // se aplica via consumeStatementTerminator() dentro de cada parser de
+  // statement.
+  private skipNewlines(): void {
+    while (this.check("newline")) this.advance();
+  }
   private consume(kind: TokenKind, message: string): Token { if (this.check(kind)) return this.advance(); this.error(this.peek(), message); return this.advance(); }
+  // Consume el terminador de un statement. Acepta ';' (explicito), 'newline'
+  // (significativo entre statements, equivalente a ;) o nada (cierre de
+  // bloque }). Si no hay ninguno, emite un error indicando que se esperaba
+  // un terminador. Retorna el token del delimitador (el ';' o 'newline'
+  // consumido, o el peek si no consumio nada) para que el caller pueda
+  // extender el span del AST node.
+  //
+  // Reglas:
+  //  - Si el siguiente token es ';', lo consume y lo retorna.
+  //  - Si es 'newline', lo consume y lo retorna (equivalente a ; opt-in).
+  //  - Si es '}' o 'eof', no consume nada; retorna el peek.
+  //  - En cualquier otro caso, emite un diagnostico y retorna el peek.
+  //
+  // Esto es opcional: si la entrada del usuario tiene el ';' explicito,
+  // sigue funcionando exactamente igual.
+  private consumeStatementTerminator(message: string): Token {
+    if (this.check(";")) return this.advance();
+    if (this.check("newline")) return this.advance();
+    if (this.check("}") || this.check("eof")) return this.peek();
+    this.error(this.peek(), message);
+    return this.peek();
+  }
   private error(token: Token, message: string): void { this.diagnostics.push({ phase: "parser", message, span: token.span }); }
   private match(...kinds: TokenKind[]): boolean { if (kinds.some(k => this.check(k))) { this.advance(); return true; } return false; }
   private check(kind: TokenKind): boolean { return this.peek().kind === kind; }
