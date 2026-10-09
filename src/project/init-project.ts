@@ -119,7 +119,41 @@ declare global {
   // error de tipo inexistente.
   type readonly<T> = T;
 
-  // ─── Envoltorios genéricos del runtime ──────────────────────────────
+  // ─── Guards del LSP: bloquear herencia y excepciones ──────────────────
+  // Truco: declaramos un símbolo único con tipo never y un campo privado
+  // opcional en cada "raíz" que NO debe poder extenderse. El LSP
+  // (tsserver, typescript-language-server) marca error en rojo cuando
+  // el usuario intenta heredar de una clase sellada o lanzar una
+  // excepcion, antes incluso de compilar. El type-checker de Estatic
+  // ya rechaza estas cosas a nivel parser, pero con estos guards el
+  // feedback es instantáneo (el editor se queja mientras escribes).
+
+  /** Simbolo fantasma que, al aparecer en la firma de un tipo, hace que
+   *  TS rechace cualquier intento de extends. NO se puede importar. */
+  declare const __noExtend: unique symbol;
+  /** Simbolo fantasma que, al aparecer en la firma de un tipo, hace que
+   *  TS rechace cualquier intento de 'throw new X()'. NO se puede importar. */
+  declare const __noThrow: unique symbol;
+
+  // Helper para que las clases declaradas mas abajo (Map, Set, Optional,
+  // Result, Promise, Task) sean sealed. El type-checker de Estatic ya
+  // rechaza la herencia en el parser, pero este sello cierra la puerta
+  // tambien en el LSP antes de compilar.
+  type Sealed = { readonly [__noExtend]?: never };
+
+  // Helper equivalente para throw. Definir una clase 'class MyError extends Error'
+  // ya no seria lanzable en el dialecto, aunque Estatic no tiene throw: lo
+  // declaramos para que el LSP marque error en cuanto el usuario escribe
+  // 'throw new ...'. El type-checker emitira E4xxx equivalente.
+  type NonThrowable = { readonly [__noThrow]?: never };
+
+  // Alias de Error y Exception que el dialecto no soporta. Si el usuario
+  // intenta usar 'Error', 'Exception' o hacer 'throw new ...', el LSP le
+  // marcara rojo inmediatamente. Estatic no tiene excepciones: los
+  // errores se modelan con 'Result<T, E>'.
+  type Error = NonThrowable & { name: "Error"; message: string };
+
+  // ─── Envoltorios genéricos del runtime ────────────────────────────────
   // Mapean a ets::Optional / Task / Result / Map / Set en runtime/ets_*.hpp.
   // Los métodos de instancia reflejan lo que el type-checker reconoce
   // (ver src/semantic/type-checker.ts: ARRAY_METHODS, MAP_METHODS,
@@ -131,7 +165,10 @@ declare global {
   // Ambos se sustituyen por 'ptrT' / 'constPtrT'; un reemplazo de
   // 'RcT' (shared) está planeado en un PR futuro basado en 'weakT'.
   // Por eso ya NO aparecen en esta plantilla.
-  class Optional<T> {
+  //
+  // Todas las clases del runtime llevan Sealed para que el LSP bloquee
+  // extends. El type-checker de Estatic tambien lo rechaza en parser.
+  class Optional<T> extends Sealed {
     _brand: string;
     static some<T>(value: T): Optional<T>;
     static none<T>(): Optional<T>;
@@ -141,7 +178,7 @@ declare global {
     value(): T;
     valueOr(defaultValue: T): T;
   }
-  class Result<T, E = string> {
+  class Result<T, E = string> extends Sealed {
     private readonly _brand: symbol;
     // El dialecto trata Result<T, E> como tagged union sintética; los
     // métodos isOk/value/error se infieren desde el tag 'ok'. Ver
@@ -150,10 +187,10 @@ declare global {
     value(): T;
     error(): E;
   }
-  class Promise<T> {
+  class Promise<T> extends Sealed {
     private readonly _brand: symbol;
   }
-  class Map<K, V> {
+  class Map<K, V> extends Sealed {
     private readonly _brand: symbol;
     // MAP_METHODS en type-checker.ts:199-205.
     get(key: K): V | void;
@@ -162,7 +199,7 @@ declare global {
     delete(key: K): boolean;
     readonly size: number;
   }
-  class Set<T> {
+  class Set<T> extends Sealed {
     private readonly _brand: symbol;
     // SET_METHODS en type-checker.ts:211-214.
     add(value: T): boolean;
