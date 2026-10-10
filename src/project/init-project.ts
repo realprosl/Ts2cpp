@@ -506,6 +506,16 @@ declare global {
       json(jsonString: string): Response;
     }
 
+    /** Respuesta HTTP del cliente. Resultado de http.get() / http.post(). */
+    interface HttpClientResponse {
+      /** Status code (200, 404, 500, ...). */
+      status(): number;
+      /** Cuerpo de la respuesta. */
+      body(): string;
+      /** Valor del header name (case-insensitive), o "" si no existe. */
+      header(name: string): string;
+    }
+
     /** Crea un nuevo Server listo para registrar handlers. */
     function createServer(): Server;
     /** Devuelve el path param name del request, o "" si no existe. */
@@ -514,6 +524,10 @@ declare global {
     function query(req: Request, name: string): string;
     /** Devuelve el header name del request (case-insensitive), o "" si no existe. */
     function header(req: Request, name: string): string;
+    /** GET HTTP. Devuelve Result<HttpClientResponse, string> con la respuesta o el error. */
+    function get(url: string): Result<HttpClientResponse, string>;
+    /** POST HTTP. Devuelve Result<HttpClientResponse, string>. contentType por defecto: "application/json". */
+    function post(url: string, body: string, contentType?: string): Result<HttpClientResponse, string>;
   }
 
   // Los handlers reciben (req: http.Request, res: http.Response).

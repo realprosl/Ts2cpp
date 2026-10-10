@@ -338,6 +338,26 @@ export class CppGenerator {
     };
     return visit(program);
   }
+  // V28: detecta si el programa usa el cliente HTTP (http.get / http.post).
+  // Igual patron que usesHttpServer, pero para los nombres de metodo del
+  // cliente. Si lo encuentra, fuerza el include de runtime/ets_http_client.hpp.
+  private usesHttpClient(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; object?: { kind?: string; type?: string; name?: string }; method?: string };
+      if (obj.kind === "MemberCallExpression") {
+        if (obj.object?.kind === "IdentifierExpression" && obj.object.name === "http" && (obj.method === "get" || obj.method === "post")) return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
   // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
   // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
   // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
@@ -537,6 +557,7 @@ export class CppGenerator {
       ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []),
       ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []),
       ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram) ? ["#include \"runtime/ets_http_server.hpp\""] : []),
+      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_client.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
@@ -2269,6 +2290,11 @@ export class CppGenerator {
           if (method === "param") return `::ets::http_param(${argList})`;
           if (method === "query") return `::ets::http_query(${argList})`;
           if (method === "header") return `::ets::http_header(${argList})`;
+          // V28: cliente HTTP. http.get(url) / http.post(url, body, contentType?)
+          // -> ets::httpClientGet / ets::httpClientPost (decl en
+          // runtime/ets_http_client.hpp). Devuelven Result<HttpClientResponse>.
+          if (method === "get") return `::ets::httpClientGet(${argList})`;
+          if (method === "post") return `::ets::httpClientPost(${argList})`;
           // No deberiamos llegar aqui: el type-checker ya reporto el error.
           return `/* http.${method} no soportado */`;
         }
@@ -2294,9 +2320,22 @@ export class CppGenerator {
           const args = node.args.map(a => this.emitExpression(a)).join(", ");
           return `${obj}.${method}(${args})`;
         }
-        // Codepath legacy de `HttpResponse` (cliente HTTP, struct plano).
-        // El cliente HTTP se ha replanteado para vivir en una sesion
-        // posterior; este codepath ya no se usa.
+        // V28: HttpClientResponse. status() -> number, body() -> string,
+        // header(name) -> string. El struct C++ tiene los accesores
+        // status_code() / body_str() / header(name), pero los renombramos
+        // a status() / body() / header() en el dialecto para consistencia
+        // con el resto de la API.
+        if (this.expressionType(node.object) === "HttpClientResponse") {
+          const obj = this.emitExpression(node.object);
+          const args = node.args.map(a => this.emitExpression(a)).join(", ");
+          // Mapear nombres del dialecto a nombres del struct C++.
+          const cppMethod = method === "status" ? "status_code" : method === "body" ? "body_str" : method;
+          return `${obj}.${cppMethod}(${args})`;
+        }
+        // Codepath legacy de `HttpResponse` (cliente HTTP antiguo, struct
+        // plano). El cliente HTTP reescrito en V28 vive en
+        // runtime/ets_http_client.hpp como HttpClientResponse; este ya
+        // no se usa. Lo dejamos por si quedan tests viejos.
         if (node.object.kind === "IdentifierExpression" && node.object.name === "HttpResponse") {
           return `/* HttpResponse.${method} no soportado */`;
         }

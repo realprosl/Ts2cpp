@@ -74,6 +74,7 @@ function cppTypeFromString(type: TypeName): string {
   if (isGenericType(type)) return cppTypeFromGenericString(genericBase(type), genericArguments(type));
   if (type === "Request") return "ets::HttpRequest";
   if (type === "Response") return "ets::HttpResponse";
+  if (type === "HttpClientResponse") return "ets::HttpClientResponse";
   if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "FileReader", "Server"].includes(type)) return `ets::${type}`;
   if (type === "JsonValue") return "ets_json::Value";
   return type;
@@ -93,7 +94,11 @@ function cppTypeFromGenericString(sourceBase: string, args: TypeName[]): string 
     : sourceBase === "Set" ? "ets::Set"
     : sourceBase === "Optional" ? "ets::Optional"
     : sourceBase;
-  return `${base}<${args.map(cppType).join(", ")}>`;
+  // V28: el runtime `ets::Result<T>` solo tiene 1 type arg (E=string por
+  // defecto). Si el dialecto escribe Result<T,E>, aplastamos E porque
+  // siempre es string en el runtime actual.
+  const effectiveArgs = base === "ets::Result" ? args.slice(0, 1) : args;
+  return `${base}<${effectiveArgs.map(cppType).join(", ")}>`;
 }
 
 // V22 (Memory Model v2): mapa explícito de los 4 modificadores de paso
