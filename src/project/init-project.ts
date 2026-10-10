@@ -205,8 +205,15 @@ declare global {
   function openFileReader(path: string): FileReader;
   class FileReader extends Sealed {
     private readonly _brand: symbol;
-    // Lee un caracter (1 byte) y avanza el cursor. Devuelve -1 en EOF.
+    // Lee un byte y avanza el cursor. Devuelve -1 en EOF.
     readChar(): number;
+    // Mira el siguiente byte SIN avanzar el cursor. Devuelve -1 en EOF.
+    // Util para parsers que necesitan ver antes de consumir.
+    peekChar(): number;
+    // Mira los siguientes n bytes SIN avanzar el cursor. Devuelve hasta
+    // n bytes (menos si EOF antes). Ideal para detectar BOMs, prefijos,
+    // o firmas de archivos.
+    peek(n: number): string;
     // Lee hasta n bytes desde el cursor. Si n es 0 o no se pasa, lee
     // hasta EOF. "" indica EOF.
     read(n?: number): string;

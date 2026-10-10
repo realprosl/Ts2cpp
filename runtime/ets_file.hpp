@@ -345,6 +345,35 @@ class FileReader {
         }
     }
 
+    // Asegura que el buffer tiene al menos `n` bytes disponibles para
+    // leer. Si no, hace un read del fd. NO avanza bufferPos_ (peek).
+    // Devuelve true si hay al menos `n` bytes disponibles, false en
+    // EOF o error.
+    bool ensurePeekable(std::size_t n, std::string& error) {
+        if (eof_) return false;
+        const std::size_t available = bufferEnd_ - bufferPos_;
+        if (available >= n) return true;
+        // Necesitamos mas bytes. Hacemos un read directo al buffer
+        // desplazando los bytes que quedan al inicio.
+        if (available > 0) {
+            std::memmove(buffer_.data(), buffer_.data() + bufferPos_, available);
+        }
+        bufferPos_ = 0;
+        bufferEnd_ = available;
+        for (;;) {
+            const auto received = ::read(descriptor_, buffer_.data() + bufferEnd_, buffer_.size() - bufferEnd_);
+            if (received > 0) {
+                bufferEnd_ += static_cast<std::size_t>(received);
+                if (bufferEnd_ >= n) return true;
+                continue;
+            }
+            if (received == 0) { eof_ = true; return false; }
+            if (errno == EINTR) continue;
+            error = ets::file_detail::systemError("Error durante la lectura", "<FileReader>");
+            return false;
+        }
+    }
+
 public:
     // Abre un archivo. Si no se puede abrir, escribe el error a stderr
     // y aborta con exit(1). El caller siempre obtiene un reader valido.
@@ -440,11 +469,12 @@ public:
     // Devuelve true si estamos al final del archivo.
     bool eof() const { return eof_; }
 
-    // Lee un caracter UTF-8. Para mantener el API simple y predecible,
-    // solo decodificamos ASCII (1 byte) en esta primera version. Si el
-    // caracter es multibyte, devolvemos el primer byte (igual que
-    // fs.readFileSync en modo binario de Node). Para UTF-8 completo,
-    // ver readLine() que decodifica el bloque entero.
+    // Lee un caracter (1 byte) y avanza el cursor. Devuelve -1 en EOF.
+    // Para mantener el API simple y predecible, solo decodificamos ASCII
+    // (1 byte) en esta primera version. Si el caracter es multibyte,
+    // devolvemos el primer byte (igual que fs.readFileSync en modo
+    // binario de Node). Para UTF-8 completo, ver readLine() que
+    // decodifica el bloque entero.
     int readChar() {
         if (eof_) return -1;
         if (bufferPos_ >= bufferEnd_) {
@@ -452,6 +482,35 @@ public:
             if (!refill(error)) return -1;
         }
         return static_cast<unsigned char>(buffer_[bufferPos_++]);
+    }
+
+    // Mira el siguiente caracter (1 byte) SIN avanzar el cursor.
+    // Devuelve -1 en EOF. Util para parsers que necesitan ver antes
+    // de consumir (e.g. detectar BOM, lookahead de un solo byte).
+    // La proxima llamada a readChar() o read() devuelve el mismo byte.
+    int peekChar() {
+        if (eof_) return -1;
+        if (bufferPos_ >= bufferEnd_) {
+            std::string error;
+            if (!refill(error)) return -1;
+        }
+        return static_cast<unsigned char>(buffer_[bufferPos_]);
+    }
+
+    // Mira los siguientes n bytes SIN avanzar el cursor. Devuelve un
+    // string con hasta n bytes (menos si EOF antes). La proxima
+    // llamada a read/readChar devuelve los mismos bytes.
+    std::string peek(std::size_t n) {
+        if (eof_ || n == 0) return std::string();
+        std::string error;
+        if (!ensurePeekable(n, error)) {
+            // EOF o error: devolvemos lo que tengamos (< n bytes).
+            if (bufferEnd_ > bufferPos_) {
+                return std::string(buffer_.data() + bufferPos_, bufferEnd_ - bufferPos_);
+            }
+            return std::string();
+        }
+        return std::string(buffer_.data() + bufferPos_, n);
     }
 
     // Lee hasta n bytes (o hasta EOF si n <= 0) y los devuelve como

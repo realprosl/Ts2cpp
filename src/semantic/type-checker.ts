@@ -2508,13 +2508,14 @@ export class TypeChecker {
         // dispatchan con un set hardcoded igual que Console porque el
         // checker no parsea `estatic.d.ts` (es un template string del CLI).
         if (objectType === "FileReader") {
-          const validMethods = new Set(["readChar", "read", "readLine", "eof", "close"]);
-          if (!validMethods.has(node.method)) this.report(node, `FileReader.${node.method} no es un metodo valido (usa readChar/read/readLine/eof/close)`);
+          const validMethods = new Set(["readChar", "read", "readLine", "peekChar", "peek", "eof", "close"]);
+          if (!validMethods.has(node.method)) this.report(node, `FileReader.${node.method} no es un metodo valido (usa readChar/peekChar/peek/read/readLine/eof/close)`);
           node.args.forEach(arg => this.expression(arg, scope));
           if (node.method === "readChar") result = "number";
+          else if (node.method === "peekChar") result = "number";
           else if (node.method === "eof") result = "boolean";
           else if (node.method === "readLine") result = "string";
-          else if (node.method === "read") result = "string";
+          else if (node.method === "read" || node.method === "peek") result = "string";
           else if (node.method === "close") result = "void";
           else result = "void";
           break;
