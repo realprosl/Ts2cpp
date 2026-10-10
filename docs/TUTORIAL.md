@@ -29,6 +29,8 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 23. [Librerías externas](#12-librerías-externas) (V18)
 25. [Closures y lambdas](#13-closures-y-lambdas)
 27. [Runtime y rendimiento](#14-runtime-y-rendimiento)
+28. [String API completa](#15-string-api-completa) (V28)
+29. [Servidor HTTP Express-style](#16-servidor-http-express-style) (V28)
 
 ---
 
@@ -461,6 +463,218 @@ La segunda compilación con cambios baja de ~3.7s a ~36ms.
 
 ---
 
+## 15. String API completa (V28)
+
+El dialecto expone la API de string completa de TypeScript como llamadas
+tipo método (`s.charAt(i)`, `s.length`, etc.) sobre valores `string`.
+El codegen traduce 1:1 a las funciones libres `ets::string_*` que viven
+en `runtime/ets_string.hpp`. Todo es **byte-level** (UTF-8 bytes): no
+hay soporte Unicode multibyte, es coherente con el resto del runtime
+que trata `std::string` como secuencia de bytes.
+
+### Atributo
+
+| Propiedad | Tipo | Descripción |
+|---|---|---|
+| `s.length` | `number` | Número de bytes (= `std::string::size()`). |
+
+### Métodos de acceso
+
+| Método | Retorno | Descripción |
+|---|---|---|
+| `s.charAt(i)` | `string` | Byte en posición `i` como string de 1 byte, o `""` si fuera de rango. |
+| `s.charCodeAt(i)` | `number` | Byte en posición `i` como double (0-255), o `-1` si fuera de rango. |
+
+### Métodos de búsqueda
+
+| Método | Retorno | Descripción |
+|---|---|---|
+| `s.indexOf(needle, start=0)` | `number` | Primera posición de `needle` desde `start`, o `-1`. |
+| `s.lastIndexOf(needle)` | `number` | Última posición de `needle`, o `-1`. |
+| `s.includes(needle, start=0)` | `boolean` | `true` si `needle` aparece desde `start`. |
+| `s.startsWith(prefix)` | `boolean` | `true` si `s` empieza por `prefix`. |
+| `s.endsWith(suffix)` | `boolean` | `true` si `s` termina por `suffix`. |
+
+### Métodos de slicing
+
+| Método | Retorno | Descripción |
+|---|---|---|
+| `s.slice(start, end=length)` | `string` | Substring. Acepta `start`/`end` negativos (desde el final). |
+| `s.substring(start, end=length)` | `string` | Como `slice` pero clamea negativos a 0 e intercambia `start`/`end`. |
+| `s.substr(start, length=rest)` | `string` | Legacy: `length` caracteres desde `start`. |
+| `s.split(separator)` | `string[]` | Vector de partes separadas por `separator`. |
+
+### Métodos de transformación
+
+| Método | Retorno | Descripción |
+|---|---|---|
+| `s.trim()` / `trimStart()` / `trimEnd()` | `string` | Quita espacios al ppio/final/ambos. |
+| `s.toLowerCase()` / `toUpperCase()` | `string` | ASCII lower/upper-case (byte-level). |
+| `s.repeat(count)` | `string` | Repite `count` veces. |
+| `s.padStart(len, pad)` / `padEnd(len, pad)` | `string` | Rellena al ppio/final hasta `len`. |
+| `s.replace(search, replacement)` | `string` | Primera ocurrencia. |
+| `s.replaceAll(search, replacement)` | `string` | Todas las ocurrencias. |
+
+### Comparación y conversión
+
+| Método | Retorno | Descripción |
+|---|---|---|
+| `s.localeCompare(other)` | `number` | `-1` si menor, `0` si igual, `1` si mayor (byte-level). |
+| `s.toString()` | `string` | Identidad. |
+
+### Ejemplo
+
+```ets
+// string-api.ets
+let s: string = "Hola Mundo"
+
+print("length: " + numberToString(s.length))         // 10
+print("charAt(0): " + s.charAt(0))                    // H
+print("indexOf(Mundo): " + numberToString(s.indexOf("Mundo", 0)))  // 5
+print("slice(-5): " + s.slice(-5.0, 11.0))            // Mundo
+print("split size: " + numberToString(s.split(" ").length))  // 2
+print("padStart: " + "5".padStart(3, "0"))           // 005
+print("replaceAll: " + "foo".replaceAll("o", "X"))   // fXX
+```
+
+```bash
+node src/cli.ts string-api.ets -o /tmp/out.cpp
+g++ -std=c++20 -I. -o /tmp/out /tmp/out.cpp -lpthread
+/tmp/out
+```
+
+### Notas de implementación
+
+- `split` no soporta regex (es split por string literal, igual que el
+  método legacy de TS sin segundo argumento).
+- `toLowerCase`/`toUpperCase` usan `std::tolower`/`std::toupper` con
+  `unsigned char` para evitar UB con bytes >127. UTF-8 multibyte puede
+  no comportarse como esperas con caracteres no-ASCII.
+- El type-checker valida aridad y tipos contra `STRING_METHODS` en
+  `src/semantic/type-checker.ts`; el codegen emite
+  `::ets::string_<método>(s, ...)` directamente.
+
+---
+
+## 16. Servidor HTTP Express-style (V28)
+
+El dialecto trae un servidor HTTP/1.1 estilo Express integrado en el
+runtime async (libuv + epoll). La API vive en `runtime/ets_http_server.hpp`
+y se compila al binario sin dependencias externas más allá de libuv.
+
+### Hello world
+
+```ets
+// hello-server.ets
+let server: Server = http.createServer()
+
+server.get("/", (req: Request, res: Response): void => {
+  res.status(200)
+     .header("Content-Type", "text/plain; charset=utf-8")
+     .send("hola desde el server de Ts2cpp")
+})
+
+server.listen(3000)
+```
+
+```bash
+node src/cli.ts hello-server.ets -o /tmp/server.cpp
+g++ -std=c++20 -I. -o /tmp/server /tmp/server.cpp \
+    runtime/runtime_ets_poll.cpp runtime/runtime_ets_net.cpp -lpthread
+/tmp/server &  # bloquea hasta SIGINT
+curl http://127.0.0.1:3000/
+# hola desde el server de Ts2cpp
+```
+
+### API de routing
+
+`server.<método>(path, handler)` registra un handler para method + path.
+Los métodos disponibles son: `get`, `post`, `put`, `patch`, `delete`.
+El `path` admite **path params** con `:nombre` (e.g. `/hola/:name`).
+
+```ets
+server.get("/hola/:name", (req: Request, res: Response): void => {
+  // http.param(req, "name") devuelve el path param, o "" si no existe.
+  res.send("hola " + http.param(req, "name"))
+})
+```
+
+### Acceso al request
+
+| Campo / helper | Tipo | Descripción |
+|---|---|---|
+| `req.method` | `string` | `"GET"`, `"POST"`, etc. |
+| `req.path` | `string` | Path sin query string. |
+| `req.rawQuery` | `string` | Query string cruda. |
+| `req.body` | `string` | Cuerpo del request (POST/PUT/PATCH). |
+| `http.param(req, "name")` | `string` | Path param `:name`, o `""`. |
+| `http.query(req, "name")` | `string` | Query value (URL-decoded), o `""`. |
+| `http.header(req, "X-Foo")` | `string` | Header case-insensitive, o `""`. |
+
+### Response encadenable
+
+`res` es un builder que se muta encadenando llamadas. `send()` o `json()`
+cierran la cadena y envían.
+
+```ets
+server.post("/echo", (req: Request, res: Response): void => {
+  res.status(201)
+     .header("X-Content-Type", http.header(req, "Content-Type"))
+     .send("recibido: " + req.body)
+})
+```
+
+| Método | Descripción |
+|---|---|
+| `res.status(code)` | Status code (defecto 200). |
+| `res.header(name, value)` | Añade o sobreescribe un header. |
+| `res.send(body)` | Envía texto (auto-set `Content-Type: text/plain`). |
+| `res.json(jsonString)` | Envía JSON (auto-set `Content-Type: application/json`). |
+
+### Limitaciones conocidas
+
+- **HTTP/1.1 plano**: sin HTTPS, sin middlewares, sin streaming,
+  sin cookies, sin compresión.
+- **SIGSEGV en shutdown** (exit -11 al SIGINT tras ~5 min arriba):
+  anotado en `ts2cpp-pending-features` para diagnosticarlo con gdb.
+- **Parser no acepta qualifier `http.X` en la firma del handler**:
+  los handlers usan los nombres planos `Request`/`Response`. Cuando
+  el parser crezca para `Identifier.Identifier` como type name, los
+  handlers podrán escribirse como `(req: http.Request, res: http.Response)`.
+- **Cliente HTTP pendiente**: se reescribirá con un nombre distinto
+  (`HttpClientResponse`) en `runtime/ets_http_client.hpp` para no
+  colisionar con el `Response` del server.
+
+### Ejemplo completo
+
+```ets
+let server: Server = http.createServer()
+
+server.get("/", (req: Request, res: Response): void => {
+  res.send("hola desde el server de Ts2cpp")
+})
+
+server.get("/hola/:name", (req: Request, res: Response): void => {
+  res.send("hola " + http.param(req, "name"))
+})
+
+server.get("/sumar", (req: Request, res: Response): void => {
+  res.send("query: " + req.rawQuery)
+})
+
+server.post("/echo", (req: Request, res: Response): void => {
+  res.status(201).send("recibido: " + req.body)
+})
+
+server.listen(3000)
+```
+
+Verificado con curl real: los 4 endpoints responden correctamente
+(GET /, GET /hola/:name con path param, GET /sumar?a=3 con query string,
+POST /echo con body, y 404 para rutas no registradas).
+
+---
+
 ## Resumen de versiones
 
 - **V15**: compilación incremental por módulos
@@ -469,3 +683,4 @@ La segunda compilación con cambios baja de ~3.7s a ~36ms.
 - **V18**: librerías externas vía `@link`/`@include`/`@cpp_name`/`@cpp_type`
 - **V19**: encapsulación `private`/`public`/`protected`
 - **V20**: parameter properties (sintaxis abreviada)
+- **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable)
