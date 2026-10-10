@@ -59,9 +59,11 @@ export class Lexer {
       } else break;
     }
     // Emitir UN token 'newline' si hemos cruzado saltos de linea, pero SOLO
-    // a profundidad 0 de parentesis/corchetes/llaves. Dentro de
-    // expresiones (f()\n.bar()) u object literals el newline NO es
-    // terminador de statement.
+    // a profundidad 0 de parentesis/corchetes. Las {} NO cuentan porque
+    // pueden ser tanto object literals (donde los newlines entre campos
+    // son whitespace inocuo) como bloques de control de flujo (donde los
+    // newlines entre statements SI son terminadores). El parser decide
+    // segun el contexto.
     //
     // Ademas: si el siguiente token (no-whitespace) es un CONTINUADOR de
     // expresion (es decir, un operador o un member access), tampoco se
@@ -221,11 +223,17 @@ export class Lexer {
     const singles = "(){}[] ,;:.-+*/%=<>!?|&^~@".replace(" ", "");
     if (singles.includes(one)) {
       this.add(one as TokenKind, one, start);
-      // Track de profundidad de (), [], {} para suprimir 'newline' tokens
-      // dentro de expresiones/objetos. El parser ya gestiona el anidamiento
-      // semanticamente; esto es solo para que el lexer no se confunda.
-      if (one === "(" || one === "[" || one === "{") this.parenDepth++;
-      else if (one === ")" || one === "]" || one === "}") {
+      // Track de profundidad de () y [] para suprimir 'newline' tokens
+      // dentro de expresiones (llamadas a funciones, argumentos, array
+      // literals). NO contamos {} porque:
+      //   - { ... } de object literal SI permite newlines entre campos
+      //     (que actuan como ',' separadores).
+      //   - { ... } de bloque de control de flujo (if/while/for/match)
+      //     tambien necesita newlines entre statements internos.
+      // El parser decide si ignorar o consumir los newlines segun el
+      // contexto.
+      if (one === "(" || one === "[") this.parenDepth++;
+      else if (one === ")" || one === "]") {
         if (this.parenDepth > 0) this.parenDepth--;
       }
     }

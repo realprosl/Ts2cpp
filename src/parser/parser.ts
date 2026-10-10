@@ -230,9 +230,14 @@ export class Parser {
     const name = this.consume("identifier", "Se esperaba el nombre de la interfaz");
     const open = this.consume("{", "Las interfaces son estructurales y no admiten herencia; se esperaba '{'");
     const methods: InterfaceMethod[] = [];
+    // El lexer emite tokens 'newline' entre miembros cuando no hay ';' explicito.
     while (!this.check("}") && !this.check("eof")) {
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       // V18: `@cpp_name(...)` por método de la interface.
       const methodDecorators = this.parseDecorators();
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       const methodName = this.consume("identifier", "Se esperaba el nombre del método");
       this.consume("(", "Se esperaba '('");
       const params: Parameter[] = [];
@@ -266,8 +271,15 @@ export class Parser {
     const fields: ClassField[] = [];
     const methods: ClassMethod[] = [];
     const startSpan = decorators[0]?.args[0]?.span.start ?? name.span.start;
+    // El lexer emite tokens 'newline' entre miembros de la clase cuando
+    // no hay ';' explicito. Los saltamos al inicio de cada iteracion
+    // del bucle para encontrar el siguiente campo o metodo.
     while (!this.check("}") && !this.check("eof")) {
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       const memberDecorators = this.parseDecorators();
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       // V19: modificador de encapsulación opcional (private/public/protected).
       // Va antes de readonly y antes del nombre. Si se omite, default = public.
       const access: "private" | "public" | "protected" | undefined =
@@ -711,8 +723,17 @@ export class Parser {
   }
 
   private block(open: Token): BlockStatement {
+    // Saltamos newlines al inicio (por si el bloque empieza con una linea
+    // en blanco o comentario entre statements).
+    this.skipNewlines();
     const statements: Statement[] = [];
-    while (!this.check("}") && !this.check("eof")) statements.push(this.statement());
+    while (!this.check("}") && !this.check("eof")) {
+      // Tambien saltamos newlines entre statements para que un bloque
+      // como { stmt1\nstmt2 } se parsee como dos statements.
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
+      statements.push(this.statement());
+    }
     const close = this.consume("}", "Se esperaba '}'");
     return { kind: "BlockStatement", statements, span: span(open.span.start, close.span.end) };
   }
@@ -774,7 +795,12 @@ export class Parser {
    * parsea como `CallExpression` normal.
    */
   private matchArms(arms: MatchArm[]): void {
+    // El lexer emite tokens 'newline' entre arms cuando no hay ';' explicito.
+    // Los saltamos al inicio de cada iteracion del bucle para encontrar
+    // el siguiente 'case' o el '}' de cierre.
     while (!this.check("}") && !this.check("eof")) {
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       if (this.check("case")) {
         this.advance(); // consume 'case'
         const arm = this.parseCaseArm();
