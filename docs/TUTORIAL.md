@@ -31,6 +31,7 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 27. [Runtime y rendimiento](#14-runtime-y-rendimiento)
 28. [String API completa](#15-string-api-completa) (V28)
 29. [Servidor HTTP Express-style](#16-servidor-http-express-style) (V28)
+30. [Backend HTTP dual: cpp-httplib vs Drogon](#17-backend-http-dual-cpp-httplib-vs-drogon) (V28)
 
 ---
 
@@ -675,6 +676,208 @@ POST /echo con body, y 404 para rutas no registradas).
 
 ---
 
+## 17. Backend HTTP dual: cpp-httplib vs Drogon (V28)
+
+El servidor HTTP del dialecto admite **dos backends** intercambiables
+sin cambiar el código del usuario: `cpp-httplib` por defecto y
+`Drogon` opcional con el decorator `@cpp_drogon`. Ambos exponen la
+misma API (`Server`, `Request`, `Response`, `http.param/query/header`),
+de modo que la migración es un cambio de una línea.
+
+### ¿Por qué dos backends?
+
+Cada backend resuelve un trade-off distinto:
+
+| Backend | Rendimiento | Dependencias | HTTPS | Tamaño |
+|---------|-------------|--------------|-------|--------|
+| **cpp-httplib** (default) | ~25-50k req/s | header-only, sin extras (solo `-lpthread`) | opt-in (`-DCPPHTTPLIB_OPENSSL_SUPPORT`) | 23k líneas vendoreadas en `runtime/external/httplib/` |
+| **Drogon** (opcional) | ~150-200k req/s | requiere `libdrogon-dev` + `libjsoncpp-dev` (apt) | built-in | 50k+ líneas, **no** vendoreado (submodule futuro) |
+
+**Cuándo usar cpp-httplib** (default): la mayoría de casos, microservicios
+ligeros, CLIs con server embebido, prototipos. Sin dependencias externas,
+compila rápido, ideal cuando el rendimiento no es crítico.
+
+**Cuándo usar Drogon**: alta concurrencia, APIs públicas con miles de
+req/s, microservicios en producción. Requiere instalar las dependencias
+en la máquina de desarrollo y de deploy.
+
+### Uso básico (cpp-httplib, default)
+
+Sin hacer nada, el builder usa cpp-httplib:
+
+```ets
+let server: Server = http.createServer()
+
+server.get("/", (req: Request, res: Response): void => {
+  res.send("hola desde cpp-httplib")
+})
+
+server.listen(3000)
+```
+
+Compilación:
+
+```bash
+g++ -std=c++20 -I. programa.cpp \
+    runtime/external/httplib/httplib.cc \
+    -lpthread -o programa
+```
+
+El builder **solo** arrastra `httplib.h` si el programa usa HTTP
+server/client. Programas sin HTTP no pagan el coste de compilación
+(verificado: el `.cpp` no contiene `#include "runtime/ets_http_*"`
+si no usas `http.createServer()` o `http.get/post`).
+
+### Activar Drogon con `@cpp_drogon`
+
+Pon el decorator `@cpp_drogon` encima de `let server: Server = ...`:
+
+```ets
+@cpp_drogon
+let server: Server = http.createServer()
+
+server.get("/", (req: Request, res: Response): void => {
+  res.send("hola desde drogon")
+})
+
+server.listen(3000)
+```
+
+El codegen detecta el decorator y emite `runtime/ets_http_drogon.hpp`
+en lugar de `runtime/ets_http_httplib.hpp`. El builder del runner
+detecta el include y añade los flags de link de Drogon
+(`-ldrogon -ltrantor -ljsoncpp -lssl -lcrypto -lresolv`) y
+`-I/usr/include/jsoncpp` automáticamente.
+
+### Instalación de Drogon
+
+En Debian/Ubuntu:
+
+```bash
+sudo apt install libdrogon-dev libjsoncpp-dev
+```
+
+Drogon 1.8+ instala los headers en `/usr/include/drogon/` y la
+librería en `/usr/lib/x86_64-linux-gnu/libdrogon.so`. Si no está
+instalado, el bucket de tests `http-server-drogon` se skipea con
+este mensaje:
+
+```
+libdrogon-dev no instalado (apt install libdrogon-dev libjsoncpp-dev)
+- bucket http-server-drogon omitido
+```
+
+### Compilación manual con Drogon
+
+```bash
+g++ -std=c++20 -I. -I/usr/include/jsoncpp programa.cpp \
+    -ldrogon -ltrantor -ljsoncpp \
+    -lpthread -lssl -lcrypto -lresolv \
+    -o programa
+```
+
+### Limitaciones conocidas del backend Drogon
+
+- **Drogon no permite múltiples servers en el mismo proceso**
+  (`drogon::app()` es un singleton global). Si necesitas varios
+  listeners, usa subprocesos o puertos distintos.
+- **Drogon no expone query params parseados**: la query string
+  llega cruda en `req.rawQuery`. El helper `http.query(req, "x")`
+  la parsea internamente.
+- **Drogon usa `try/catch`**: si compilas con `-fno-exceptions`
+  (como el runner por defecto para programas no-Drogon), el codegen
+  emite código que rompe. El runner detecta Drogon y desactiva el
+  flag automáticamente.
+- **Path params**: máximo 3 por ruta (limite del wrapper; ampliable
+  si hace falta).
+- **Header `Content-Type: text/html` por defecto**: si el handler
+  pone uno custom, el wrapper limpia el default para evitar
+  duplicados en la respuesta.
+
+### Verificación end-to-end
+
+El ejemplo `.scratch/ejemplo-server-drogon.ets` (no commiteado,
+solo local) cubre los 5 casos típicos:
+
+```
+GET  /                  -> 200 (43 bytes)  server: drogon/1.8.7
+GET  /hola/alberto      -> 200 (12 bytes)  [path param]
+GET  /sumar?a=3&b=4     -> 200 (20 bytes)  [query string]
+POST /echo (body=hola)  -> 201 (14 bytes)  [X-Content-Type]
+GET  /nada              -> 404
+```
+
+Para probarlo manualmente:
+
+```bash
+# Terminal 1
+node --experimental-strip-types --no-warnings src/cli.ts \
+     .scratch/ejemplo-server-drogon.ets \
+     -o /tmp/srv.cpp
+g++ -std=c++20 -I. -I/usr/include/jsoncpp /tmp/srv.cpp \
+    -ldrogon -ltrantor -ljsoncpp -lpthread -lssl -lcrypto -lresolv \
+    -o /tmp/srv
+/tmp/srv
+
+# Terminal 2
+curl http://127.0.0.1:3000/
+curl http://127.0.0.1:3000/hola/alberto
+```
+
+### Tests e2e
+
+`test/e2e/http-server-drogon/drogon-decorator-compiles/` verifica
+que el codegen emite el include de Drogon y que el runner linka
+correctamente. Skipea automáticamente si Drogon no está instalado.
+El roundtrip end-to-end (server arranca + cliente HTTP) se valida
+manualmente con el ejemplo `.scratch` porque requeriría `fork()` o
+`thread` del dialecto, fuera del scope de este PR.
+
+### Roadmap V29+
+
+La dirección acordada con el usuario es:
+
+- **Drogon** para el servidor HTTP (ya integrado opcionalmente).
+- **libcurl multi** para el cliente HTTP asíncrono (sustituye el
+  cliente actual sobre TCP plano de `runtime/ets_http_client.hpp`).
+- **libuv** para el resto del runtime (TCP, TLS, files, async).
+- **cpp-httplib** se mantiene como alternativa sencilla por defecto.
+
+### Ejemplo: comparar ambos backends
+
+Mismo programa, dos binarios, sin tocar el código de usuario:
+
+```ets
+// ejemplo-backend.ets
+let server: Server = http.createServer()
+
+server.get("/", (req: Request, res: Response): void => {
+  res.send("hola")
+})
+
+server.listen(3000)
+```
+
+```bash
+# Build 1: cpp-httplib (default, sin decorator)
+node src/cli.ts ejemplo-backend.ets -o /tmp/a.cpp
+g++ -std=c++20 -I. /tmp/a.cpp runtime/external/httplib/httplib.cc \
+    -lpthread -o /tmp/srv-httplib
+/tmp/srv-httplib &
+curl http://127.0.0.1:3000/  # hola
+
+# Build 2: Drogon (anadiendo @cpp_drogon)
+sed -i '1i @cpp_drogon' ejemplo-backend.ets
+node src/cli.ts ejemplo-backend.ets -o /tmp/b.cpp
+g++ -std=c++20 -I. -I/usr/include/jsoncpp /tmp/b.cpp \
+    -ldrogon -ltrantor -ljsoncpp -lpthread -lssl -lcrypto -lresolv \
+    -o /tmp/srv-drogon
+/tmp/srv-drogon &
+curl http://127.0.0.1:3000/  # hola (mismo API, backend distinto)
+```
+
+---
+
 ## Resumen de versiones
 
 - **V15**: compilación incremental por módulos
@@ -683,4 +886,4 @@ POST /echo con body, y 404 para rutas no registradas).
 - **V18**: librerías externas vía `@link`/`@include`/`@cpp_name`/`@cpp_type`
 - **V19**: encapsulación `private`/`public`/`protected`
 - **V20**: parameter properties (sintaxis abreviada)
-- **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable)
+- **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable) + cliente HTTP (`http.get`/`http.post`, `HttpClientResponse`) + backend HTTP dual (cpp-httplib por defecto, Drogon opcional con decorator `@cpp_drogon` para alta carga)

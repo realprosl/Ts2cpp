@@ -315,6 +315,86 @@ Si el AST sabe exactamente qué lambda es y dónde se usa, generar lambda C++ in
 
 ---
 
+## V28 — Cierre del ciclo HTTP (entregado)
+
+Bloque dedicado a cerrar el stack HTTP del dialecto end-to-end. Las
+fases V0-V10 son prerrequisitos semánticos, pero V28 añade el alcance
+visible: API de string, servidor HTTP, cliente HTTP, backend dual.
+
+### V28.1 — API de string estilo TypeScript (PR #145) ✅
+
+24 métodos sobre `string` con semántica byte-level (`ets::string_*`).
+Documentado en `docs/TUTORIAL.md` §15.
+
+### V28.2 — Servidor HTTP Express-style (PR #144) ✅
+
+`http.createServer()` + `server.get/post/...` + handlers con
+`(req: Request, res: Response) => void`. Path params (`:name`),
+query string parseada, body, response encadenable. Documentado
+en `docs/TUTORIAL.md` §16.
+
+### V28.3 — Cliente HTTP estilo fetch (PR #147) ✅
+
+`http.get(url) -> Result<HttpClientResponse, string>` y
+`http.post(url, body, contentType?) -> Result<HttpClientResponse, string>`.
+Sobre TCP plano (sin TLS) en `runtime/ets_http_client.hpp`. Se
+sustituirá por libcurl multi en V29+.
+
+### V28.4 — Backend HTTP dual: cpp-httplib + Drogon (PR #150-#153) ✅
+
+- **PR #150**: cpp-httplib v0.60.1 vendoreado en
+  `runtime/external/httplib/`. Wrapper `runtime/ets_http_httplib.hpp`
+  con la misma API que el servidor V28 minimal. Default.
+- **PR #151**: wrapper `runtime/ets_http_drogon.hpp` sobre Drogon
+  1.8.7+ (instalado vía `apt install libdrogon-dev`).
+- **PR #152**: dispatch en el codegen con decorator `@cpp_drogon`
+  sobre `let server: Server = ...`. AST: `VariableDeclaration.decorators?`.
+  Parser: `leadingDecorators` propagados a `variable()`. El include
+  condicional se elige en función del backend.
+- **PR #153**: tests e2e en `test/e2e/http-server-drogon/` con
+  skip automático si libdrogon-dev no está instalado.
+
+Mismo API del dialecto en ambos backends, sin tocar el código de
+usuario. Documentado en `docs/TUTORIAL.md` §17.
+
+### V28.5 — Tests e2e y tutorial ✅
+
+- 65/65 tests e2e verde en `spike/v28-test-fixes` con los fixes
+  de parser (#148) y test fixes (#149) mergeados.
+- Tutorial actualizado con §15 (string API), §16 (HTTP server),
+  §17 (backend dual).
+- Bucket `http-server-drogon` con skip condicional.
+
+---
+
+## V29+ — Runtime sobre libuv + libcurl multi
+
+Dirección acordada con el usuario para V29 y siguientes:
+
+- **Servidor HTTP**: Drogon (ya integrado opcionalmente, promover a
+  default si el usuario lo prefiere).
+- **Cliente HTTP**: **libcurl multi** sobre la actual implementación
+  TCP plana de `runtime/ets_http_client.hpp`. Permite HTTP/2, HTTPS
+  built-in, connection pooling, redirects automáticos, timeouts
+  configurables.
+- **Resto del runtime** (TCP, TLS, files, async): **libuv** en lugar
+  del reactor propio del runtime actual. Más portable, mejor
+  mantenido, mismo API de event loop.
+- **cpp-httplib** se mantiene como **alternativa sencilla** para
+  casos donde no se quiera libuv + libcurl multi.
+
+El orden propuesto (a confirmar):
+
+1. **V29.1** — Cliente HTTP sobre libcurl multi (`http.get/post`
+   pasan a usar `curl_multi_perform` en background, con callbacks
+   del dialecto via Task<T>). Sustituye `runtime/ets_http_client.hpp`.
+2. **V29.2** — Runtime TCP/TLS sobre libuv (sustituye el reactor
+   actual en `runtime_ets_poll.cpp` y `runtime/ets_net.hpp`).
+3. **V29.3** — Tutorial §18 (libcurl + libuv) y tests e2e
+   correspondientes.
+
+---
+
 ## Cierre del Bloque C (mientras se ejecuta V0)
 
 Los buckets #11 modules, #13 filesystem, #14 networking se cierran **antes** de V0 para mantener issues limpios. Pero el alcance se reduce: **solo exposición runtime sin tipos ricos**. Las versiones "típadas" se rehacen en V1-V3.
