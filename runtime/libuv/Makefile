@@ -46,7 +46,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/benchmark_poll_vs_libuv \
             $(BUILD_DIR)/benchmark_buffer_pool \
             $(BUILD_DIR)/benchmark_accept4 \
-            $(BUILD_DIR)/test_multi_loop
+            $(BUILD_DIR)/test_multi_loop \
+            $(BUILD_DIR)/test_wrappers_v29
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -63,7 +64,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/benchmark_poll_vs_libuv.cpp \
             tests/benchmark_buffer_pool.cpp \
             tests/benchmark_accept4.cpp \
-            tests/test_multi_loop.cpp
+            tests/test_multi_loop.cpp \
+            tests/test_wrappers_v29.cpp
 
 .PHONY: all clean run
 
@@ -118,6 +120,11 @@ $(BUILD_DIR)/benchmark_accept4: tests/benchmark_accept4.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -O2 -o $@ $< -pthread
 
 $(BUILD_DIR)/test_multi_loop: tests/test_multi_loop.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+
+# V29.4: test de los wrappers de alto nivel (ets_fs_watcher.hpp
+# y ets_timer.hpp) sobre libuv.
+$(BUILD_DIR)/test_wrappers_v29: tests/test_wrappers_v29.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR):
