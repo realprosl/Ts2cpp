@@ -302,6 +302,9 @@ export class CppGenerator {
     return this.usesAnyCall(program, new Set([
       "fileRead", "fileWrite", "fileAppend", "fileExists",
       "fileCopy", "fileMove", "fileRemove",
+      // V26: factory del lector streaming. Tambien requiere
+      // runtime/ets_file.hpp (donde esta declarado FileReader).
+      "openFileReader",
     ]));
   }
   private usesNetworking(program: Program): boolean {

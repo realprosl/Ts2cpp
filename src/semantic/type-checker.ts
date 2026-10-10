@@ -95,6 +95,11 @@ const FILE_HELPERS: Record<string, { minParams: number; paramTypes?: TypeName[];
   fileCopy:    { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },
   fileMove:    { minParams: 2, paramTypes: ["string", "string"], returnType: "boolean" },
   fileRemove:  { minParams: 1, paramTypes: ["string"],         returnType: "boolean" },
+  // V26: factory de FileReader. Devuelve un reader (puntero raw en C++)
+  // que mantiene el descriptor abierto. Aborta con stderr+exit si el
+  // archivo no existe; para error handling explicito, hacer check con
+  // fileExists() antes.
+  openFileReader: { minParams: 1, paramTypes: ["string"],    returnType: "FileReader" },
 });
 
 // Helpers para networking (Issue #14). Wrappers síncronos sobre POSIX sockets
@@ -1258,7 +1263,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
     // `Optional<T>` se aceptan siempre (son tipos del runtime).
@@ -2497,6 +2502,22 @@ export class TypeChecker {
         }
         if (objectType === "Json") {
           result = this.dispatchBuiltin("JSON", JSON_METHODS, node, scope);
+          break;
+        }
+        // FileReader: lector streaming por descriptor. Los metodos se
+        // dispatchan con un set hardcoded igual que Console porque el
+        // checker no parsea `estatic.d.ts` (es un template string del CLI).
+        if (objectType === "FileReader") {
+          const validMethods = new Set(["readChar", "read", "readLine", "peekChar", "peek", "eof", "close"]);
+          if (!validMethods.has(node.method)) this.report(node, `FileReader.${node.method} no es un metodo valido (usa readChar/peekChar/peek/read/readLine/eof/close)`);
+          node.args.forEach(arg => this.expression(arg, scope));
+          if (node.method === "readChar") result = "number";
+          else if (node.method === "peekChar") result = "number";
+          else if (node.method === "eof") result = "boolean";
+          else if (node.method === "readLine") result = "string";
+          else if (node.method === "read" || node.method === "peek") result = "string";
+          else if (node.method === "close") result = "void";
+          else result = "void";
           break;
         }
         if (objectType === "Console") {
