@@ -164,10 +164,26 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     // El runtime tiene clases con simbolos no-inline (PollEventLoop ctor/dtor
     // en runtime_ets_poll.cpp, TcpConnection varias en runtime_ets_net.cpp).
     // Como el runner es generico, los linkamos siempre que existan en disco.
-    const extraCpps = [
-      join(REPO_ROOT, "runtime", "runtime_ets_poll.cpp"),
-      join(REPO_ROOT, "runtime", "runtime_ets_net.cpp"),
-    ].filter(p => existsSync(p));
+    // V29.2: el runtime tiene dos backends de red — poll (por defecto)
+    // y libuv (bajo -DETS_EVENT_BACKEND_LIBUV). Cuando libuv esta
+    // instalado en el sistema y los .o pre-compilados existen, el
+    // runner lo activa por defecto para mejorar el rendimiento de
+    // las pruebas de red. Si libuv no esta, fallback transparente
+    // al backend poll.
+    const useLibuv = existsSync(join(REPO_ROOT, "build/runtime_ets_libuv.o"))
+                  && existsSync(join(REPO_ROOT, "build/runtime_ets_net_libuv.o"))
+                  && existsSync("/usr/include/uv.h");
+    const netCpps = useLibuv
+      ? [
+          join(REPO_ROOT, "build/runtime_ets_libuv.o"),
+          join(REPO_ROOT, "build/runtime_ets_net_libuv.o"),
+        ]
+      : [
+          join(REPO_ROOT, "runtime/runtime_ets_poll.cpp"),
+          join(REPO_ROOT, "runtime/runtime_ets_net.cpp"),
+        ];
+    const libuvArgs = useLibuv ? ["-DETS_EVENT_BACKEND_LIBUV", "-luv"] : [];
+    const extraCpps = netCpps.filter(p => existsSync(p));
 
     // V28: si el cpp generado usa el backend Drogon
     // (#include "runtime/ets_http_drogon.hpp") y libdrogon-dev esta
@@ -191,7 +207,7 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     // V29: el cliente HTTP sobre libcurl requiere -lcurl.
     const curlArgs = usesCurl ? ["-lcurl"] : [];
 
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, "-o", binPath], { cwd: workerScratch });
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, ...libuvArgs, "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
