@@ -72,7 +72,9 @@ function cppTypeFromString(type: TypeName): string {
   if (isTupleType(type)) return `std::tuple<${tupleElements(type).map(cppType).join(", ")}>`;
   if (isFunctionType(type)) return `std::function<${cppType(functionResult(type))}(${functionParameters(type).map(parameter => cppInputType(parameter, cppType(parameter))).join(", ")})>`;
   if (isGenericType(type)) return cppTypeFromGenericString(genericBase(type), genericArguments(type));
-  if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken"].includes(type)) return `ets::${type}`;
+  if (type === "Request") return "ets::HttpRequest";
+  if (type === "Response") return "ets::HttpResponse";
+  if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "FileReader", "Server"].includes(type)) return `ets::${type}`;
   if (type === "JsonValue") return "ets_json::Value";
   return type;
 }

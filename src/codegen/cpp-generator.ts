@@ -109,6 +109,10 @@ export class CppGenerator {
   // `function()` antes de emitir el cuerpo y se restaura al salir.
   // `undefined` cuando no estamos dentro de una función.
   private currentReturn: TypeName | undefined = undefined;
+  // V28: AST raiz del programa que estamos emitiendo. Necesario para
+  // helpers como `usesHttpServer` que se llaman desde `includes()` sin
+  // acceso directo al programa.
+  private currentProgram: Program | undefined = undefined;
   // Renombrados de variables que colisionan con singletons globales del runtime
   // (`console`, `fs`, `path`, `process`, `JSON`). Se prefijan con `ets_local_`
   // en C++ para evitar la colisión con `inline ets_path path{}` etc. Las
@@ -313,6 +317,27 @@ export class CppGenerator {
       "etsNetSyncEcho", "etsNetSyncLarge",
     ]));
   }
+  // V28: detecta `http.createServer()` para incluir el header del server.
+  // Tambien detecta `server.listen(...)` y metodos del Server. Lo separamos
+  // de `usesAnyCall` porque `get`/`post` son nombres demasiado genericos
+  // para estar en un set plano (falsos positivos con `arr.get(...)` etc).
+  private usesHttpServer(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; object?: { kind?: string; type?: string; name?: string }; method?: string };
+      if (obj.kind === "MemberCallExpression") {
+        if (obj.object?.kind === "IdentifierExpression" && obj.object.name === "http" && obj.method === "createServer") return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
   // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
   // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
   // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
@@ -511,6 +536,7 @@ export class CppGenerator {
       ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []),
       ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []),
       ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []),
+      ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram) ? ["#include \"runtime/ets_http_server.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
@@ -532,6 +558,7 @@ export class CppGenerator {
     return visit(program);
   }
   generate(program: Program): string {
+    this.currentProgram = program;
     // `export default` envuelve una declaración; hacemos unwrap para que el
     // dialecto (single-translation-unit) las procese como top-level directas.
     const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
@@ -621,6 +648,7 @@ export class CppGenerator {
     return lines.join("\n");
   }
   generateHeader(program: Program, moduleInitializers: string[]): string {
+    this.currentProgram = program;
     this.prepare(program);
     const functions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration" && !!statement.exported);
     const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
@@ -666,6 +694,7 @@ export class CppGenerator {
     return lines.join("\n");
   }
   generateModule(program: Program, combinedProgram: Program, headerName: string, initializer: string, entryInitializers?: string[]): string {
+    this.currentProgram = combinedProgram;
     // `export default` envuelve una declaración; el dialecto es single-
     // translation-unit, así que la declaración se procesa como si fuera
     // top-level directa. Unwrap antes del flujo principal.
@@ -1912,14 +1941,21 @@ export class CppGenerator {
         if (this.inStaticInit) capture = "[]";
         else if (this.inClassMethod) capture = "[=, this]";
         else if (node.capturedSymbols !== undefined) {
-          // Captura explícita solo de los símbolos externos que la lambda usa.
-          // La sintaxis de captura explícita en C++ es solo el nombre: `[x, y]`
-          // (sin el `=`; el `=` solo se usa para captura-por-defecto de TODAS).
-          // Si `mutatesCapturedState` está activo, capturamos por referencia
-          // usando `[&]` con la lista; si no, por copia usando `[]` con la lista.
-          if (node.capturedSymbols.length === 0) capture = "[]";
-          else if (node.mutatesCapturedState) capture = `[&${node.capturedSymbols.join(", ")}]`;
-          else capture = `[${node.capturedSymbols.join(", ")}]`;
+          // V28: filtramos los namespaces globales que NO son variables
+          // (http, Math, Date, console, fs, path, process, JSON, FileReader,
+          // etc). Si el type-checker los marcó como capturados, es un
+          // falso positivo: el codegen traduce `http.param(req, x)` a
+          // `::ets::http_param(req, x)`, que es una llamada libre sin
+          // captura. Sin este filtro, el lambda intenta capturar `http`
+          // que no existe como variable y g++ falla.
+          const NAMESPACES_NOT_CAPTURED = new Set([
+            "http", "Math", "Date", "console", "fs", "path", "process",
+            "JSON", "Math2", "FileReader", "Server",
+          ]);
+          const filtered = node.capturedSymbols.filter(s => !NAMESPACES_NOT_CAPTURED.has(s));
+          if (filtered.length === 0) capture = "[]";
+          else if (node.mutatesCapturedState) capture = `[&${filtered.join(", ")}]`;
+          else capture = `[${filtered.join(", ")}]`;
         }
         else capture = node.mutatesCapturedState ? "[&]" : "[=]";
         const mutable = node.mutatesCapturedState ? " mutable" : "";
@@ -2202,6 +2238,49 @@ export class CppGenerator {
             // de método en el dialecto son los mismos (`stringify`) en todos los casos.
             return `JSON.stringify(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
           }
+        }
+        // `http.get(url)` y `http.post(url, body, contentType?)` se traducen a
+        // llamadas a las funciones libres ets::httpGet/ets::httpPost (declaradas
+        // en runtime/ets_http.hpp). Como el type-checker ya valido la forma,
+        // aqui solo emitimos el call. El prefijo `::` fuerza el lookup en
+        // el namespace global por si el usuario declaro una variable local
+        // llamada `http` (improbable, pero seguro).
+        if (node.object.kind === "IdentifierExpression" && node.object.name === "http") {
+          const argList = node.args.map(a => this.emitExpression(a)).join(", ");
+          if (method === "createServer") return `::ets::http_createServer()`;
+          if (method === "param") return `::ets::http_param(${argList})`;
+          if (method === "query") return `::ets::http_query(${argList})`;
+          if (method === "header") return `::ets::http_header(${argList})`;
+          // No deberiamos llegar aqui: el type-checker ya reporto el error.
+          return `/* http.${method} no soportado */`;
+        }
+        // `server.get/post/put/patch/delete(path, handler)`: el Server es
+        // una clase C++ con esos metodos exactos, asi que la traduccion
+        // es 1:1. La variable que tenga tipo Server se emite tal cual.
+        if (this.expressionType(node.object) === "Server") {
+          const obj = this.emitExpression(node.object);
+          const args = node.args.map(a => this.emitExpression(a)).join(", ");
+          const routed = new Set(["get", "post", "put", "patch", "delete"]);
+          if (routed.has(method)) return `${obj}.${method}(${args})`;
+          if (method === "listen") {
+            // server.listen(port) -> ets::runServerLoop(server, "0.0.0.0", port)
+            return `::ets::runServerLoop(${obj}, "0.0.0.0", ${args})`;
+          }
+          return `/* server.${method} no soportado */`;
+        }
+        // `res.status/header/send/json` se traducen directamente a
+        // `res.status(...)` etc. porque la C++ API los expone con el
+        // mismo nombre. No hay que hacer wrapping.
+        if (this.expressionType(node.object) === "Response") {
+          const obj = this.emitExpression(node.object);
+          const args = node.args.map(a => this.emitExpression(a)).join(", ");
+          return `${obj}.${method}(${args})`;
+        }
+        // Codepath legacy de `HttpResponse` (cliente HTTP, struct plano).
+        // El cliente HTTP se ha replanteado para vivir en una sesion
+        // posterior; este codepath ya no se usa.
+        if (node.object.kind === "IdentifierExpression" && node.object.name === "HttpResponse") {
+          return `/* HttpResponse.${method} no soportado */`;
         }
         // V14: cuando el objeto es `Optional<T>`, los métodos intrínsecos
         // (isPresent, isEmpty, value, valueOr, map, andThen, orElse)

@@ -82,7 +82,13 @@ export function cppParameterDeclaration(parameter: Parameter, renderedType: stri
     if (parameter.variadic) type += "...";
     return `${type} ${name}${defaultText ? ` = ${defaultText}` : ""}`;
   }
-  if (mode === "out") type = `${renderedType}&`;
+  // V28: los parametros del handler HTTP se pasan por referencia para
+  // evitar copias y propagar mutaciones. El mapeo es:
+  //   http.Request  -> ets::HttpRequest const&  (inmutable)
+  //   http.Response -> ets::HttpResponse&      (mutable, encadenable)
+  if (renderedType === "ets::HttpRequest") type = "ets::HttpRequest const&";
+  else if (renderedType === "ets::HttpResponse") type = "ets::HttpResponse&";
+  else if (mode === "out") type = `${renderedType}&`;
   else type = renderedType; // V22: T siempre por valor.
   if (parameter.variadic) {
     if (type.endsWith("&") || type.endsWith(">")) type += "...";

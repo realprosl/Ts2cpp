@@ -775,6 +775,13 @@ export class Parser {
    */
   private matchArms(arms: MatchArm[]): void {
     while (!this.check("}") && !this.check("eof")) {
+      // Saltamos newlines y comas entre arms (separadores en la forma
+      // `Type.Variant(x) => expr,` del tutorial §9, y tambien en la forma
+      // V2 `case { kind: ... }: expr;` con newline significativo).
+      this.skipNewlines();
+      this.match(",");
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       if (this.check("case")) {
         this.advance(); // consume 'case'
         const arm = this.parseCaseArm();
@@ -793,8 +800,17 @@ export class Parser {
           this.advance();
         }
         if (this.check(";")) this.advance();
+      } else if (this.check("identifier")) {
+        // Azucar: `Type.Variant(bindings) => <expr>,` o `Variant(bindings) => <expr>,`
+        // (sin `case` ni `:`). Equivale a `case { kind: "<Variant>", ... }: <expr>;`
+        // y es la forma que muestra el tutorial §9. La coma o salto de linea
+        // actua como separador entre arms (no hace falta ';' ni ':').
+        // `parseCaseArm` ya consume el terminator (newline o ';' o ',')
+        // al final, asi que no hacemos nada extra aqui.
+        const arm = this.parseCaseArm();
+        arms.push(arm);
       } else {
-        this.error(this.peek(), "Se esperaba 'case' para iniciar un arm de 'match' V2");
+        this.error(this.peek(), "Se esperaba 'case' o un patron de arm (e.g. Type.Variant(bindings)) para iniciar un arm de 'match'");
         return;
       }
     }
@@ -811,6 +827,46 @@ export class Parser {
         pattern: { kind: "IdentifierExpression", name: "_", span: span(start, end.span.start) },
         result,
         variantMatch: { variantName: "", bindings: [], isWildcard: true },
+        span: span(start, end.span.end),
+      };
+    }
+    // Azucar: `case Type.Variant(binding1, ...) => <expr>;` o
+    //         `case Variant(binding1, ...) => <expr>;` (sin prefijo).
+    // Equivale a `case { kind: "<VariantName>", binding1, ... }: <expr>;`.
+    // Esto es lo que muestra el tutorial §9. Soporta tanto unions
+    // (`union X = Foo | Bar`) como constructores de `Result` y otras
+    // clases con factories estaticos.
+    if (this.check("identifier") && this.checkNextIsMemberCallOrArrow()) {
+      const unionOrType = this.advance();
+      // Hay dos formas: `Name.Variant(...)` o `Name.Variant`. Si lo
+      // siguiente es `.`, es la forma con tipo; si es `(`, es la forma
+      // corta con solo el nombre de la variante.
+      let variantName: string;
+      if (this.match(".")) {
+        const variantTok = this.consume("identifier", "Se esperaba el nombre de la variante tras '.'");
+        variantName = variantTok.lexeme;
+      } else {
+        variantName = unionOrType.lexeme;
+      }
+      // Bindings: cero o mas identifiers separados por `,` dentro de `()`.
+      const bindings: string[] = [];
+      if (this.match("(")) {
+        if (!this.check(")")) {
+          do {
+            const id = this.consume("identifier", "Se esperaba un identifier como binding");
+            bindings.push(id.lexeme);
+          } while (this.match(","));
+        }
+        this.consume(")", "Se esperaba ')' cerrando los bindings del arm de match");
+      }
+      // Ahora esperamos `=> <expr>;`
+      this.consume("=>", "Se esperaba '=>' en el arm de 'match' estilo Result.ok(v) => ...");
+      const result = this.expression();
+      const end = this.consumeStatementTerminator("Se esperaba ';' o salto de linea despues del arm de 'match'");
+      return {
+        pattern: { kind: "IdentifierExpression", name: variantName, span: span(start, end.span.start) },
+        result,
+        variantMatch: { variantName, bindings },
         span: span(start, end.span.end),
       };
     }
@@ -840,6 +896,17 @@ export class Parser {
       span: span(start, end.span.end),
     };
   }
+  // Helper: el token actual es un identifier y el siguiente NO es uno
+  // de los que indican statement normal (no es inicio de un arm de match
+  // estilo `Type.Variant(...) =>`).
+  private checkNextIsMemberCallOrArrow(): boolean {
+    // Despues del identifier debe venir `.`, `(`, o `=>`. Si viene
+    // cualquier otra cosa, es un statement normal (e.g. `case foo;` no
+    // es valido, pero el caller no nos llamaria aqui si el peek fuera
+    // `;`).
+    const next = this.peekAt(1);
+    return next?.kind === "." || next?.kind === "=>";
+  }
   private matchExpression(): MatchExpression {
     const keyword = this.previous();
     const start = this.peek().span.start;
@@ -851,6 +918,9 @@ export class Parser {
     const subject = this.expression();
     this.consume(")", "Se esperaba ')' después del sujeto de 'match'");
     this.consume("{", "Se esperaba '{' para los arms de 'match'");
+    // Saltamos newlines tras el '{' por si el primer arm empieza en
+    // la siguiente linea.
+    this.skipNewlines();
     const arms: MatchArm[] = [];
     this.matchArms(arms);
     this.consume("}", "Se esperaba '}' al final de 'match'");
@@ -1247,7 +1317,9 @@ export class Parser {
   private consumeStatementTerminator(message: string): Token {
     if (this.check(";")) return this.advance();
     if (this.check("newline")) return this.advance();
-    if (this.check("}") || this.check("eof")) return this.peek();
+    // En arms de match estilo `Type.Variant(x) => ...,` la coma o cierre
+    // de `}` tambien actua como separador entre arms.
+    if (this.check("}") || this.check("eof") || this.check(",")) return this.peek();
     this.error(this.peek(), message);
     return this.peek();
   }
