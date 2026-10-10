@@ -48,8 +48,19 @@ const BUCKETS = [
   "networking",    // #14
   "errors",        // #15
   "regressions",   // #18
+  "http-server-drogon", // #153 (skipea si libdrogon-dev no esta)
 ] as const;
 type Bucket = typeof BUCKETS[number];
+
+/**
+ * V28 (#153): detecta si el sistema tiene libdrogon-dev instalado.
+ * Si no, todo el bucket http-server-drogon se skipea con un mensaje
+ * claro. Comprobamos por la presencia del header drogon.h en
+ * /usr/include/drogon/ (donde lo instala apt).
+ */
+function drogonInstalled(): boolean {
+  return existsSync("/usr/include/drogon/drogon.h");
+}
 
 /**
  * Lee la skip-list de networking desde el runner principal (test/skip-network.json)
@@ -169,11 +180,15 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
       "-ldrogon", "-ltrantor", "-ljsoncpp",
       "-lssl", "-lcrypto", "-lresolv",
     ];
+    // Drogon usa try/catch en HttpBinder.h; -fno-exceptions del runner
+    // por defecto choca con eso. Cuando el backend es Drogon, lo
+    // desactivamos para esta build.
+    const noExceptions = usesDrogon ? [] : ["-fno-exceptions"];
     const drogonArgs = usesDrogon
       ? ["-I", "/usr/include/jsoncpp", ...drogonLibs]
       : [];
 
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", "-fno-exceptions", "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, "-o", binPath], { cwd: workerScratch });
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
@@ -186,6 +201,13 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
       name, bucket, ok: false, durationMs: Date.now() - start,
       error: `compile failed:\n${compileResult.stderr}`,
     };
+  }
+
+  // 2.5 V28 (#153): si el bucket es http-server-drogon y libdrogon-dev
+  // no esta instalado, skip ANTES de compilar para no fallar con un
+  // error de link confuso.
+  if (bucket === "http-server-drogon" && !drogonInstalled()) {
+    return { name, bucket, ok: true, durationMs: Date.now() - start, skipped: true };
   }
 
   // 3. Run (positive test) o skip (skip-network)
@@ -265,10 +287,19 @@ await mkdir(SCRATCH_DIR, { recursive: true });
 const skipNetwork = process.env.SKIP_NETWORK === "1";
 await loadSkipList(); // Carga pero todavía no se usa por nombre; se aplica al bucket "networking".
 const requestedBucket = process.env.E2E_BUCKET as Bucket | undefined;
-const bucketsToRun = requestedBucket ? [requestedBucket] : BUCKETS.filter(b => existsSync(join(E2E_DIR, b)));
+const bucketsToRun = requestedBucket
+  ? [requestedBucket]
+  : BUCKETS.filter(b => b === "http-server-drogon" || existsSync(join(E2E_DIR, b)));
 
 for (const bucket of bucketsToRun) {
   test(`e2e/${bucket}`, { concurrency: false }, async t => {
+    // V28 (#153): el bucket http-server-drogon requiere libdrogon-dev.
+    // Si no esta, skipea el bucket entero con un mensaje claro. Asi
+    // los usuarios sin drogon ven "skipped" en vez de errores de link.
+    if (bucket === "http-server-drogon" && !drogonInstalled()) {
+      t.skip("libdrogon-dev no instalado (apt install libdrogon-dev libjsoncpp-dev) - bucket http-server-drogon omitido");
+      return;
+    }
     const tests = await listE2ETests(bucket);
     if (tests.length === 0) {
       t.skip(`no hay tests en test/e2e/${bucket}/`);
@@ -278,7 +309,11 @@ for (const bucket of bucketsToRun) {
     // Reportamos cada test como subtest anidado (mismo patrón que test/runner.ts).
     for (const result of results) {
       if (result.skipped) {
-        await t.test(`${result.name} (skip-network)`, { skip: true }, () => {});
+        // V28 (#153): el motivo del skip puede ser "no-network" o
+        // "drogon-no-instalado". El codepath real (processE2E) marca
+        // skipped=true en ambos casos; mostramos el motivo que aplicaba.
+        const skipReason = bucket === "http-server-drogon" ? "drogon-no-instalado" : "skip-network";
+        await t.test(`${result.name} (${skipReason})`, { skip: true }, () => {});
       } else if (result.ok) {
         await t.test(`${result.name}`, sub => {
           for (const note of [result.diagnostics].filter(Boolean) as string[]) sub.diagnostic(note);
