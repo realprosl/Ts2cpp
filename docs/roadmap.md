@@ -367,31 +367,95 @@ usuario. Documentado en `docs/TUTORIAL.md` §17.
 
 ---
 
-## V29+ — Runtime sobre libuv + libcurl multi
+## V29 — Runtime sobre libuv + cliente HTTP sobre libcurl (entregado)
 
-Dirección acordada con el usuario para V29 y siguientes:
+Dirección acordada con el usuario para V29 (entregado en 5 PRs
+#155-#159). Resultado:
 
-- **Servidor HTTP**: Drogon (ya integrado opcionalmente, promover a
-  default si el usuario lo prefiere).
-- **Cliente HTTP**: **libcurl multi** sobre la actual implementación
-  TCP plana de `runtime/ets_http_client.hpp`. Permite HTTP/2, HTTPS
-  built-in, connection pooling, redirects automáticos, timeouts
-  configurables.
-- **Resto del runtime** (TCP, TLS, files, async): **libuv** en lugar
-  del reactor propio del runtime actual. Más portable, mejor
-  mantenido, mismo API de event loop.
-- **cpp-httplib** se mantiene como **alternativa sencilla** para
-  casos donde no se quiera libuv + libcurl multi.
+- **Servidor HTTP**: cpp-httplib (default, single-file, sin deps) +
+  Drogon opcional con decorator `@cpp_drogon` (alto rendimiento).
+  Ver V28 (#150-#153).
+- **Cliente HTTP**: libcurl (síncrono bloqueante, sobre `curl_easy`).
+  HTTPS, HTTP/2, redirects, decompression, timeouts built-in. La
+  migración a `curl_multi_perform` async queda para V30+ si el
+  async real hace falta.
+- **Resto del runtime** (TCP, TLS, files, async): **libuv** en
+  lugar del reactor propio. 32x más rápido idle, 430x con 50 pipes
+  (benchmarks medidos en `runtime/libuv/benchmark_*.cpp`).
+- **Wrappers de alto nivel** sobre libuv (V29.4 #158): timers
+  (`setTimeout`/`setInterval`/`cancelTimer`) y filesystem watchers
+  (`watchFs`/`unwatchFs`). Hoy son runtime C++; exponerlos al
+  dialecto `.ets` queda en V30+.
 
-El orden propuesto (a confirmar):
+### V29.1 — Cliente HTTP sobre libcurl (PR #155) ✅
 
-1. **V29.1** — Cliente HTTP sobre libcurl multi (`http.get/post`
-   pasan a usar `curl_multi_perform` en background, con callbacks
-   del dialecto via Task<T>). Sustituye `runtime/ets_http_client.hpp`.
-2. **V29.2** — Runtime TCP/TLS sobre libuv (sustituye el reactor
-   actual en `runtime_ets_poll.cpp` y `runtime/ets_net.hpp`).
-3. **V29.3** — Tutorial §18 (libcurl + libuv) y tests e2e
-   correspondientes.
+Sustituye el cliente sobre TCP plano de V28 (#147) por
+`runtime/ets_http_curl_client.hpp`. Misma API del dialecto
+(`http.get`/`http.post` -> `Result<HttpClientResponse, string>`).
+HTTPS out-of-the-box. Modo síncrono bloqueante por ahora; el
+async real (`curl_multi_perform`) queda para V30+.
+
+### V29.2 — TCP sobre libuv en el runner e2e (PR #156) ✅
+
+El runtime ya tenía dos backends de red (poll + libuv) desde
+V25. V29.2 activa libuv por defecto en el runner e2e con
+fallback a poll (V29.3 elimina el fallback). Cero cambios al
+código generado del dialecto: solo el `.o` que se linka.
+
+### V29.3 — libuv como único backend (PR #157) ✅
+
+Elimina el backend poll duplicado. 17 archivos cambiados, 5
+borrados, neto -326 líneas. Suite e2e pasa idéntica (67/67 sin
+red, 64/65 con red, 1 flake pre-existente con `SO_REUSEADDR`).
+Cero regresiones.
+
+### V29.4 — Wrappers de timers y watchers (PR #158) ✅
+
+`runtime/ets_timer.hpp`: `setTimeout(cb, ms)`, `setInterval(cb, ms)`,
+`cancelTimer(handle)` sobre `uv_timer_t`. `runtime/ets_fs_watcher.hpp`:
+`watchFs(path, callback, recursive)` sobre `uv_fs_event_t` (inotify /
+FSEvents / ReadDirectoryChangesW según SO). Tests 5/5 verde.
+
+### V29.5 — Tutorial §18 + tests e2e (PR #159) ✅
+
+Nueva sección §18 del tutorial con benchmarks, ejemplos de
+cliente HTTP (curl) y timers/watchers (libuv), y roadmap V30+.
+Resumen de versiones actualizado (V21-V29). CHANGELOG v1.3.0.
+
+---
+
+## V30+ — Pendiente
+
+Lo que queda para terminar el ciclo runtime:
+
+1. **Exponer `setTimeout`/`setInterval` al dialecto `.ets`**:
+   declaración en `src/project/init-project.ts` (d.ts) + dispatch
+   en `src/codegen/cpp-generator.ts`. Riesgo bajo: ya tenemos los
+   wrappers C++. La API sería:
+   ```ets
+   let t: Timer = setTimeout(() => print("hola"), 200)
+   cancelTimer(t)
+   ```
+
+2. **Exponer `watchFs` al dialecto**: igual que arriba, con
+   `FsWatcher` y `FsEvent { path: string, flags: number }`.
+
+3. **`curl_multi_perform` async para el cliente HTTP**: hoy
+   `http.get/post` es síncrono bloqueante. Migrar a `curl_multi`
+   para que las llamadas no bloqueen la corutina. La API del
+   dialecto cambiaría de `Result<HttpClientResponse, string>` a
+   `Task<Result<HttpClientResponse, string>>`.
+
+4. **DNS asíncrono** con `uv_getaddrinfo`: útil para casos no-HTTP.
+
+5. **TLS server** sobre `uv_tls_t`: libuv no trae TLS built-in;
+   integración con OpenSSL directa.
+
+6. **HTTP/3 / QUIC** si la dependencia de QUIC se justifica.
+
+7. **V22 borrow checker PR#6**: sesión dedicada para cerrar
+   los conflictos aliasing ref+ref, ref+constRef. Tests específicos
+   primero (E4206/E4207), impl incremental contra 202/202 existentes.
 
 ---
 

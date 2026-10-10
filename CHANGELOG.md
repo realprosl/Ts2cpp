@@ -2,6 +2,66 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.3.0 (2026-10-10) — V29 runtime async sobre libuv + cliente HTTP sobre libcurl
+
+### Added
+
+- **Cliente HTTP sobre libcurl** (`runtime/ets_http_curl_client.hpp`):
+  sustituye al cliente sobre TCP plano de V28 (#147). Misma API del
+  dialecto (`http.get`/`http.post` -> `Result<HttpClientResponse, string>`);
+  el codegen no nota la diferencia. HTTPS, HTTP/2, redirects,
+  decompression, connection pooling y timeouts llegan built-in.
+  Link con `-lcurl`.
+
+- **Wrappers de timers sobre libuv** (`runtime/ets_timer.hpp`):
+  `setTimeout(cb, ms)`, `setInterval(cb, ms)`, `cancelTimer(handle)`.
+  Equivalentes JS-style sobre `uv_timer_t`. Son **runtime C++**
+  (no se exponen al dialecto en este PR; sera V30+ si se quiere).
+
+- **Wrappers de filesystem watchers sobre libuv**
+  (`runtime/ets_fs_watcher.hpp`): `watchFs(path, callback, recursive)`,
+  `unwatchFs(handle)`. Usa `uv_fs_event_t` que abstrae inotify (Linux),
+  FSEvents (macOS) y ReadDirectoryChangesW (Windows). Runtime C++,
+  pendiente exponer al dialecto en V30+.
+
+### Changed
+
+- **libuv es ahora el unico backend de red soportado**. V28
+  mantenia dos backends (poll + libuv) seleccionables via
+  `-DETS_EVENT_BACKEND_LIBUV`. V29.3 (#157) elimina el backend
+  poll y consolida. 17 archivos cambiados, 5 borrados, neto -326
+  lineas. Suite e2e pasa identica (67/67 sin red, 64/65 con red,
+  1 flake pre-existente). Benchmarks: libuv 32x mas rapido idle,
+  430x con 50 pipes.
+
+- `test/e2e/_shared/runner.ts` ya no tiene fallback poll: detecta
+  libuv en el sistema y linka los `.o` cacheados (`build/runtime_ets_libuv.o`
+  + `build/runtime_ets_net_libuv.o` + `-luv`).
+
+### Removed
+
+- `runtime/runtime_ets_poll.cpp`, `runtime_ets_net.cpp`,
+  `runtime/ets_event_loop_poll.hpp`,
+  `runtime/ets_event_loop_poll_api.hpp`,
+  `runtime/ets_net_poll_api.hpp`: backend poll eliminado.
+- `runtime/ets_http_httplib_client.hpp`: cliente sobre cpp-httplib,
+  sustituido por libcurl.
+
+### Documentation
+
+- `docs/TUTORIAL.md`: nueva seccion §18 cubre V29 (libuv + libcurl)
+  con benchmarks, ejemplos de uso, y roadmap V30+.
+- `runtime/libuv/README.md`: actualizado para reflejar que libuv
+  es el unico backend desde V29.3.
+
+### Tests
+
+- `runtime/libuv/tests/test_wrappers_v29.cpp`: 5 tests nuevos para
+  los wrappers de timers y watchers (setTimeout, setInterval,
+  cancelTimer, watchFs, mix). 5/5 verde.
+- Suite e2e del dialecto: 67/67 verde sin red, 64/65 con red
+  (1 flake pre-existente con SO_REUSEADDR en `tcp-port-error`).
+
 ## v1.2.0 (2026-10-10) — V28 cierre del ciclo HTTP
 
 ### Added
