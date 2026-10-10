@@ -149,7 +149,15 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
 
   // 2. Compile
   const compileResult = await new Promise<{ code: number; stdout: string; stderr: string }>(resolvePromise => {
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", "-fno-exceptions", "-I", REPO_ROOT, cppPath, "-o", binPath], { cwd: workerScratch });
+    // -lstdc++fs necesario en g++ 13 para std::filesystem.
+    // El runtime tiene clases con simbolos no-inline (PollEventLoop ctor/dtor
+    // en runtime_ets_poll.cpp, TcpConnection varias en runtime_ets_net.cpp).
+    // Como el runner es generico, los linkamos siempre que existan en disco.
+    const extraCpps = [
+      join(REPO_ROOT, "runtime", "runtime_ets_poll.cpp"),
+      join(REPO_ROOT, "runtime", "runtime_ets_net.cpp"),
+    ].filter(p => existsSync(p));
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", "-fno-exceptions", "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });

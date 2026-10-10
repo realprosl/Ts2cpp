@@ -766,8 +766,14 @@ export class CppGenerator {
     lines.push(`void ${initializer}() {`); this.indent++;
     // V15: solo reasignamos variables mutables. Las `const` ya están inicializadas
     // en su declaración (línea 360) y reasignarlas daría error de compilación.
+    // Si la variable colisiona con un singleton del runtime (path, fs, console,
+    // process, JSON), también la renombramos aquí para que coincida con la
+    // declaración de la línea 351.
     for (const variable of variables) {
-      if (variable.mutable) lines.push(this.pad() + `${variable.name} = ${this.emitExpression(variable.initializer)};`);
+      if (variable.mutable) {
+        const targetName = this.cppName(this.resolveAlias(variable.name));
+        lines.push(this.pad() + `${targetName} = ${this.emitExpression(variable.initializer)};`);
+      }
     }
     for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevel) lines.push(this.emitStatement(statement));
