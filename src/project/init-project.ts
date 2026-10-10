@@ -6,15 +6,15 @@ export interface InitializedProject {
   files: string[];
 }
 
-// Plantilla de `tsconfig.json` para el proyecto generado. La clave de todo
-// el cambio es `lib: ["es2022"]` y `types: []`:
-//   - `lib: []` no funciona: sin un lib mínimo, hasta los tipos globales
+// Plantilla de tsconfig.json para el proyecto generado. La clave de todo
+// el cambio es lib: ["es2022"] y types: []:
+//   - lib: [] no funciona: sin un lib mínimo, hasta los tipos globales
 //     básicos (Array, Boolean, Number, IArguments) se pierden, y eso
-//     rompe los `.d.ts` que importan `string[]`, `unknown[]`, etc.
-//   - `lib: ["es2022"]` da JS moderno sin DOM, que es lo que queremos.
-//   - `types: []` excluye `@types/node` y compañía, que es lo que de
-//     verdad no soporta el dialecto (no hay `Buffer`, `__dirname`, etc.).
-// `moduleResolution: "bundler"` es lo que usan Vite/Deno y no asume
+//     rompe los .d.ts que importan string[], unknown[], etc.
+//   - lib: ["es2022"] da JS moderno sin DOM, que es lo que queremos.
+//   - types: [] excluye @types/node y compañía, que es lo que de
+//     verdad no soporta el dialecto (no hay Buffer, __dirname, etc.).
+// moduleResolution: "bundler" es lo que usan Vite/Deno y no asume
 // resolución estilo Node.
 const tsconfigJson = `{
   "compilerOptions": {
@@ -36,20 +36,20 @@ const tsconfigJson = `{
 }
 `;
 
-// Plantilla de `types/estatic.d.ts`. Declara al editor los built-ins del
+// Plantilla de types/estatic.d.ts. Declara al editor los built-ins del
 // dialecto (ptr/constPtr/ref/constRef como modificadores de memoria;
 // Optional, Result, Promise, Map, Set; readonly; numéricos i8..f64)
 // y los globales (console, fs, path, process, JSON) más los helpers de
 // runtime que usan los ejemplos (print, numberToString, move). El bloque
-// `declare global` evita que el usuario tenga que importar nada. NO
-// incluye las versiones async de `fs.*` que devuelven `Promise<...>`
+// declare global evita que el usuario tenga que importar nada. NO
+// incluye las versiones async de fs.* que devuelven Promise<...>
 // (decisión de scope confirmada).
 //
-// V22 (Memory Model v2) eliminó `Mut<T>`, `MutRef<T>`, `Unq<T>` y deprecó
-// `Rc<T>` — los cuatro se reemplazan por modificadores más explícitos
-// (`ptr<T>` para unique_ptr, `ref<T>`/`constRef<T>` para préstamos, etc.).
+// V22 (Memory Model v2) eliminó Mut<T>, MutRef<T>, Unq<T> y deprecó
+// Rc<T> — los cuatro se reemplazan por modificadores más explícitos
+// (ptr<T> para unique_ptr, ref<T>/constRef<T> para préstamos, etc.).
 // Esta plantilla refleja el dialecto V22; los proyectos generados antes
-// de V22 deben regenerarse o actualizar `types/estatic.d.ts` a mano.
+// de V22 deben regenerarse o actualizar types/estatic.d.ts a mano.
 const estaticDts = `// Tipos del dialecto Estatic. Cargado por tsconfig.json para que el
 // editor conozca los built-ins del dialecto y los helpers del runtime
 // sin contaminar el código con imports.
@@ -393,6 +393,81 @@ declare global {
   function tcpRead(fd: number, maxBytes: number): string;
   function tcpWrite(fd: number, data: string): boolean;
   function tcpClose(fd: number): void;
+
+  // ─── Cliente HTTP/1.1 (runtime/ets_http.hpp) ──────────────────────────
+  // Cliente HTTP plano (sin HTTPS todavia). Usa getaddrinfo para DNS y
+  // sockets POSIX bloqueantes. Lee el body completo (sin streaming).
+  //
+  // Limitaciones:
+  //   - HTTP/1.1 plano (puerto 80). HTTPS requiere TLS client que aun
+  //     no esta implementado en runtime/ets_tls.hpp (solo server).
+  //   - Sin redirecciones automaticas. Si status es 3xx, el caller
+  //     decide si hace otra peticion.
+  //   - Sin timeout por defecto.
+  //   - Sin cookies, gzip, autenticacion.
+  //
+  // Caso de uso: integraciones simples, health checks, webhooks, fetch
+  // de JSON publico.
+  // ─── Servidor HTTP ─────────────────────────────────────────────────
+  // API de routing sin dependencias externas. La implementacion vive
+  // en runtime/ets_http_server.hpp y se compila al binario.
+  //
+  // Cada handler es una funcion sincrona (req, res) => void. El server
+  // parsea el request antes de invocar al handler y serializa la
+  // response al volver. Para hacer I/O async dentro del handler, el
+  // handler puede disparar un spawn(...) y devolver inmediatamente.
+  //
+  // Limitaciones: HTTP/1.1 plano, sin HTTPS, sin middlewares, sin
+  // streaming, sin cookies, sin compresion.
+  // Los nombres "Request" y "Response" pertenecen al namespace "http" para
+  // evitar choques con cualquier otra cosa del usuario. Se accede a ellos
+  // como http.Request y http.Response en los handlers.
+  namespace http {
+    /** Request HTTP pre-parseado. El server rellena los campos antes de invocar al handler. */
+    interface Request {
+      /** "GET", "POST", "PUT", "PATCH", "DELETE". */
+      readonly method: string;
+      /** Path sin query string. "/api/users". */
+      readonly path: string;
+      /** Query string cruda. "id=42&name=alice". Vacia si no hay. */
+      readonly rawQuery: string;
+      /** Cuerpo del request (POST/PUT/PATCH). Vacio si no hay body. */
+      readonly body: string;
+    }
+
+    /** Response HTTP. El handler la muta encadenando status/header/send/json. */
+    interface Response {
+      /** Cambia el status code. Encadenable. */
+      status(code: number): Response;
+      /** Anyade un header. Encadenable. Si el header ya existe, lo sobreescribe. */
+      header(name: string, value: string): Response;
+      /** Envia un body de texto. Auto-set Content-Type: text/plain si no se dio uno. */
+      send(body: string): Response;
+      /** Envia un body JSON. Auto-set Content-Type: application/json. */
+      json(jsonString: string): Response;
+    }
+
+    /** Crea un nuevo Server listo para registrar handlers. */
+    function createServer(): Server;
+    /** Devuelve el path param name del request, o "" si no existe. */
+    function param(req: Request, name: string): string;
+    /** Devuelve el query string value de name, o "" si no existe. URL-decoded. */
+    function query(req: Request, name: string): string;
+    /** Devuelve el header name del request (case-insensitive), o "" si no existe. */
+    function header(req: Request, name: string): string;
+  }
+
+  // Los handlers reciben (req: http.Request, res: http.Response).
+  class Server extends Sealed {
+    /** Registra un handler para method + path. path puede tener :params. */
+    get(path: string, handler: (req: http.Request, res: http.Response) => void): void;
+    post(path: string, handler: (req: http.Request, res: http.Response) => void): void;
+    put(path: string, handler: (req: http.Request, res: http.Response) => void): void;
+    patch(path: string, handler: (req: http.Request, res: http.Response) => void): void;
+    delete(path: string, handler: (req: http.Request, res: http.Response) => void): void;
+    /** Arranca el server en 0.0.0.0:port. Bloquea hasta SIGINT. */
+    listen(port: number): void;
+  }
 
   // ─── Helpers de JsonValue ──────────────────────────────────────────
   function jsonIsString(v: JsonValue): boolean;
