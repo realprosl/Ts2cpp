@@ -766,8 +766,14 @@ export class CppGenerator {
     lines.push(`void ${initializer}() {`); this.indent++;
     // V15: solo reasignamos variables mutables. Las `const` ya están inicializadas
     // en su declaración (línea 360) y reasignarlas daría error de compilación.
+    // Si la variable colisiona con un singleton del runtime (path, fs, console,
+    // process, JSON), también la renombramos aquí para que coincida con la
+    // declaración de la línea 351.
     for (const variable of variables) {
-      if (variable.mutable) lines.push(this.pad() + `${variable.name} = ${this.emitExpression(variable.initializer)};`);
+      if (variable.mutable) {
+        const targetName = this.cppName(this.resolveAlias(variable.name));
+        lines.push(this.pad() + `${targetName} = ${this.emitExpression(variable.initializer)};`);
+      }
     }
     for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevel) lines.push(this.emitStatement(statement));
@@ -2101,6 +2107,18 @@ export class CppGenerator {
         // Aqui solo emitimos el argumento sin transformar.
         if ((node.callee === "ref" || node.callee === "constRef") && node.args.length === 1) {
           return this.emitExpression(node.args[0]);
+        }
+        // V28: `length(x)` builtin (string | array | tuple) -> number.
+        // Para arrays/tuplas usa .size() del std::vector; para strings
+        // usa ets::string_length.
+        if (node.callee === "length" && node.args.length === 1) {
+          const arg = node.args[0]!;
+          const argText = this.emitExpression(arg);
+          const argType = this.expressionType(arg);
+          if (argType === "string") return `::ets::string_length(${argText})`;
+          if (argType && (isArrayType(argType) || isTupleType(argType))) return `(${argText}).size()`;
+          // Fallback: emite como llamada normal (deberia fallar el type-check).
+          return `${argText}.size()`;
         }
         const args = node.args.map((argument, index) => {
           let text = this.emitExpression(argument, expectedParamTypes[index]);

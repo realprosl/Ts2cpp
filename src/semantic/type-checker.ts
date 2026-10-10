@@ -2440,7 +2440,20 @@ export class TypeChecker {
               result = genericType("Optional", [expectedElement]);
             }
           } else if (!helper.returnsGeneric) {
-            // Helpers que devuelven primitivos.
+            // Helpers que devuelven primitivos. Para los que tienen firma
+            // (Optional<T>, T) -> T (caso de optionalValueOr) inferimos T
+            // del primer argumento cuando es un Optional<X>. Si no, caemos
+            // al expected contextual.
+            if (node.callee === "optionalValueOr" && node.args[0]) {
+              const arg0Type = this.expression(node.args[0], scope);
+              if (isGenericType(arg0Type) && genericBase(arg0Type) === "Optional") {
+                const T = genericArguments(arg0Type)[0];
+                if (node.args[1]) this.expression(node.args[1], scope, T);
+                result = T;
+                break;
+              }
+            }
+            // Fallback: usar el expected contextual como antes.
             node.args.forEach((arg, index) => {
               if (index === 0 && expectedElement) this.require(this.expression(arg, scope, genericType("Optional", [expectedElement])), genericType("Optional", [expectedElement]), arg);
               else this.expression(arg, scope);
