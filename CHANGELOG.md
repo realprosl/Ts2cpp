@@ -2,6 +2,83 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.2.0 (2026-10-10) — V28 cierre del ciclo HTTP
+
+### Added
+
+- **API de string estilo TypeScript** (24 métodos sobre `string`,
+  byte-level): `charAt`, `charCodeAt`, `indexOf`, `lastIndexOf`,
+  `includes`, `startsWith`, `endsWith`, `slice`, `substring`,
+  `substr`, `split`, `trim`/`trimStart`/`trimEnd`, `toLowerCase`/
+  `toUpperCase`, `repeat`, `padStart`/`padEnd`, `replace`/`replaceAll`,
+  `localeCompare`, `toString`. Implementado en `runtime/ets_string.hpp`
+  como funciones libres `ets::string_*`. **PR #145**.
+- **Servidor HTTP Express-style** (HTTP/1.1): `http.createServer()`,
+  `server.get/post/put/patch/delete/listen`, handlers
+  `(req: Request, res: Response) => void`, path params con `:name`,
+  query string, body, response encadenable
+  `res.status().header().send()/.json()`. Helpers `http.param/query/header`.
+  **PR #144**.
+- **Cliente HTTP estilo fetch**: `http.get(url) -> Result<HttpClientResponse, string>`
+  y `http.post(url, body, contentType?) -> Result<HttpClientResponse, string>`.
+  Accesores: `v.status()` (number), `v.body()` (string), `v.header(name)`.
+  **PR #147**. Se sustituye por libcurl multi en V29+.
+- **Backend HTTP dual: cpp-httplib + Drogon**:
+  - **PR #150**: cpp-httplib v0.60.1 vendoreado en
+    `runtime/external/httplib/`. Wrapper `runtime/ets_http_httplib.hpp`
+    con la misma API. Default.
+  - **PR #151**: wrapper `runtime/ets_http_drogon.hpp` sobre Drogon
+    1.8.7+ (instalado vía `apt install libdrogon-dev`). Mismo API
+    que el wrapper httplib. ~150-200k req/s vs ~25-50k de httplib.
+  - **PR #152**: dispatch en el codegen con decorator `@cpp_drogon`
+    sobre `let server: Server = ...`. AST: `VariableDeclaration.decorators?`.
+    Parser: `leadingDecorators` propagados a `variable()`.
+  - **PR #153**: tests e2e en `test/e2e/http-server-drogon/` con
+    skip automático si libdrogon-dev no está instalado.
+- **Parser fixes pre-existentes** (PR #148): `block()` y
+  `classDeclaration()` ahora `skipNewlines()` antes del `while`
+  para que `if (x) { print("a"); } else { ... }` parsee correctamente.
+- **Test fixes pre-existentes** (PR #149): 3 bugs en
+  `optionalValueOr` (T inference), renombrado de variables
+  reasignadas con `fromRuntime`, linkado de `runtime_ets_poll.cpp`
+  / `runtime_ets_net.cpp` + `-lstdc++fs` en el runner.
+- **Codegen `length(x)` builtin**: el type-checker reconocía
+  `length(x)` (string | array | tuple) -> number, pero el codegen
+  no lo emitía. Ahora traduce a `::ets::string_length(x)` o
+  `(arr).size()` según el tipo. Suite e2e vuelve a 65/65 verde.
+- **Tutorial §17 (backend dual)**: tabla comparativa cpp-httplib vs
+  Drogon, uso de `@cpp_drogon`, instalación, limitaciones, ejemplo
+  de bench, roadmap V29+ (libuv + libcurl multi).
+- **Bucket `http-server-drogon`** en el runner e2e: skipea
+  automáticamente si libdrogon-dev no está instalado con mensaje
+  claro. Compilación condicional de las libs de Drogon cuando el
+  cpp incluye `runtime/ets_http_drogon.hpp`. `-fno-exceptions`
+  desactivado para builds con Drogon (usa try/catch).
+
+### Fixed
+
+- **Parser `if (x) { stmt; } else { ... }`** fallaba: `block()` no
+  saltaba newlines después de statements con `;` dentro. PR #148.
+- **`optionalValueOr` no propagaba T** en `total + optionalValueOr(a, 0)`
+  (el contexto se perdía a través del `+`). PR #149.
+- **`length(array)` no se traducía** en el codegen. Fix: dispatch
+  en `CallExpression` keyed on `node.callee === "length"`.
+
+### Performance
+
+Sin cambios. Las optimizaciones de rendimiento fueron en V26
+(v1.1.0).
+
+### Documentation
+
+- `docs/TUTORIAL.md` §15 (string API completa).
+- `docs/TUTORIAL.md` §16 (servidor HTTP Express-style).
+- `docs/TUTORIAL.md` §17 (backend dual: cpp-httplib vs Drogon).
+- `docs/roadmap.md`: nueva sección "V28 — Cierre del ciclo HTTP
+  (entregado)" y avance V29+ (libuv + libcurl multi).
+- `docs/TUTORIAL.md` "Resumen de versiones" actualizado.
+- `CHANGELOG.md`: entrada v1.2.0.
+
 ## v1.1.0 (2026-10-08) — V26 reactor async optimizations
 
 ### Added

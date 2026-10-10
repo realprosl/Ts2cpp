@@ -536,7 +536,7 @@ El compilador configurado añade estas dos librerías automáticamente al detect
 
 Los fallos síncronos y asíncronos utilizan el mismo `Result<T>` en lugar de excepciones. Antes de llamar a `value()` debe comprobarse `isOk()`; `error()` contiene el diagnóstico. Los handles TCP son valores RAII compartidos: el descriptor se cierra explícitamente con `closeTcp` o cuando desaparece su último propietario.
 
-El backend está dirigido a POSIX. `poll`, TLS y el pool funcionan en Linux/macOS; `io_uring` se activa únicamente en Linux. Por decisión de diseño actual no se incluye backend Windows/IOCP. Todavía faltan resolución DNS asíncrona y una implementación HTTP completa. Los ejemplos [http-server.ets](examples/http-server.ets) y [tls-server.ets](examples/tls-server.ets) muestran ambos transportes.
+El backend está dirigido a POSIX. `poll`, TLS y el pool funcionan en Linux/macOS; `io_uring` se activa únicamente en Linux. Por decisión de diseño actual no se incluye backend Windows/IOCP. La capa HTTP ya está entregada en V28 (servidor Express-style + cliente fetch; backend dual cpp-httplib / Drogon; ver `docs/TUTORIAL.md` §16-17). Los ejemplos [http-server.ets](examples/http-server.ets) y [tls-server.ets](examples/tls-server.ets) muestran ambos transportes.
 
 ## Imports y grafo de módulos
 
@@ -651,7 +651,10 @@ build/tools/ets-ast-dump examples/hello.ets --syntax
 
 - Cabeceras individuales por módulo para invalidación ABI precisa de dependientes transitivos.
 - Cancelación dura de trabajos de archivo ya iniciados mediante `IORING_OP_ASYNC_CANCEL`.
-- Resolución DNS asíncrona y una capa HTTP completa.
+- **Capa HTTP**: servidor (`http.createServer`, `server.get/post/...`) y
+  cliente (`http.get/post`, `HttpClientResponse`) ya están en V28. El
+  cliente TCP plano de V28 se sustituirá por libcurl multi en V29+;
+  el reactor async (V26) se sustituirá por libuv. Ver `docs/roadmap.md`.
 - Source maps entre `.ets` y C++.
 - Backend abstracto para generar C++ u otros destinos.
 
