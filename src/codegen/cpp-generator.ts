@@ -338,6 +338,37 @@ export class CppGenerator {
     };
     return visit(program);
   }
+
+  // V28: devuelve el backend HTTP a usar segun el decorator @cpp_drogon
+  // sobre la declaracion `let server: Server = http.createServer()`.
+  // Sin decorator: "httplib" (default). Con @cpp_drogon: "drogon".
+  private httpBackend(program: Program): "httplib" | "drogon" {
+    let found = "httplib" as "httplib" | "drogon";
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; name?: string; declaredType?: { name?: string } | string; decorators?: { name: string }[] };
+      // declaredType es un string (TypeName) no un objeto.
+      const typeName = typeof obj.declaredType === "string"
+        ? obj.declaredType
+        : obj.declaredType?.name;
+      if (obj.kind === "VariableDeclaration"
+          && obj.name === "server"
+          && typeName === "Server"
+          && obj.decorators?.some(d => d.name === "cpp_drogon")) {
+        found = "drogon";
+        return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    visit(program);
+    return found;
+  }
   // V28: detecta si el programa usa el cliente HTTP (http.get / http.post).
   // Igual patron que usesHttpServer, pero para los nombres de metodo del
   // cliente. Si lo encuentra, fuerza el include de runtime/ets_http_client.hpp.
@@ -556,7 +587,14 @@ export class CppGenerator {
       ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []),
       ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []),
       ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []),
-      ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram) ? ["#include \"runtime/ets_http_httplib.hpp\""] : []),
+      // V28: backend HTTP server. Default = cpp-httplib. Con decorator
+      // @cpp_drogon sobre `let server: Server = http.createServer()`,
+      // emitimos el wrapper de Drogon (PR #151) en lugar de httplib (PR #150).
+      ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram)
+          ? [this.httpBackend(this.currentProgram) === "drogon"
+                ? "#include \"runtime/ets_http_drogon.hpp\""
+                : "#include \"runtime/ets_http_httplib.hpp\""]
+          : []),
       ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_httplib_client.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];

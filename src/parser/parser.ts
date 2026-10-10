@@ -68,7 +68,7 @@ export class Parser {
     const leadingDecorators = this.parseDecorators();
     const exported = this.match("export");
     if (exported && !topLevel) this.error(this.previous(), "'export' solo es válido en el nivel superior de un módulo");
-    if (this.match("let", "const")) return this.variable(this.previous(), exported);
+    if (this.match("let", "const")) return this.variable(this.previous(), exported, leadingDecorators);
     if (this.match("using")) return this.usingDeclaration(this.previous(), exported);
     if (this.match("async")) {
       const keyword = this.previous();
@@ -129,7 +129,7 @@ export class Parser {
     return { kind: "DeleteStatement", target: target as IndexExpression, span: span(keyword.span.start, end.span.end) };
   }
 
-  private variable(keyword: Token, exported = false): Statement {
+  private variable(keyword: Token, exported = false, leadingDecorators: Decorator[] = []): Statement {
     // Destructuring de arrays: `const [a, b, c] = expr;` con soporte para
     // default values (`const [a = 5, b = "x"] = arr`) y tipos declarados
     // (`const [a: number, b: string] = arr`).
@@ -159,7 +159,11 @@ export class Parser {
     this.consume("=", "Toda variable debe tener un inicializador");
     const initializer = this.expression();
     const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración");
-    return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: name.lexeme, declaredType, initializer, span: span(keyword.span.start, end.span.end) };
+    // V28: si el usuario puso decoradores antes de `let`, los guardamos
+    // aqui. El codegen los consulta para, por ejemplo, detectar
+    // `@cpp_drogon` sobre `let server: Server = http.createServer()`.
+    const decorators = leadingDecorators.length > 0 ? leadingDecorators : undefined;
+    return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: name.lexeme, declaredType, initializer, decorators, span: span(keyword.span.start, end.span.end) };
   }
 
   /**
