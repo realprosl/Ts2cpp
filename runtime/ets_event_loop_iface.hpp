@@ -5,8 +5,8 @@
 // abstracta IEventLoop que PollEventLoop y LibuvEventLoop implementan.
 //
 // NO incluir directamente desde código de aplicación. Usar
-// runtime/ets_event_loop.hpp, que elige el backend según el macro
-// ETS_EVENT_BACKEND.
+// runtime/ets_event_loop.hpp, que desde V29.3 siempre resuelve a
+// LibuvEventLoop.
 
 #pragma once
 

@@ -1,6 +1,6 @@
 // Fase 2B.5 — Test de integración del backend libuv en ets::EventLoop.
 //
-// Compila con -DETS_EVENT_BACKEND_LIBUV y enlaza contra libuv.
+// Compila y enlaza contra libuv (V29.3: ya no requiere -DETS_EVENT_BACKEND_LIBUV).
 // Verifica que el alias ets::EventLoop resuelve a LibuvEventLoop
 // y que la API publica funciona correctamente con corutinas C++20.
 //

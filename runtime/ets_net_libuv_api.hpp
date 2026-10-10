@@ -1,7 +1,7 @@
 // ets_net_libuv_api.hpp — declaraciones ligeras (pre-compilable).
 //
-// Equivalente libuv de FdAwaiter / CancellableFdAwaiter. Se compila a .o
-// bajo -DETS_EVENT_BACKEND_LIBUV.
+// Equivalente libuv de FdAwaiter / CancellableFdAwaiter (V29.3:
+// unico backend soportado). Se compila a .o sin flags condicionales.
 //
 // Las definiciones estan en runtime_ets_net_libuv.cpp.
 

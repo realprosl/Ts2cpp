@@ -85,22 +85,22 @@ $(BUILD_DIR)/test_detach: tests/test_detach.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_integration: tests/test_integration.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_tcp_server: tests/test_tcp_server.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_uv_fd_awaiter: tests/test_uv_fd_awaiter.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_tcp_client: tests/test_tcp_client.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_tcp_client_loop: tests/test_tcp_client_loop.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_cancel_network: tests/test_cancel_network.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR)/test_curl_fetch: tests/test_curl_fetch.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< -lcurl $(LDLIBS)
@@ -118,7 +118,7 @@ $(BUILD_DIR)/benchmark_accept4: tests/benchmark_accept4.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -O2 -o $@ $< -pthread
 
 $(BUILD_DIR)/test_multi_loop: tests/test_multi_loop.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -DETS_EVENT_BACKEND_LIBUV -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
 
 $(BUILD_DIR):
 	mkdir -p $@
