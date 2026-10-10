@@ -2108,6 +2108,18 @@ export class CppGenerator {
         if ((node.callee === "ref" || node.callee === "constRef") && node.args.length === 1) {
           return this.emitExpression(node.args[0]);
         }
+        // V28: `length(x)` builtin (string | array | tuple) -> number.
+        // Para arrays/tuplas usa .size() del std::vector; para strings
+        // usa ets::string_length.
+        if (node.callee === "length" && node.args.length === 1) {
+          const arg = node.args[0]!;
+          const argText = this.emitExpression(arg);
+          const argType = this.expressionType(arg);
+          if (argType === "string") return `::ets::string_length(${argText})`;
+          if (argType && (isArrayType(argType) || isTupleType(argType))) return `(${argText}).size()`;
+          // Fallback: emite como llamada normal (deberia fallar el type-check).
+          return `${argText}.size()`;
+        }
         const args = node.args.map((argument, index) => {
           let text = this.emitExpression(argument, expectedParamTypes[index]);
           if (this.expressionIsVariadic(argument)) text += "...";
