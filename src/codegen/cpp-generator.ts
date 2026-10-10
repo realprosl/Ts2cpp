@@ -2291,6 +2291,15 @@ export class CppGenerator {
             return `${this.emitExpression(node.object)}.${node.method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
           }
         }
+        // V28: metodos de string estilo TypeScript. El type-checker ya
+        // valido aridad y tipos contra STRING_METHODS; aqui solo
+        // emitimos la llamada a la funcion libre ets::string_*.
+        // El receptor va como primer argumento (no como metodo).
+        if (objectType === "string") {
+          const objStr = this.emitExpression(node.object);
+          const argStrs = node.args.map(a => this.emitExpression(a));
+          return `::ets::string_${method}(${[objStr, ...argStrs].join(", ")})`;
+        }
         // V1.2: `Union.Variant(args)` o `Union<T>.Variant(args)` se reescribe
         // a la llamada al constructor `Variant<T_payload>(value)` que el
         // codegen de la declaración emite (con `template <typename T, typename E>`
@@ -2400,6 +2409,11 @@ export class CppGenerator {
                 const unionNode = this.unionsMap.get(node.object.name);
                 const variant = unionNode?.variants.find(v => v.name === node.member);
                 if (variant) return variant.payload ? `${node.member}(${variant.payload})` : `${node.member}()`;
+              }
+              // V28: `s.length` -> ets::string_length(s). El unico field-style
+              // de la API de string; el resto son metodos (dispatch arriba).
+              if (node.member === "length" && this.expressionType(node.object) === "string") {
+                return `::ets::string_length(${this.emitExpression(node.object)})`;
               }
               // V1.4: Result<T> no es un `std::variant` real, sino el tipo del runtime
                             // (`ets::Result<T>`) que tiene métodos `isOk()`, `value()`, `error()`.
