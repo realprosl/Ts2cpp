@@ -9,6 +9,16 @@ export class Lexer {
   private column = 1;
   private readonly tokens: Token[] = [];
   private readonly diagnostics: Diagnostic[] = [];
+  // Profundidad de anidamiento de (), [] y {}. Dentro de estos contextos
+  // el lexer NO emite tokens 'newline', porque expresiones/objetos/bloques
+  // pueden tener saltos de linea arbitrarios sin que terminen statements.
+  // (Esto resuelve 'f()\n.bar()' sin ambiguedad.)
+  // El lexer no procesa {} como bloque de control de flujo: eso lo hace
+  // el parser. Aqui solo contamos los {} que abrimos como parte de un
+  // object literal (que el parser decide). PERO como el lexer no sabe
+  // si un { es object literal o bloque, lo cuenta siempre y luego
+  // emite el 'newline' solo a profundidad 0.
+  private parenDepth = 0;
 
   constructor(source: string) { this.source = source; }
 
@@ -31,16 +41,81 @@ export class Lexer {
   }
 
   private skipTrivia(): void {
+    let newlines = 0;
     for (;;) {
-      while (/\s/.test(this.peek())) this.advance();
+      while (/\s/.test(this.peek())) {
+        if (this.peek() === "\n") { newlines++; this.advance(); }
+        else this.advance();
+      }
       if (this.peek() === "/" && this.peek(1) === "/") {
         while (!this.atEnd() && this.peek() !== "\n") this.advance();
       } else if (this.peek() === "/" && this.peek(1) === "*") {
         this.advance(); this.advance();
-        while (!this.atEnd() && !(this.peek() === "*" && this.peek(1) === "/")) this.advance();
+        while (!this.atEnd() && !(this.peek() === "*" && this.peek(1) === "/")) {
+          if (this.peek() === "\n") newlines++;
+          this.advance();
+        }
         if (!this.atEnd()) { this.advance(); this.advance(); }
       } else break;
     }
+    // Emitir UN token 'newline' si hemos cruzado saltos de linea, pero SOLO
+    // a profundidad 0 de parentesis/corchetes/llaves. Dentro de
+    // expresiones (f()\n.bar()) u object literals el newline NO es
+    // terminador de statement.
+    //
+    // Ademas: si el siguiente token (no-whitespace) es un CONTINUADOR de
+    // expresion (es decir, un operador o un member access), tampoco se
+    // emite newline. Esto resuelve el caso de method chains multilinea:
+    //   numbers
+    //     .filter(...)
+    //     .map(...)
+    //   sin tener que marcar el '.' como parte de un token multi-char.
+    //
+    // La lista de continuadores coincide con los operadores que pueden
+    // aparecer al INICIO de un nuevo token despues de una expresion
+    // terminada: member access (.), call ( (), array index ( [ ), binary
+    // ops ( + - * / % < > = ! ? : | & ^ ~ ), y el lambda =>. Los
+    // asignadores (=, ==, !=, etc.) tambien cuentan porque el usuario
+    // puede dividir una declaracion multilinea:
+    //   let x =
+    //     computeX()
+    if (newlines > 0 && this.parenDepth === 0) {
+      const next = this.peekNonWhitespace();
+      const continuators = new Set([".", "(", "[", "+", "-", "*", "/", "%", "=", "?", ":", "<", ">", "!", "&", "|", "^", "~", "&&", "||", "??", "?."]);
+      const isTwoChar = continuators.has(next + this.peek(1));
+      const isOneChar = continuators.has(next);
+      if (!isOneChar && !isTwoChar) {
+        const pos = this.position();
+        this.tokens.push({ kind: "newline", lexeme: "\n", span: span(pos, pos) });
+      }
+    }
+  }
+
+  // Avanza el puntero sobre whitespace y comentarios, sin consumir tokens,
+  // y devuelve el siguiente char no-whitespace. Se usa para lookahead
+  // en skipTrivia() cuando decidimos si emitir un token 'newline'.
+  private peekNonWhitespace(): string {
+    let i = this.offset;
+    while (i < this.source.length) {
+      const c = this.source[i];
+      if (c === " " || c === "\t" || c === "\r" || c === "\n") { i++; continue; }
+      // Comentario de linea: se ignora, pero el '\n' que viene despues
+      // ya se ha consumido arriba (cruzamos newlines). Para mirar mas
+      // alla de un comentario de linea saltamos hasta el proximo char
+      // no whitespace (que sera de la linea siguiente).
+      if (c === "/" && this.source[i + 1] === "/") {
+        while (i < this.source.length && this.source[i] !== "\n") i++;
+        continue;
+      }
+      if (c === "/" && this.source[i + 1] === "*") {
+        i += 2;
+        while (i < this.source.length - 1 && !(this.source[i] === "*" && this.source[i + 1] === "/")) i++;
+        if (i < this.source.length - 1) i += 2;
+        continue;
+      }
+      return c;
+    }
+    return "";
   }
 
   private identifier(start: Position): void {
@@ -144,7 +219,16 @@ export class Lexer {
     }
     const one = this.advance();
     const singles = "(){}[] ,;:.-+*/%=<>!?|&^~@".replace(" ", "");
-    if (singles.includes(one)) this.add(one as TokenKind, one, start);
+    if (singles.includes(one)) {
+      this.add(one as TokenKind, one, start);
+      // Track de profundidad de (), [], {} para suprimir 'newline' tokens
+      // dentro de expresiones/objetos. El parser ya gestiona el anidamiento
+      // semanticamente; esto es solo para que el lexer no se confunda.
+      if (one === "(" || one === "[" || one === "{") this.parenDepth++;
+      else if (one === ")" || one === "]" || one === "}") {
+        if (this.parenDepth > 0) this.parenDepth--;
+      }
+    }
     else this.diagnostics.push({ phase: "lexer", message: `Carácter inesperado '${one}'`, span: span(start, this.position()) });
   }
 

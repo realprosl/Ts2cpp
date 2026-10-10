@@ -170,3 +170,54 @@ test("parser: member call expression", () => {
   assert.equal(stmt.initializer.method, "method");
   assert.equal(stmt.initializer.args.length, 2);
 });
+
+// Tests del dialecto ";" opcional: el parser acepta newline significativo
+// como terminador de statement (ademas del ';' explicito y el cierre '}').
+test("parser: ; opcional entre declaraciones", () => {
+  const ast = parse("let a: number = 1\nlet b: number = 2\nlet c: number = 3");
+  assert.equal(ast.statements.length, 3);
+  assert.equal((ast.statements[0] as { name: string }).name, "a");
+  assert.equal((ast.statements[1] as { name: string }).name, "b");
+  assert.equal((ast.statements[2] as { name: string }).name, "c");
+});
+
+test("parser: ; explicito sigue funcionando", () => {
+  const ast = parse("let a: number = 1;\nlet b: number = 2;\nlet c: number = 3;");
+  assert.equal(ast.statements.length, 3);
+});
+
+test("parser: mezcla de ; y newline", () => {
+  const ast = parse("let a: number = 1\nlet b: number = 2;\nlet c: number = 3");
+  assert.equal(ast.statements.length, 3);
+});
+
+test("parser: newline dentro de () no es terminador", () => {
+  // f(\n  1\n  ) debe seguir siendo una sola llamada, no tres statements.
+  const ast = parse("let r = f(\n  1,\n  2\n)");
+  assert.equal(ast.statements.length, 1);
+  const stmt = ast.statements[0] as { initializer: { kind: string; args: unknown[] } };
+  assert.equal(stmt.initializer.args.length, 2);
+});
+
+test("parser: newline dentro de [] no es terminador", () => {
+  const ast = parse("let a = [\n  1,\n  2,\n  3\n]");
+  assert.equal(ast.statements.length, 1);
+});
+
+test("parser: lineas en blanco entre statements", () => {
+  const ast = parse("let a = 1\n\n\nlet b = 2");
+  assert.equal(ast.statements.length, 2);
+});
+
+test("parser: cierre de bloque } termina statement", () => {
+  // El 'if' sin ';' antes del '}' debe seguir siendo valido.
+  const ast = parse("if (x) { f() }");
+  assert.equal(ast.statements.length, 1);
+});
+
+test("parser: 'for' con newlines funciona", () => {
+  // El for tiene 3 componentes separados por ';' literales (no newlines).
+  // El body puede no tener ';' antes del '}'.
+  const ast = parse("for (let i = 0; i < 10; i = i + 1) { f() }");
+  assert.equal(ast.statements.length, 1);
+});
