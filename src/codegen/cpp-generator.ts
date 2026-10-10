@@ -595,7 +595,10 @@ export class CppGenerator {
                 ? "#include \"runtime/ets_http_drogon.hpp\""
                 : "#include \"runtime/ets_http_httplib.hpp\""]
           : []),
-      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_httplib_client.hpp\""] : []),
+      // V29: cliente HTTP sobre libcurl (sustituye al TCP plano de V28).
+      // libcurl nos da HTTPS, HTTP/2, redirects, timeouts, decompression
+      // built-in. Ver runtime/ets_http_curl_client.hpp.
+      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_curl_client.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
