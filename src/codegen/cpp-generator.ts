@@ -556,8 +556,8 @@ export class CppGenerator {
       ...(usesTls ? ["#include \"runtime/ets_tls.hpp\""] : []),
       ...(usesFilesystem ? ["#include \"runtime/ets_file.hpp\""] : []),
       ...(usesNetworking ? ["#include \"runtime/ets_net_sync.hpp\""] : []),
-      ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram) ? ["#include \"runtime/ets_http_server.hpp\""] : []),
-      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_client.hpp\""] : []),
+      ...(this.currentProgram !== undefined && this.usesHttpServer(this.currentProgram) ? ["#include \"runtime/ets_http_httplib.hpp\""] : []),
+      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_httplib_client.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
@@ -2286,7 +2286,7 @@ export class CppGenerator {
         // llamada `http` (improbable, pero seguro).
         if (node.object.kind === "IdentifierExpression" && node.object.name === "http") {
           const argList = node.args.map(a => this.emitExpression(a)).join(", ");
-          if (method === "createServer") return `::ets::http_createServer()`;
+          if (method === "createServer") return `::ets::Server()`;
           if (method === "param") return `::ets::http_param(${argList})`;
           if (method === "query") return `::ets::http_query(${argList})`;
           if (method === "header") return `::ets::http_header(${argList})`;
@@ -2307,8 +2307,11 @@ export class CppGenerator {
           const routed = new Set(["get", "post", "put", "patch", "delete"]);
           if (routed.has(method)) return `${obj}.${method}(${args})`;
           if (method === "listen") {
-            // server.listen(port) -> ets::runServerLoop(server, "0.0.0.0", port)
-            return `::ets::runServerLoop(${obj}, "0.0.0.0", ${args})`;
+            // server.listen(port) -> server.listen("0.0.0.0", port) sobre el
+            // wrapper de cpp-httplib (V28+). El wrapper acepta tanto
+            // listen(port) como listen(host, port).
+            if (node.args.length === 1) return `${obj}.listen("0.0.0.0", ${args})`;
+            return `${obj}.listen(${args})`;
           }
           return `/* server.${method} no soportado */`;
         }

@@ -43,6 +43,7 @@ private:
     std::optional<T> value_;
     std::string error_;
 };
+#define ETS_RESULT_DEFINED 1
 
 template <typename T>
 Result<T> ok(T value) { return Result<T>::success(std::move(value)); }
