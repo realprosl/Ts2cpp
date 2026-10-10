@@ -164,26 +164,26 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     // El runtime tiene clases con simbolos no-inline (PollEventLoop ctor/dtor
     // en runtime_ets_poll.cpp, TcpConnection varias en runtime_ets_net.cpp).
     // Como el runner es generico, los linkamos siempre que existan en disco.
-    // V29.2: el runtime tiene dos backends de red — poll (por defecto)
-    // y libuv (bajo -DETS_EVENT_BACKEND_LIBUV). Cuando libuv esta
-    // instalado en el sistema y los .o pre-compilados existen, el
-    // runner lo activa por defecto para mejorar el rendimiento de
-    // las pruebas de red. Si libuv no esta, fallback transparente
-    // al backend poll.
+    // V29.3: libuv es el unico backend de red soportado. Ya no hay
+    // selector ETS_EVENT_BACKEND_* ni fallback poll. El runtime se
+    // pre-compila a build/runtime_ets_libuv.o + build/runtime_ets_net_libuv.o
+    // y se linka con -luv. Los tests libuv del runtime confirman que
+    // la suite e2e pasa identica con libuv.
     const useLibuv = existsSync(join(REPO_ROOT, "build/runtime_ets_libuv.o"))
                   && existsSync(join(REPO_ROOT, "build/runtime_ets_net_libuv.o"))
                   && existsSync("/usr/include/uv.h");
-    const netCpps = useLibuv
-      ? [
-          join(REPO_ROOT, "build/runtime_ets_libuv.o"),
-          join(REPO_ROOT, "build/runtime_ets_net_libuv.o"),
-        ]
-      : [
-          join(REPO_ROOT, "runtime/runtime_ets_poll.cpp"),
-          join(REPO_ROOT, "runtime/runtime_ets_net.cpp"),
-        ];
-    const libuvArgs = useLibuv ? ["-DETS_EVENT_BACKEND_LIBUV", "-luv"] : [];
-    const extraCpps = netCpps.filter(p => existsSync(p));
+    if (!useLibuv) {
+      throw new Error(
+        "V29.3: libuv es obligatorio. Instala libuv1-dev y compila el runtime:\n" +
+        "  cd runtime/libuv && make\n" +
+        "  cp build/../runtime_ets_libuv.o build/\n" +
+        "  cp build/../runtime_ets_net_libuv.o build/");
+    }
+    const extraCpps = [
+      join(REPO_ROOT, "build/runtime_ets_libuv.o"),
+      join(REPO_ROOT, "build/runtime_ets_net_libuv.o"),
+    ];
+    const libuvArgs = ["-luv"];
 
     // V28: si el cpp generado usa el backend Drogon
     // (#include "runtime/ets_http_drogon.hpp") y libdrogon-dev esta

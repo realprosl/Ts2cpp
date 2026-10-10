@@ -18,8 +18,8 @@
 #include <vector>
 #include <unistd.h>
 
-// El EventLoop se selecciona vía ets_event_loop.hpp. Por ahora solo
-// el backend poll (ETS_EVENT_BACKEND=poll) está disponible.
+// El EventLoop se selecciona via ets_event_loop.hpp. V29.3: libuv
+// es el unico backend soportado (ver runtime/libuv/).
 #include "ets_event_loop.hpp"
 
 namespace ets {
@@ -51,10 +51,9 @@ Result<T> ok(T value) { return Result<T>::success(std::move(value)); }
 template <typename T>
 Result<T> err(std::string message) { return Result<T>::failure(std::move(message)); }
 
-// La clase EventLoop ahora es un alias (PollEventLoop o LibuvEventLoop
-// según el macro ETS_EVENT_BACKEND). Se declara en
+// La clase EventLoop es un alias de LibuvEventLoop. Se declara en
 // runtime/ets_event_loop.hpp. La instancia thread_local defaultEventLoop
-// también vive en ese header.
+// tambien vive en ese header.
 
 inline thread_local EventLoop defaultEventLoop;
 
@@ -256,9 +255,9 @@ struct SleepAwaiter {
 
 inline Task<void> sleep(double milliseconds) { co_await SleepAwaiter{milliseconds}; }
 
-// Nota V25 Fase 4.3: FdAwaiter y CancellableFdAwaiter se han movido a
-// runtime/ets_net_poll_api.hpp + runtime_ets_net.cpp (pre-compilados).
-// Su declaracion vive en runtime/ets_net.hpp via el selector bajo
-// -DETS_EVENT_BACKEND_LIBUV.
+// V29.3: FdAwaiter / CancellableFdAwaiter (backend poll) eliminados.
+// Solo existen UvFdAwaiter / UvCancellableFdAwaiter (backend libuv),
+// declarados en runtime/ets_net_libuv_api.hpp y exportados por
+// runtime/ets_net.hpp.
 
 } // namespace ets

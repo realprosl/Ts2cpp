@@ -17,29 +17,20 @@
 #define MSG_NOSIGNAL 0
 #endif
 
-// Selector de awaitables de red: por defecto usa FdAwaiter /
-// CancellableFdAwaiter basados en poll(2). Bajo
-// -DETS_EVENT_BACKEND_LIBUV usa UvFdAwaiter / UvCancellableFdAwaiter
-// basados en libuv (uv_poll_t). V1 mantiene la API publica intacta:
-// acceptTcp, readTcp, writeTcp, etc. siguen funcionando igual, solo
-// cambia el backend de espera interna.
+// Selector de awaitables de red: V29.3 usa siempre libuv
+// (UvFdAwaiter / UvCancellableFdAwaiter basados en uv_poll_t).
+// Antes habia un backend poll alternativo, eliminado en V29.3
+// tras verificar que la suite e2e pasa identica con libuv (67/67
+// sin red, 64/65 con red, 1 flake pre-existente).
 //
-// Las definiciones de los awaitables viven en runtime_ets_net.cpp o
-// runtime_ets_net_libuv.cpp (pre-compilados a .o cacheados por V25
-// Fase 4.3). Aqui solo se re-exportan los tipos via el _api.hpp.
-#ifdef ETS_EVENT_BACKEND_LIBUV
-  #include "runtime/ets_net_libuv_api.hpp"
-  namespace ets {
-      using NetFdAwaiter = UvFdAwaiter;
-      using NetCancellableFdAwaiter = UvCancellableFdAwaiter;
-  }
-#else
-  #include "runtime/ets_net_poll_api.hpp"
-  namespace ets {
-      using NetFdAwaiter = FdAwaiter;
-      using NetCancellableFdAwaiter = CancellableFdAwaiter;
-  }
-#endif
+// La API publica (acceptTcp, readTcp, writeTcp, etc.) no cambia.
+// Las definiciones de los awaitables viven en
+// runtime_ets_net_libuv.cpp (pre-compilado a .o cacheado).
+#include "runtime/ets_net_libuv_api.hpp"
+namespace ets {
+    using NetFdAwaiter = UvFdAwaiter;
+    using NetCancellableFdAwaiter = UvCancellableFdAwaiter;
+}
 
 namespace ets {
 

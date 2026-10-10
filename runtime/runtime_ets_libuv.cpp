@@ -1,5 +1,9 @@
 // runtime_ets_libuv.cpp — Definiciones de LibuvEventLoop.
 //
+// V29.3: libuv es el unico backend soportado. El archivo se compila
+// siempre (sin -DETS_EVENT_BACKEND_LIBUV). El .o cacheado vive en
+// build/runtime_ets_libuv.o.
+//
 // Compilado una vez a build/runtime_ets_libuv.o (cacheado por hash de
 // version + backend). El usuario enlaza este .o con su programa
 // generado sin tener que recompilar el runtime.
@@ -8,10 +12,6 @@
 //   g++ -c runtime/runtime_ets_libuv.cpp -o build/runtime_ets_libuv.o \
 //       -std=c++20 -I/root/Ts2cpp
 //   g++ build/runtime_ets_libuv.o programa.cpp -luv -pthread -o programa
-//
-// Compilacion condicional: solo se compila bajo -DETS_EVENT_BACKEND_LIBUV.
-
-#ifdef ETS_EVENT_BACKEND_LIBUV
 
 #include "ets_event_loop_libuv_api.hpp"
 
@@ -325,5 +325,3 @@ void LibuvEventLoop::onWake(uv_async_t* h) {
 }
 
 }  // namespace ets
-
-#endif  // ETS_EVENT_BACKEND_LIBUV

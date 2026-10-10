@@ -1,14 +1,15 @@
 // runtime_ets_net_libuv.cpp — UvFdAwaiter y UvCancellableFdAwaiter (libuv).
 //
+// V29.3: libuv es el unico backend soportado. El archivo se compila
+// siempre (sin -DETS_EVENT_BACKEND_LIBUV). El .o cacheado vive en
+// build/runtime_ets_net_libuv.o.
+//
 // Compilado una vez a build/runtime_ets_net_libuv.o (cacheado).
-// Solo se compila bajo -DETS_EVENT_BACKEND_LIBUV.
 //
 // Uso:
 //   g++ -c runtime/runtime_ets_net_libuv.cpp -o build/runtime_ets_net_libuv.o \
-//       -std=c++20 -DETS_EVENT_BACKEND_LIBUV -I/root/Ts2cpp
+//       -std=c++20 -I/root/Ts2cpp
 //   g++ build/runtime_ets_net_libuv.o programa.cpp -luv -pthread -o programa
-
-#ifdef ETS_EVENT_BACKEND_LIBUV
 
 #include "ets_net_libuv_api.hpp"
 
@@ -66,5 +67,3 @@ void UvCancellableFdAwaiter::await_suspend(std::coroutine_handle<> h) noexcept {
 ets::WaitResult UvCancellableFdAwaiter::await_resume() noexcept { return result_; }
 
 }  // namespace ets
-
-#endif  // ETS_EVENT_BACKEND_LIBUV
