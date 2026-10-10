@@ -259,6 +259,36 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   includes: { arity: 1, paramKinds: ["value"], returnType: () => "boolean" },
 };
 
+// V28: metodos de la API de string estilo TypeScript. El dialecto los
+// expone como llamadas tipo metodo (`s.charAt(i)`) y el codegen los
+// traduce 1:1 a `ets::string_*` (byte-level, ver runtime/ets_string.hpp).
+// `arity` es el numero de argumentos; el receptor `s` no cuenta.
+const STRING_METHODS: Record<string, { arity: number; paramTypes: TypeName[]; returnType: TypeName }> = {
+  charAt:        { arity: 1, paramTypes: ["number"],  returnType: "string" },
+  charCodeAt:    { arity: 1, paramTypes: ["number"],  returnType: "number" },
+  indexOf:       { arity: 2, paramTypes: ["string", "number"], returnType: "number" },
+  lastIndexOf:   { arity: 1, paramTypes: ["string"],  returnType: "number" },
+  includes:      { arity: 2, paramTypes: ["string", "number"], returnType: "boolean" },
+  startsWith:    { arity: 1, paramTypes: ["string"],  returnType: "boolean" },
+  endsWith:      { arity: 1, paramTypes: ["string"],  returnType: "boolean" },
+  slice:         { arity: 2, paramTypes: ["number", "number"], returnType: "string" },
+  substring:     { arity: 2, paramTypes: ["number", "number"], returnType: "string" },
+  substr:        { arity: 2, paramTypes: ["number", "number"], returnType: "string" },
+  split:         { arity: 1, paramTypes: ["string"],  returnType: "string[]" },
+  trim:          { arity: 0, paramTypes: [],          returnType: "string" },
+  trimStart:     { arity: 0, paramTypes: [],          returnType: "string" },
+  trimEnd:       { arity: 0, paramTypes: [],          returnType: "string" },
+  toLowerCase:   { arity: 0, paramTypes: [],          returnType: "string" },
+  toUpperCase:   { arity: 0, paramTypes: [],          returnType: "string" },
+  repeat:        { arity: 1, paramTypes: ["number"],  returnType: "string" },
+  padStart:      { arity: 2, paramTypes: ["number", "string"], returnType: "string" },
+  padEnd:        { arity: 2, paramTypes: ["number", "string"], returnType: "string" },
+  replace:       { arity: 2, paramTypes: ["string", "string"], returnType: "string" },
+  replaceAll:    { arity: 2, paramTypes: ["string", "string"], returnType: "string" },
+  localeCompare: { arity: 1, paramTypes: ["string"],  returnType: "number" },
+  toString:      { arity: 0, paramTypes: [],          returnType: "string" },
+};
+
 /** Distancia Levenshtein entre dos strings (número mínimo de inserciones,
  *  borrados o sustituciones para convertir `a` en `b`). Implementación
  *  iterativa con matriz 2D; O(|a|·|b|) tiempo, O(min(|a|,|b|)) espacio. */
@@ -2719,6 +2749,26 @@ export class TypeChecker {
           result = this.dispatchGenericBuiltin("Set", SET_METHODS, node, scope, typeArgs);
           break;
         }
+        // V28: metodos de string estilo TypeScript. El dialecto expone
+        // la API de string como llamadas tipo metodo (`s.charAt(i)`) y
+        // el codegen las traduce 1:1 a `ets::string_*` (byte-level, ver
+        // runtime/ets_string.hpp). Validamos aridad y tipos de los args
+        // contra `STRING_METHODS`.
+        if (objectType === "string") {
+          const method = STRING_METHODS[node.method];
+          if (!method) {
+            this.report(node, `El tipo 'string' no declara '${node.method}' (usa ${Object.keys(STRING_METHODS).join(", ")})`);
+            node.args.forEach(arg => this.expression(arg, scope));
+            result = "string";
+            break;
+          }
+          if (node.args.length !== method.arity) this.report(node, `string.${node.method} espera ${method.arity} argumento(s), recibió ${node.args.length}`);
+          method.paramTypes.forEach((expected, i) => {
+            if (node.args[i]) this.require(this.expression(node.args[i], scope, expected), expected, node.args[i]!);
+          });
+          result = method.returnType;
+          break;
+        }
         // V7: métodos sobre arrays `T[]`. Las firmas se materializan con
         // `typeArgs = [T]` (elemento del array). Para `map<U>(f)` y
         // `reduce<U>(init, op)`, el parámetro `U` puede declararse
@@ -3018,6 +3068,12 @@ export class TypeChecker {
             result = typeof disc.value === "boolean" ? "boolean" : typeof disc.value === "number" ? "number" : "string";
             break;
           }
+        }
+        // V28: `s.length` es el unico field-style de la API de string.
+        // El resto son metodos (se validan en MemberCallExpression).
+        if (objectType === "string" && node.member === "length") {
+          result = "number";
+          break;
         }
         // Acceso a miembro de enum: `Color.Green` se evalúa al tipo del enum, no al subyacente.
         // La conversión al subyacente ocurre en el codegen cuando se necesita (p.ej. `print(c)`).

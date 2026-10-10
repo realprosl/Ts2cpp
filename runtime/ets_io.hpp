@@ -6,6 +6,7 @@
 // opción `--minimal` del CLI (en desarrollo).
 
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +19,15 @@
 template <typename... Args>
 inline void print(const Args&... args) {
     (std::cout << ... << args) << std::endl;
+}
+
+// V28: numberToString en el global (sin namespace ets) para que el
+// codegen del dialecto lo emita como llamada libre. Vive tambien en
+// ets::string_numberToString para uso desde C++.
+inline std::string numberToString(double value) {
+    char buffer[64];
+    const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    return converted.ec == std::errc{} ? std::string(buffer, converted.ptr) : std::string();
 }
 
 template <typename... Args>

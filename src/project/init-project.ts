@@ -408,7 +408,66 @@ declare global {
   //
   // Caso de uso: integraciones simples, health checks, webhooks, fetch
   // de JSON publico.
-  // ─── Servidor HTTP ─────────────────────────────────────────────────
+  // ─── API de string estilo TypeScript (V28) ─────────────────────────
+  // string es un primitivo del dialecto pero la API estilo metodo
+  // (s.charAt(i), s.length) vive documentada en una interface para
+  // que el LSP autocomplete tenga una pista. La interface se llama
+  // StringInstance (no String) porque el LSP de TS confunde
+  // String con el wrapper global de JS. La validacion real la hace
+  // STRING_METHODS en src/semantic/type-checker.ts y el codegen
+  // traduce 1:1 a ets::string_* (runtime/ets_string.hpp).
+  interface StringInstance {
+    /** Numero de bytes (= std::string::size). */
+    readonly length: number;
+    /** Byte en posicion i como string (1 byte), o "" si fuera de rango. */
+    charAt(i: number): string;
+    /** Byte en posicion i como double (0-255), o -1 si fuera de rango. */
+    charCodeAt(i: number): number;
+    /** Primera posicion de search desde start (defecto 0), o -1. */
+    indexOf(search: string, start?: number): number;
+    /** Ultima posicion de search, o -1. */
+    lastIndexOf(search: string): number;
+    /** True si search aparece desde start. */
+    includes(search: string, start?: number): boolean;
+    /** True si value empieza por prefix. */
+    startsWith(prefix: string): boolean;
+    /** True si value termina por suffix. */
+    endsWith(suffix: string): boolean;
+    /** Substring desde start hasta end (acepta negativos desde el final). */
+    slice(start: number, end?: number): string;
+    /** Substring clampeado a [0, length]; intercambia start/end. */
+    substring(start: number, end?: number): string;
+    /** Substring desde start con length (defecto hasta el final). */
+    substr(start: number, length?: number): string;
+    /** Vector de partes separadas por separator. */
+    split(separator: string): string[];
+    /** Quita espacios al principio y al final. */
+    trim(): string;
+    /** Quita espacios al principio. */
+    trimStart(): string;
+    /** Quita espacios al final. */
+    trimEnd(): string;
+    /** ASCII lower-case (byte-level). */
+    toLowerCase(): string;
+    /** ASCII upper-case (byte-level). */
+    toUpperCase(): string;
+    /** Repite el string count veces. */
+    repeat(count: number): string;
+    /** Rellena al inicio hasta targetLength con pad. */
+    padStart(targetLength: number, pad: string): string;
+    /** Rellena al final hasta targetLength con pad. */
+    padEnd(targetLength: number, pad: string): string;
+    /** Reemplaza la primera ocurrencia de search por replacement. */
+    replace(search: string, replacement: string): string;
+    /** Reemplaza todas las ocurrencias. */
+    replaceAll(search: string, replacement: string): string;
+    /** -1 si a<b, 0 si a==b, 1 si a>b (byte-level). */
+    localeCompare(other: string): number;
+    /** Identidad. */
+    toString(): string;
+  }
+
+  // ─── Servidor HTTP ───────────────────────────────────────────────
   // API de routing sin dependencias externas. La implementacion vive
   // en runtime/ets_http_server.hpp y se compila al binario.
   //
