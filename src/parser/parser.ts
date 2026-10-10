@@ -267,6 +267,8 @@ export class Parser {
     const methods: ClassMethod[] = [];
     const startSpan = decorators[0]?.args[0]?.span.start ?? name.span.start;
     while (!this.check("}") && !this.check("eof")) {
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       const memberDecorators = this.parseDecorators();
       // V19: modificador de encapsulación opcional (private/public/protected).
       // Va antes de readonly y antes del nombre. Si se omite, default = public.
@@ -712,7 +714,11 @@ export class Parser {
 
   private block(open: Token): BlockStatement {
     const statements: Statement[] = [];
-    while (!this.check("}") && !this.check("eof")) statements.push(this.statement());
+    while (!this.check("}") && !this.check("eof")) {
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
+      statements.push(this.statement());
+    }
     const close = this.consume("}", "Se esperaba '}'");
     return { kind: "BlockStatement", statements, span: span(open.span.start, close.span.end) };
   }
