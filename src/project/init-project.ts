@@ -187,6 +187,39 @@ declare global {
     value(): T;
     error(): E;
   }
+  // Lector de archivos por descriptor (streaming, sin copiar el archivo
+  // entero en memoria). Vive en runtime/ets_file.hpp. La API permite
+  // recorrer un archivo caracter a caracter o linea a linea, manteniendo
+  // el fd del OS abierto durante toda la lectura.
+  //
+  // Patron de uso:
+  //   let r: FileReader = openFileReader("/var/log/app.log")
+  //   while (!r.eof()) {
+  //     let line: string | null = r.readLine()
+  //     if (line != null) process(line)
+  //   }
+  //   r.close()
+  //
+  // Si el archivo no existe, la funcion aborta con un mensaje de error.
+  // Para error handling explicito, hacer el check con fileExists() antes.
+  function openFileReader(path: string): FileReader;
+  class FileReader extends Sealed {
+    private readonly _brand: symbol;
+    // Lee un caracter (1 byte) y avanza el cursor. Devuelve -1 en EOF.
+    readChar(): number;
+    // Lee hasta n bytes desde el cursor. Si n es 0 o no se pasa, lee
+    // hasta EOF. "" indica EOF.
+    read(n?: number): string;
+    // Lee hasta el proximo newline (incluido) y lo devuelve. Si el
+    // archivo no termina en newline, la ultima linea se devuelve sin
+    // el terminador. Devuelve string vacio cuando ya no hay mas
+    // datos; usa eof() para distinguir EOF de una linea vacia valida.
+    readLine(): string;
+    // ¿Estamos al final del archivo?
+    eof(): boolean;
+    // Cierra el descriptor. Despues de esto el reader ya no es usable.
+    close(): void;
+  }
   class Promise<T> extends Sealed {
     private readonly _brand: symbol;
   }

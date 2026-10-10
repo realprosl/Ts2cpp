@@ -2,10 +2,15 @@
 
 #include "runtime/ets_async.hpp"
 #include "runtime/ets_io_uring.hpp"
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -297,4 +302,229 @@ inline ets::Task<ets::Result<bool>> removeFileUntil(std::string path, double tim
     co_return co_await ets::runBlocking([path = std::move(path), timeoutMilliseconds, token] {
         return fileOperationUntil<bool>(timeoutMilliseconds, token, [&] { return removeFile(path); });
     });
+}
+
+// ─── FileReader: lector por descriptor (streaming) ────────────────────
+// A diferencia de readFile() que carga el archivo entero en memoria,
+// FileReader mantiene el descriptor abierto y permite leer por
+// caracteres o lineas sin copiar todo el contenido. Util para procesar
+// archivos grandes (logs, CSVs, JSON streams) donde cargar todo seria
+// prohibitivo en RAM.
+//
+// Uso tipico:
+//   let r = FileReader.open("/var/log/app.log")
+//   if (r == null) { print("no se pudo abrir"); return }
+//   while (!r.eof()) {
+//     let line = r.readLine()
+//     if (line != null) process(line)
+//   }
+//   r.close()
+class FileReader {
+    int descriptor_ = -1;
+    bool eof_ = false;
+    // Buffer interno para leer bloques del disco y entregar caracteres
+    // uno a uno. 64KB es suficiente para evitar syscalls por byte.
+    static constexpr std::size_t kBufferSize = 64 * 1024;
+    std::array<char, kBufferSize> buffer_{};
+    std::size_t bufferPos_ = 0;
+    std::size_t bufferEnd_ = 0;
+
+    // Rellena el buffer desde el descriptor. Devuelve false en EOF o error.
+    bool refill(std::string& error) {
+        for (;;) {
+            const auto received = ::read(descriptor_, buffer_.data(), buffer_.size());
+            if (received > 0) {
+                bufferPos_ = 0;
+                bufferEnd_ = static_cast<std::size_t>(received);
+                return true;
+            }
+            if (received == 0) { eof_ = true; return false; }
+            if (errno == EINTR) continue;
+            error = ets::file_detail::systemError("Error durante la lectura", "<FileReader>");
+            return false;
+        }
+    }
+
+public:
+    // Abre un archivo. Si no se puede abrir, escribe el error a stderr
+    // y aborta con exit(1). El caller siempre obtiene un reader valido.
+    // NOTA: esta funcion es la implementacion C++ del factory. En el
+    // dialecto se expone como la funcion global `openFileReader` (no como
+    // metodo estatico, porque el type-checker actual no soporta
+    // `ClassName.staticMethod()`). Devuelve por valor con move semantics
+    // para evitar leaks y para que el dialecto pueda hacer
+    // `let r: FileReader = openFileReader(path)`.
+    static FileReader open(const std::string& path) {
+        const int descriptor = ::open(path.c_str(), O_RDONLY);
+        if (descriptor < 0) {
+            const std::string err = ets::file_detail::systemError("No se puede leer", path);
+            std::fprintf(stderr, "FileReader::open: %s\n", err.c_str());
+            std::exit(1);
+        }
+        FileReader reader;
+        reader.descriptor_ = descriptor;
+        return reader;
+    }
+
+    // Constructor vacio: produce un reader "no inicializado" (descriptor = -1).
+    // Existe para que el dialecto pueda tratar FileReader como un tipo
+    // por valor y hacer `let r: FileReader = openFileReader(path)`. El
+    // codegen resuelve `openFileReader(path)` a `*::openFileReader(path)`
+    // (desreferencia el puntero raw), lo que copia el reader por valor
+    // y transfiere la propiedad del descriptor. Si el reader temporal
+    // se destruye sin cerrar, no hay leak porque el destructor cierra.
+    // Para C++ directo (no dialecto), usar `open` que devuelve puntero.
+    FileReader() = default;
+
+    // Constructor de copia: NECESARIO para que `let r = openFileReader(path)`
+    // copie el FileReader devuelto por `open` (que es puntero). El nuevo
+    // reader "roba" el descriptor al original (el original queda invalido).
+    // Esto es move semantics manual: el reader source ya no se debe usar.
+    FileReader(const FileReader& other) noexcept
+        : descriptor_(other.descriptor_), eof_(other.eof_),
+          buffer_(other.buffer_), bufferPos_(other.bufferPos_), bufferEnd_(other.bufferEnd_) {
+        const_cast<FileReader&>(other).descriptor_ = -1;
+        const_cast<FileReader&>(other).eof_ = true;
+        const_cast<FileReader&>(other).bufferPos_ = 0;
+        const_cast<FileReader&>(other).bufferEnd_ = 0;
+    }
+    FileReader& operator=(const FileReader& other) noexcept {
+        if (this != &other) {
+            close();
+            descriptor_ = other.descriptor_;
+            eof_ = other.eof_;
+            buffer_ = other.buffer_;
+            bufferPos_ = other.bufferPos_;
+            bufferEnd_ = other.bufferEnd_;
+            const_cast<FileReader&>(other).descriptor_ = -1;
+            const_cast<FileReader&>(other).eof_ = true;
+            const_cast<FileReader&>(other).bufferPos_ = 0;
+            const_cast<FileReader&>(other).bufferEnd_ = 0;
+        }
+        return *this;
+    }
+    // Move constructor y move assignment: equivalentes al copy (mismo robo).
+    FileReader(FileReader&& other) noexcept : FileReader(static_cast<const FileReader&>(other)) {}
+    FileReader& operator=(FileReader&& other) noexcept {
+        if (this != &other) {
+            close();
+            descriptor_ = other.descriptor_;
+            eof_ = other.eof_;
+            buffer_ = std::move(other.buffer_);
+            bufferPos_ = other.bufferPos_;
+            bufferEnd_ = other.bufferEnd_;
+            other.descriptor_ = -1;
+            other.eof_ = true;
+            other.bufferPos_ = 0;
+            other.bufferEnd_ = 0;
+        }
+        return *this;
+    }
+
+    // Constructor vacio: para uso futuro con descriptores ya abiertos
+    // (pipes, sockets, etc.). NO abrir archivos con esto.
+
+    // Destructor: cierra el descriptor si sigue abierto.
+    ~FileReader() { close(); }
+
+    // Cierra el descriptor. Despues de esto el reader ya no es usable.
+    void close() {
+        if (descriptor_ >= 0) {
+            ::close(descriptor_);
+            descriptor_ = -1;
+        }
+        eof_ = true;
+        bufferPos_ = bufferEnd_ = 0;
+    }
+
+    // Devuelve true si estamos al final del archivo.
+    bool eof() const { return eof_; }
+
+    // Lee un caracter UTF-8. Para mantener el API simple y predecible,
+    // solo decodificamos ASCII (1 byte) en esta primera version. Si el
+    // caracter es multibyte, devolvemos el primer byte (igual que
+    // fs.readFileSync en modo binario de Node). Para UTF-8 completo,
+    // ver readLine() que decodifica el bloque entero.
+    int readChar() {
+        if (eof_) return -1;
+        if (bufferPos_ >= bufferEnd_) {
+            std::string error;
+            if (!refill(error)) return -1;
+        }
+        return static_cast<unsigned char>(buffer_[bufferPos_++]);
+    }
+
+    // Lee hasta n bytes (o hasta EOF si n <= 0) y los devuelve como
+    // string. Cada llamada puede hacer varias syscalls si el archivo
+    // es pequeno, pero para archivos grandes es lineal en el tamano.
+    std::string read(std::size_t n = 0) {
+        std::string out;
+        if (eof_) return out;
+        if (n == 0) {
+            // Lee hasta EOF. Usamos el buffer interno.
+            char buffer[8 * 1024];
+            for (;;) {
+                const auto received = ::read(descriptor_, buffer, sizeof(buffer));
+                if (received > 0) { out.append(buffer, static_cast<std::size_t>(received)); continue; }
+                if (received == 0) { eof_ = true; break; }
+                if (errno == EINTR) continue;
+                eof_ = true;
+                break;
+            }
+            return out;
+        }
+        // Lee exactamente n bytes (o menos si EOF antes).
+        out.reserve(n);
+        while (out.size() < n && !eof_) {
+            if (bufferPos_ >= bufferEnd_) {
+                std::string error;
+                if (!refill(error)) break;
+            }
+            const std::size_t available = bufferEnd_ - bufferPos_;
+            const std::size_t needed = n - out.size();
+            const std::size_t chunk = std::min(available, needed);
+            out.append(buffer_.data() + bufferPos_, chunk);
+            bufferPos_ += chunk;
+        }
+        return out;
+    }
+
+    // Lee hasta el proximo '\n' (incluido) y lo devuelve. Si EOF sin
+    // encontrar '\n' y no quedan datos, devuelve "" (string vacio). Si
+    // el archivo no termina en '\n', la ultima linea se devuelve sin
+    // el terminador. Para distinguir EOF de una linea vacia valida,
+    // usar eof() antes de llamar.
+    std::string readLine() {
+        if (eof_ && bufferPos_ >= bufferEnd_) return std::string();
+        std::string line;
+        for (;;) {
+            if (bufferPos_ >= bufferEnd_) {
+                std::string error;
+                if (!refill(error)) {
+                    if (line.empty()) return std::string();
+                    return line;
+                }
+            }
+            // Busca '\n' en el buffer restante.
+            const char* begin = buffer_.data() + bufferPos_;
+            const char* end = buffer_.data() + bufferEnd_;
+            const char* nl = std::find(begin, end, '\n');
+            if (nl != end) {
+                line.append(begin, static_cast<std::size_t>(nl - begin + 1));
+                bufferPos_ = static_cast<std::size_t>(nl - buffer_.data()) + 1;
+                return line;
+            }
+            // No hay '\n' en este bloque, seguimos.
+            line.append(begin, static_cast<std::size_t>(end - begin));
+            bufferPos_ = bufferEnd_;
+        }
+    }
+};
+
+// Factory global expuesta al dialecto. Llamada desde codegen cuando el
+// usuario hace `openFileReader(path)`. El dialecto no soporta llamadas
+// a métodos estáticos de clase (e.g. `FileReader.open(path)`), por eso
+// se expone como función libre con un nombre mnemónico.
+inline FileReader openFileReader(const std::string& path) {
+    return FileReader::open(path);
 }

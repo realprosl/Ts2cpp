@@ -111,7 +111,7 @@ export class Parser {
       return this.forStatement(keyword);
     }
     if (this.match("break", "continue")) {
-      const keyword = this.previous(); const end = this.consume(";", `Se esperaba ';' después de ${keyword.lexeme}`);
+      const keyword = this.previous(); const end = this.consumeStatementTerminator(`Se esperaba ';' después de ${keyword.lexeme}`);
       return { kind: keyword.kind === "break" ? "BreakStatement" : "ContinueStatement", span: span(keyword.span.start, end.span.end) };
     }
     if (this.match("return")) return this.returnStatement(this.previous());
