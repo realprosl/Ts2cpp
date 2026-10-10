@@ -221,11 +221,14 @@ export class Lexer {
     const singles = "(){}[] ,;:.-+*/%=<>!?|&^~@".replace(" ", "");
     if (singles.includes(one)) {
       this.add(one as TokenKind, one, start);
-      // Track de profundidad de (), [], {} para suprimir 'newline' tokens
-      // dentro de expresiones/objetos. El parser ya gestiona el anidamiento
-      // semanticamente; esto es solo para que el lexer no se confunda.
-      if (one === "(" || one === "[" || one === "{") this.parenDepth++;
-      else if (one === ")" || one === "]" || one === "}") {
+      // Track de profundidad de () y [] para suprimir 'newline' tokens
+      // dentro de expresiones. NO contamos {}: el parser ya gestiona
+      // el anidamiento semanticamente y decide por contexto (e.g. dentro
+      // de un match arm, block, function body, etc). Contar {} rompia
+      // la regla "newline significativo": el lexer no emitia newlines
+      // entre statements de un bloque porque depth nunca volvia a 0.
+      if (one === "(" || one === "[") this.parenDepth++;
+      else if (one === ")" || one === "]") {
         if (this.parenDepth > 0) this.parenDepth--;
       }
     }

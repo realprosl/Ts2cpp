@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression, BlockStatement } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isReadonlyType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, readonlyInner, readonlyType, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
@@ -408,6 +408,38 @@ export class TypeChecker {
     global.define("trim", fn([input("string")], "string"));
     global.define("lineCount", fn([input("string")], "number"));
     global.define("lineAt", fn([input("string"), input("number")], "string"));
+    // V28: tipos built-in del server HTTP. El type-checker NO parsea
+    // estatic.d.ts, asi que registramos a mano las interfaces y la
+    // clase Server. Sin esto, declarar un parametro como http.Request
+    // o http.Response da "Tipo no definido".
+    // V28: el dialecto expone los tipos del request/response. El d.ts
+    // los declara como `Request` y `Response` dentro del namespace
+    // `http`, pero el type-checker NO parsea el d.ts y los usuarios
+    // no pueden usar el qualifier `http.X` en la firma del handler
+    // todavia (limitacion del parser), asi que los registramos con los
+    // nombres PLANOS `Request` y `Response` para que el codigo del
+    // usuario funcione sin mas. El codegen traduce `Request` a
+    // `ets::HttpRequest` en cpp-types.
+    this.registerBuiltinInterface("Request", [
+      { name: "method", returnType: "string", params: [] },
+      { name: "path", returnType: "string", params: [] },
+      { name: "rawQuery", returnType: "string", params: [] },
+      { name: "body", returnType: "string", params: [] },
+    ]);
+    this.registerBuiltinInterface("Response", [
+      { name: "status", returnType: "Response", params: [{ name: "code", type: "number" }] },
+      { name: "header", returnType: "Response", params: [{ name: "name", type: "string" }, { name: "value", type: "string" }] },
+      { name: "send", returnType: "Response", params: [{ name: "body", type: "string" }] },
+      { name: "json", returnType: "Response", params: [{ name: "jsonString", type: "string" }] },
+    ]);
+    this.registerBuiltinClass("Server", [
+      { name: "get", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
+      { name: "post", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
+      { name: "put", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
+      { name: "patch", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
+      { name: "delete", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
+      { name: "listen", returnType: "void", params: [{ name: "port", type: "number" }] },
+    ]);
     const readFile = fn([input("string"), output("string"), output("string")], "boolean");
     readFile.overloads.push({ typeParameters: [], variadicTypeParameters: [], params: [input("string")], returnType: "Result<string>" });
     global.define("readFile", readFile);
@@ -685,6 +717,71 @@ export class TypeChecker {
         async: false,
       };
     }
+  }
+
+  // V28: helpers para registrar tipos built-in (interfaces y clases) que
+  // viven en runtime/*.hpp pero que el dialecto conoce (porque aparecen
+  // en el d.ts template). El type-checker NO parsea el d.ts — necesita
+  // poder validar referencias a HttpRequest, HttpResponse, Server, etc.
+  // Las firmas se pasan en forma simplificada y se traducen a los tipos
+  // AST equivalentes antes de inyectarse en `this.interfaces`/`this.classes`.
+  private fakeSpan() { return { start: { line: 0, column: 0, offset: 0 }, end: { line: 0, column: 0, offset: 0 } }; }
+  private registerBuiltinInterface(name: string, methods: { name: string; returnType: string; params: { name: string; type: string }[] }[]): void {
+    const decl: InterfaceDeclaration = {
+      kind: "InterfaceDeclaration",
+      name,
+      exported: true,
+      methods: methods.map(m => ({
+        kind: "InterfaceMethod" as const,
+        name: m.name,
+        params: m.params.map(p => ({
+          kind: "Parameter" as const,
+          name: p.name,
+          type: p.type,
+          out: false,
+          passing: "value" as const,
+          optional: false,
+          span: this.fakeSpan(),
+        })),
+        returnType: m.returnType,
+        decorators: [],
+        span: this.fakeSpan(),
+      })),
+      decorators: [],
+      span: this.fakeSpan(),
+    };
+    this.interfaces.set(name, decl);
+  }
+  private registerBuiltinClass(name: string, methods: { name: string; returnType: string; params: { name: string; type: string }[] }[]): void {
+    const decl: ClassDeclaration = {
+      kind: "ClassDeclaration",
+      name,
+      exported: true,
+      typeParameters: [],
+      variadicTypeParameters: [],
+      fields: [],
+      methods: methods.map(m => ({
+        kind: "ClassMethod" as const,
+        name: m.name,
+        params: m.params.map(p => ({
+          kind: "Parameter" as const,
+          name: p.name,
+          type: p.type,
+          out: false,
+          passing: "value" as const,
+          optional: false,
+          span: this.fakeSpan(),
+        })),
+        returnType: m.returnType,
+        body: null as unknown as BlockStatement,
+        decorators: [],
+        access: "public" as const,
+        span: this.fakeSpan(),
+      })),
+      decorators: [],
+      span: this.fakeSpan(),
+    };
+    this.classes.set(name, decl);
   }
 
   // Declara un alias de tipo y valida su RHS (con detección de ciclos). Los
@@ -1263,7 +1360,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
     // `Optional<T>` se aceptan siempre (son tipos del runtime).
@@ -1945,6 +2042,7 @@ export class TypeChecker {
         if (node.name === "JSON") { result = "Json"; break; }
         if (node.name === "Math") { result = "Math"; break; }
         if (node.name === "Date") { result = "Date"; break; }
+        if (node.name === "http") { result = "http"; break; }
         this.report(node, `Símbolo no definido '${node.name}'`, this.suggestSimilar(node.name, scope.names()));
         break;
       }
@@ -2527,6 +2625,68 @@ export class TypeChecker {
           result = "void";
           break;
         }
+        if (objectType === "http") {
+          // http.createServer() -> Server. http.param/query/header(req, name) -> string.
+          if (node.method === "createServer") {
+            // http.createServer() -> Server
+            if (node.args.length !== 0) this.report(node, "http.createServer() no acepta argumentos");
+            result = "Server";
+            break;
+          }
+          // http.param(req, name) / http.query(req, name) / http.header(req, name) -> string
+          if (node.method === "param" || node.method === "query" || node.method === "header") {
+            if (node.args.length !== 2) this.report(node, `http.${node.method}(req, name) espera 2 argumentos`);
+            this.expression(node.args[0]!, scope);
+            this.expression(node.args[1]!, scope);
+            result = "string";
+            break;
+          }
+          this.report(node, `http.${node.method} no es una API valida (usa createServer/param/query/header)`);
+          result = "Server";
+          break;
+        }
+        if (objectType === "Server") {
+          // server.get/post/put/patch/delete(path, handler) -> void.
+          // server.listen(port) -> void (bloquea hasta SIGINT).
+          const validRoutedMethods = new Set(["get", "post", "put", "patch", "delete"]);
+          if (validRoutedMethods.has(node.method)) {
+            if (node.args.length !== 2) this.report(node, `server.${node.method}(path, handler) espera 2 argumentos`);
+            this.expression(node.args[0]!, scope);
+            this.expression(node.args[1]!, scope);
+            result = "void";
+            break;
+          }
+          if (node.method === "listen") {
+            if (node.args.length !== 1) this.report(node, "server.listen(port) espera 1 argumento");
+            this.expression(node.args[0]!, scope);
+            result = "void";
+            break;
+          }
+          this.report(node, `server.${node.method} no es un metodo (usa get/post/put/patch/delete/listen)`);
+          result = "void";
+          break;
+        }
+        if (objectType === "Request") {
+          // req.method/path/rawQuery/body son campos (no metodos). El
+          // dialecto trata todo como call/member, asi que aceptamos
+          // `req.method` (sin args) como acceso a campo.
+          if (node.args.length !== 0) this.report(node, `req.${node.method} es un campo, no un metodo`);
+          result = "string";
+          break;
+        }
+        if (objectType === "Response") {
+          // res.status(n), res.header(k,v), res.send(s), res.json(s) -> Response.
+          // Todos encadenables. El codegen los traduce a res.status(...) etc.
+          const chainable = new Set(["status", "header", "send", "json"]);
+          if (chainable.has(node.method)) {
+            node.args.forEach(arg => this.expression(arg, scope));
+            result = "Response";
+            break;
+          }
+          this.report(node, `response.${node.method} no es un metodo (usa status/header/send/json)`);
+          result = "Response";
+          break;
+        }
         // Para un parámetro genérico `T` con constraint `A & B`, reunimos los métodos
         // de todas las interfaces miembro para resolver la llamada.
         const constraint = this.activeTypeConstraints.get(objectType);
@@ -2904,6 +3064,27 @@ export class TypeChecker {
             const innerArg = genericArguments(classLookupType)[0];
             if (innerArg) classLookupType = innerArg;
           }
+        }
+        // Request: campos pre-parseados del request HTTP.
+        if (objectType === "Request") {
+          const reqFields: Record<string, string> = {
+            method: "string", path: "string", rawQuery: "string", body: "string",
+          };
+          if (reqFields[node.member]) { result = reqFields[node.member]!; break; }
+          this.report(node, `Request.${node.member} no existe (usa method/path/rawQuery/body)`);
+          result = "string";
+          break;
+        }
+        // Response: campos computados (post-send). Solo lectura.
+        if (objectType === "Response") {
+          const respFields: Record<string, string> = {
+            getStatus: "number",  // alias method-style del status code
+            getBody: "string",    // alias method-style del body
+          };
+          if (respFields[node.member]) { result = respFields[node.member]!; break; }
+          this.report(node, `Response.${node.member} no existe (usa status/header/send/json/getStatus/getBody)`);
+          result = "Response";
+          break;
         }
         const resolved = this.resolveClass(classLookupType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
