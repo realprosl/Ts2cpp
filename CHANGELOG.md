@@ -16,6 +16,18 @@ Todas las versiones siguen [Semantic Versioning](https://semver.org/).
   Esto resuelve method chains multilínea y asignaciones multilínea sin
   marcador especial. Ver `docs/TUTORIAL.md` §1.1.
 
+- **`FileReader` para lectura streaming por descriptor** (runtime).
+  Nueva clase en `runtime/ets_file.hpp` que mantiene el fd del SO
+  abierto y permite recorrer un archivo caracter a caracter, por
+  bloques o línea a línea sin copiarlo entero a memoria. A diferencia
+  de `fileRead` (que carga todo en `string`), `FileReader` usa un
+  buffer interno de 64KB con refill bajo demanda. API: `openFileReader`
+  (factory global, aborta en error a stderr+exit(1)),
+  `readChar`/`readLine`/`read(n)` (consumen cursor),
+  `peekChar`/`peek(n)` (lookahead sin avanzar), `eof` y `close`.
+  Caso de uso típico: procesar logs/CSV/JSON streams de varios GB
+  con RAM constante. Ver `docs/TUTORIAL.md` §24.
+
 ## v1.1.0 (2026-10-08) — V26 reactor async optimizations
 
 ### Added

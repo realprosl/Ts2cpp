@@ -111,7 +111,7 @@ export class Parser {
       return this.forStatement(keyword);
     }
     if (this.match("break", "continue")) {
-      const keyword = this.previous(); const end = this.consume(";", `Se esperaba ';' después de ${keyword.lexeme}`);
+      const keyword = this.previous(); const end = this.consumeStatementTerminator(`Se esperaba ';' después de ${keyword.lexeme}`);
       return { kind: keyword.kind === "break" ? "BreakStatement" : "ContinueStatement", span: span(keyword.span.start, end.span.end) };
     }
     if (this.match("return")) return this.returnStatement(this.previous());
@@ -634,7 +634,7 @@ export class Parser {
     if (this.match(";")) initializer = undefined;
     else if (this.match("let", "const")) initializer = this.variable(this.previous()) as import("../ast/nodes.ts").VariableDeclaration;
     else {
-      const expression = this.expression(); const end = this.consumeStatementTerminator("Se esperaba ';' después del inicializador de for"); 
+      const expression = this.expression(); const end = this.consumeStatementTerminator("Se esperaba ';' después del inicializador de for");
       initializer = { kind: "ExpressionStatement", expression, span: span(expression.span.start, end.span.end) };
     }
     const condition = this.check(";") ? undefined : this.expression();
@@ -732,7 +732,18 @@ export class Parser {
       // como { stmt1\nstmt2 } se parsee como dos statements.
       this.skipNewlines();
       if (this.check("}") || this.check("eof")) break;
-      statements.push(this.statement());
+      const stmt = this.statement();
+      statements.push(stmt);
+      // Si el statement NO consumio su terminador (e.g. IfStatement,
+      // WhileStatement, ForStatement sin ';' explicito), lo consumimos
+      // aqui. Si ya lo consumio (e.g. BreakStatement, ExpressionStatement
+      // con ';' final), previous() es ';' o 'newline' y no hacemos nada.
+      // Si es algo distinto (e.g. identifier de un statement pegado
+      // en la misma linea sin ';'), falla con el mensaje claro.
+      const last = this.previous();
+      if (last.kind !== ";" && last.kind !== "newline") {
+        this.consumeStatementTerminator("Se esperaba ';' o salto de linea entre statements");
+      }
     }
     const close = this.consume("}", "Se esperaba '}'");
     return { kind: "BlockStatement", statements, span: span(open.span.start, close.span.end) };

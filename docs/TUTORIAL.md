@@ -39,6 +39,7 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 34. [Parámetros: default, rest, spread](#21-parámetros-default-rest-spread)
 35. [Decoradores](#22-decoradores)
 36. [Type narrowing con `instanceof` y `typeof`](#23-type-narrowing-con-instanceof-y-typeof)
+37. [Lectura streaming con `FileReader`](#24-lectura-de-archivos-streaming-con-filereader)
 
 ---
 
@@ -1053,6 +1054,133 @@ delete user.age
 ```
 
 Útil para interfaces con campos opcionales.
+
+---
+
+## 24. Lectura de archivos streaming con `FileReader`
+
+`fileRead(path)` carga el archivo entero en memoria. Para archivos
+grandes (logs, CSVs, JSON streams, binarios) eso es prohibitivo en RAM.
+`FileReader` resuelve esto: mantiene el descriptor del OS abierto y
+permite recorrer el archivo caracter a caracter o por bloques, sin
+copiarlo nunca entero a memoria.
+
+### 24.1 Abrir y leer línea a línea
+
+```ets
+function countLines(path: string): number {
+  let reader: FileReader = openFileReader(path)
+  let count: number = 0
+  while (!reader.eof()) {
+    let line: string = reader.readLine()
+    if (line == "") break          // EOF: string vacio
+    count = count + 1
+  }
+  reader.close()
+  return count
+}
+
+let total: number = countLines("/var/log/syslog")
+print("Lineas: ", total)
+```
+
+`readLine()` lee hasta el próximo `\n` (incluido) y lo devuelve. Si el
+archivo no termina en newline, la última línea se devuelve sin el
+terminador. Cuando ya no hay más datos devuelve `""` (string vacío).
+Usa `eof()` para distinguir EOF de una línea vacía válida.
+
+### 24.2 Leer por bytes / chunks
+
+```ets
+function firstBytes(path: string, n: number): string {
+  let reader: FileReader = openFileReader(path)
+  let data: string = reader.read(n)      // hasta n bytes
+  reader.close()
+  return data
+}
+
+function readAll(path: string): string {
+  let reader: FileReader = openFileReader(path)
+  let data: string = reader.read(0)      // 0 = hasta EOF
+  reader.close()
+  return data
+}
+```
+
+`read(n)` lee hasta `n` bytes. Si `n` es `0` (o no se pasa), lee hasta
+EOF. El cursor avanza tras la lectura.
+
+`readChar()` lee **un byte** y devuelve un `number` (0–255), o `-1` en
+EOF. Útil para parsear byte a byte.
+
+### 24.3 Lookahead con `peek` y `peekChar`
+
+Los parsers a menudo necesitan ver el siguiente byte antes de
+consumirlo. `peekChar()` y `peek(n)` hacen lookahead **sin avanzar el
+cursor**:
+
+```ets
+function skipBom(path: string): FileReader {
+  let reader: FileReader = openFileReader(path)
+  let bom: string = reader.peek(3)
+  if (bom == "\u00EF\u00BB\u00BF") {     // UTF-8 BOM
+    let trash: string = reader.read(3)   // consume el BOM
+  }
+  return reader
+}
+```
+
+Tras `peek(n)`, la siguiente llamada a `read(n)` o `readChar()`
+devuelve los mismos bytes. Esto permite dispatchers y detectores de
+formato (BOM, magic bytes, primer token) sin riesgo de perder datos.
+
+### 24.4 Cerrar el descriptor
+
+`close()` cierra el descriptor del SO. Tras `close()`, el reader ya no
+es usable. El destructor del reader también cierra automáticamente si
+te olvidas de llamar `close()` explícitamente — el descriptor no se
+fuga.
+
+```ets
+let r: FileReader = openFileReader(path)
+// ... uso ...
+r.close()
+```
+
+### 24.5 Manejo de errores
+
+A diferencia de `fileRead` (que devuelve `Result<string, string>`),
+`openFileReader` **aborta con exit(1)** si el archivo no existe o no
+se tienen permisos. Esto es consistente con la convención "fail fast"
+del dialecto en I/O. Si necesitas control explícito, comprueba primero
+con `fileExists`:
+
+```ets
+if (fileExists(path)) {
+  let r: FileReader = openFileReader(path)
+  // ... uso seguro ...
+  r.close()
+} else {
+  print("Archivo no encontrado: ", path)
+}
+```
+
+### 24.6 Resumen de la API
+
+| Método | Devuelve | Avanza cursor |
+|---|---|---|
+| `openFileReader(path)` | `FileReader` (aborta si falla) | — |
+| `readChar()` | `number` (0–255, o -1 en EOF) | sí (+1) |
+| `peekChar()` | `number` (0–255, o -1 en EOF) | no |
+| `read(n?)` | `string` (hasta n bytes, o hasta EOF si n=0) | sí (+leídos) |
+| `peek(n)` | `string` (hasta n bytes, menos si EOF) | no |
+| `readLine()` | `string` (`""` en EOF) | sí (+hasta `\n` o EOF) |
+| `eof()` | `boolean` | no |
+| `close()` | `void` | — |
+
+`FileReader` está marcado como `sealed` (no se puede heredar de él)
+y vive en `runtime/ets_file.hpp`. El codegen incluye ese header
+automáticamente al detectar el uso de `openFileReader`.
 
 ---
 
