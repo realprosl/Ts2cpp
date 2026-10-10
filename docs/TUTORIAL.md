@@ -32,6 +32,7 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 28. [String API completa](#15-string-api-completa) (V28)
 29. [Servidor HTTP Express-style](#16-servidor-http-express-style) (V28)
 30. [Backend HTTP dual: cpp-httplib vs Drogon](#17-backend-http-dual-cpp-httplib-vs-drogon) (V28)
+31. [Runtime async sobre libuv + cliente HTTP sobre libcurl](#18-runtime-async-sobre-libuv-y-cliente-http-sobre-libcurl) (V29)
 
 ---
 
@@ -878,6 +879,187 @@ curl http://127.0.0.1:3000/  # hola (mismo API, backend distinto)
 
 ---
 
+## 18. Runtime async sobre libuv + cliente HTTP sobre libcurl (V29)
+
+V29 cierra el ciclo de runtime asíncrono sustituyendo las dos
+implementaciones internas que V28 todavía arrastraba: el reactor
+basado en `poll(2)` y el cliente HTTP sobre TCP plano. Las
+sustituciones se hicieron en 4 PRs pequeños para mantener la
+suite verde en cada paso:
+
+| PR | Qué cambia | Por qué |
+|----|-----------|---------|
+| #155 | Cliente HTTP sobre libcurl | HTTPS, HTTP/2, redirects, timeouts y decompression built-in |
+| #156 | TCP sobre libuv en el runner e2e | 32x más rápido (idle), 430x con 50 pipes |
+| #157 | libuv como único backend de red | Elimina el backend poll duplicado |
+| #158 | Wrappers de timers + filesystem watchers | API de alto nivel sobre `uv_timer_t` / `uv_fs_event_t` |
+
+### Por qué libuv
+
+V25 (PRs #101-#117) implementó un backend alternativo basado en
+libuv encima del reactor poll-based de V22. V26 (PRs #128-#132)
+optimizó el reactor poll con `PollEntry` + back-pointers,
+buffer pool, `accept4+SOCK_NONBLOCK` y `MultiLoopRunner`. V29
+consolida: **libuv es el único backend soportado**.
+
+Benchmarks medidos en este hardware (`runtime/libuv/benchmark_*.cpp`):
+
+| Escenario | libuv | poll(2) | Ratio |
+|-----------|-------|---------|-------|
+| dispatcher idle (1 fd) | 17 ns/iter | 544 ns/iter | **32x** |
+| dispatcher con 50 pipes | 23 ns/iter | 9883 ns/iter | **430x** |
+| dispatch 1000 timers | 197 ns/timer | n/a | n/a |
+
+libuv también es **cross-platform**: abstrae epoll (Linux),
+kqueue (macOS/BSD) e IOCP (Windows). El reactor poll-based solo
+funcionaba en Linux/macOS.
+
+### Por qué libcurl
+
+El cliente HTTP de V28 (PR #147) estaba implementado sobre TCP
+plano: `connect(2)`, `write(2)` y `read(2)` con parseo manual
+de headers. Funcionaba, pero le faltaba todo lo que un cliente
+HTTP moderno da por sentado:
+
+- **HTTPS**: sin TLS integrado. Requería un wrapper adicional
+  (que se planeaba en V30).
+- **HTTP/2**: no soportado.
+- **Redirects**: había que parsear `Location:` y volver a
+  `connect(2)`.
+- **Decompression**: había que detectar `Content-Encoding: gzip`
+  y hacer `inflate()` manual.
+- **Connection pooling**: cada request abría un socket nuevo.
+
+V29.1 (PR #155) sustituye ese cliente por `runtime/ets_http_curl_client.hpp`,
+que envuelve `libcurl` (`-lcurl`). libcurl trae todo eso
+built-in y es lo que usan git, docker, slack, aws-cli, etc.
+
+La **API del dialecto no cambia**: `http.get`/`http.post` siguen
+devolviendo `Result<HttpClientResponse, string>`. El codegen
+apunta ahora a `ets_http_curl_client.hpp` en vez de
+`ets_http_httplib_client.hpp` (borrado en V29.1).
+
+### Cliente HTTP: ejemplo completo
+
+```ets
+// Ejemplo: GET a un API público. Imprime el status y el body.
+let r: Result<HttpClientResponse, string> = http.get(
+  "https://api.github.com/repos/realprosl/Ts2cpp"
+)
+if (r.isOk()) {
+  let v: HttpClientResponse = r.value()
+  print("status=" + numberToString(v.status()))
+  print("content-type=" + v.header("Content-Type"))
+  print("body=" + v.body())
+} else {
+  print("error: " + r.error())
+}
+```
+
+Para POST con body:
+
+```ets
+let r: Result<HttpClientResponse, string> = http.post(
+  "https://httpbin.org/post",
+  "nombre=alberto&edad=30"
+)
+match (r) {
+  Result.Ok(v) => print("status=" + numberToString(v.status()))
+  Result.Err(e) => print("error: " + e)
+}
+```
+
+HTTPS funciona out-of-the-box sin flags extra (libcurl-openssl-dev
+linka OpenSSL por defecto). HTTP/2 es negociable via el curl
+handle (no expuesto al dialecto en V29; queda para un PR futuro).
+
+### Compilación
+
+El dialecto V29 siempre requiere libuv + libcurl:
+
+```bash
+# Dependencias del sistema (Ubuntu 22.04+)
+apt install libuv1-dev libcurl4-openssl-dev
+
+# Compilar el runtime libuv a .o cacheados
+cd runtime/libuv
+make
+
+# Compilar un programa del dialecto
+g++ -std=c++20 -O2 programa.cpp \
+    /root/Ts2cpp/build/runtime_ets_libuv.o \
+    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
+    -lstdc++fs -luv -lcurl -o programa
+```
+
+El runner e2e del proyecto (`npm run test:e2e`) lo hace
+automáticamente. Detecta `libuv1-dev` y `libcurl4-openssl-dev`
+en el sistema y linka lo necesario.
+
+### Timers y filesystem watchers (V29.4)
+
+V29.4 añadió dos wrappers de alto nivel sobre libuv en
+`runtime/ets_timer.hpp` y `runtime/ets_fs_watcher.hpp`. Son
+**runtime C++** (no se exponen al dialecto todavía). Si necesitas
+un timer o un watcher hoy, los puedes usar directamente desde
+cualquier `.cpp` que sea parte del binario:
+
+```cpp
+#include "runtime/ets_timer.hpp"
+#include "runtime/ets_fs_watcher.hpp"
+#include "runtime/ets_async.hpp"
+
+int main() {
+    // setTimeout one-shot: tras 200ms, imprime y para el loop.
+    ets::setTimeout([]{
+        printf("timeout fired\n");
+        ets::defaultEventLoop.stop();
+    }, 200);
+
+    // watchFs: recibe un callback cada vez que algo cambia en /tmp.
+    ets::watchFs("/tmp", [](ets::FsEvent ev) {
+        printf("cambio: %s flags=%d\n", ev.path.c_str(), ev.flags);
+    });
+
+    ets::defaultEventLoop.run();
+    return 0;
+}
+```
+
+Compila con:
+
+```bash
+g++ -std=c++20 -O2 -I/root/Ts2cpp \
+    main.cpp \
+    /root/Ts2cpp/build/runtime_ets_libuv.o \
+    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
+    -lstdc++fs -luv -o watcher
+```
+
+Los tests del runtime (`runtime/libuv/tests/test_wrappers_v29.cpp`)
+ejercitan los 5 casos: setTimeout, setInterval, cancelTimer,
+watchFs, y watchFs + setTimeout en el mismo loop. **5/5 verde**.
+
+### Roadmap V30+
+
+Lo que queda pendiente para terminar el ciclo runtime:
+
+- **Exponer `setTimeout`/`setInterval` al dialecto `.ets`**:
+  declaración en `src/project/init-project.ts` + dispatch en
+  `src/codegen/cpp-generator.ts`. Riesgo bajo: ya tenemos los
+  wrappers C++.
+- **Exponer `watchFs` al dialecto**: igual que arriba, con un
+  tipo `FsWatcher` y un `FsEvent` (path + flags).
+- **DNS asíncrono** con `uv_getaddrinfo`: hoy el cliente HTTP
+  hace resolve bloqueante. libcurl lo resuelve async en su
+  internals, pero un wrapper directo sobre `uv_getaddrinfo`
+  sería útil para casos no-HTTP.
+- **TLS server** sobre `uv_tls_t` (libuv no trae TLS built-in;
+  habría que integrar OpenSSL directamente).
+- **HTTP/3 / QUIC** si la dependencia de QUIC se justifica.
+
+---
+
 ## Resumen de versiones
 
 - **V15**: compilación incremental por módulos
@@ -886,4 +1068,9 @@ curl http://127.0.0.1:3000/  # hola (mismo API, backend distinto)
 - **V18**: librerías externas vía `@link`/`@include`/`@cpp_name`/`@cpp_type`
 - **V19**: encapsulación `private`/`public`/`protected`
 - **V20**: parameter properties (sintaxis abreviada)
+- **V21**: ownership `Rc<T>` / `constPtr<T>` / `constRef<T>` (lectura segura)
+- **V22**: borrow checker con NLL (Non-Lexical Lifetimes)
+- **V25**: backend libuv para el event loop (17 PRs, V25 Fase 1-8)
+- **V26**: optimizaciones reactor async (`PollEntry` + back-pointers, buffer pool, `accept4+SOCK_NONBLOCK`, `MultiLoopRunner` con N loops)
 - **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable) + cliente HTTP (`http.get`/`http.post`, `HttpClientResponse`) + backend HTTP dual (cpp-httplib por defecto, Drogon opcional con decorator `@cpp_drogon` para alta carga)
+- **V29**: cliente HTTP sobre libcurl (HTTPS, HTTP/2, redirects, decompression, timeouts built-in) + reactor async sobre libuv como único backend de red (elimina el backend poll duplicado) + wrappers de timers (`setTimeout`/`setInterval`/`cancelTimer`) y filesystem watchers (`watchFs`/`unwatchFs`) sobre libuv. 5 PRs (#155-#159).
