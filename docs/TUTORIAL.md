@@ -16,7 +16,8 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 ## Tabla de contenidos
 
 1. [Hola mundo](#1-hola-mundo)
-3. [Tipos básicos](#2-tipos-básicos)
+   - 1.1 [Terminación de statements](#11-terminación-de-statements)
+2. [Tipos básicos](#2-tipos-básicos)
 5. [Funciones](#3-funciones)
 7. [Clases y objetos](#4-clases-y-objetos)
 9. [Encapsulación](#5-encapsulación) (V19)
@@ -43,6 +44,51 @@ print("Hola, mundo desde Estatic!");
 
 `print()` es una función global que escribe a `stdout`. Internamente llama
 a `std::cout`.
+
+### 1.1 Terminación de statements
+
+El dialecto acepta **dos formas** de terminar una instrucción: el `;`
+explícito estilo C/TypeScript, **o un salto de línea**. Ambas son
+igualmente válidas, y se pueden mezclar dentro del mismo archivo.
+
+```ets
+// Con ';' explicito (estilo C/TypeScript)
+let a: number = 1;
+let b: number = 2;
+print(a + b);
+
+// Sin ';' — el newline cuenta como terminador
+let c: number = 3
+let d: number = 4
+print(c + d)
+
+// Mezclando ambos estilos
+let e: number = 5
+let f: number = 6;
+let g: number = 7
+print(e + f + g)
+```
+
+Reglas concretas:
+
+- **El `;` se sigue aceptando siempre** — no hay breaking change, todos
+  los ejemplos de este tutorial siguen siendo válidos tal cual.
+- **Un newline termina un statement** salvo en estos casos:
+  - Dentro de `()`, `[]` o `{}` (el `parenDepth` se trackea en el lexer).
+  - Si el siguiente token es un continuador de expresión (`.`, `+`, `-`,
+    `*`, `/`, `=`, `(`, `[`, etc.) — esto permite method chains y
+    asignaciones multilínea sin necesidad de un marcador especial.
+  - Dentro del paréntesis de un `for (init; cond; update)` — los dos
+    `;` internos son **separadores**, no terminadores, y siguen siendo
+    obligatorios.
+- Las **líneas en blanco** se ignoran por completo.
+- El **cierre de bloque `}`** también cuenta como terminador natural,
+  igual que en JavaScript. `if (x) { f() }` no necesita `;` antes del
+  `}`.
+
+Este diseño es deliberadamente determinista (opción A del roadmap): no
+hay ASI mágica, no hay heurísticas, no hay casos ambiguos. El
+resultado es que el código se ve más limpio sin perder robustez.
 
 ---
 

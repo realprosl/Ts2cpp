@@ -2,6 +2,20 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **`;` opcional al final de statement** (parser). Un salto de línea
+  entre statements cuenta como terminador implícito (estilo Python o
+  Kotlin). El `;` explícito se sigue aceptando siempre, así que no hay
+  breaking change. Es determinista (opción A del roadmap): no hay ASI
+  mágica, solo se emite un token `newline` a profundidad 0 de
+  paréntesis/corchetes/llaves y cuando el siguiente token no es un
+  continuador de expresión (`.`, `(`, `[`, `+`, `-`, `*`, `/`, `=`, etc.).
+  Esto resuelve method chains multilínea y asignaciones multilínea sin
+  marcador especial. Ver `docs/TUTORIAL.md` §1.1.
+
 ## v1.1.0 (2026-10-08) — V26 reactor async optimizations
 
 ### Added
