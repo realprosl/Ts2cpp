@@ -462,6 +462,15 @@ export class TypeChecker {
       { name: "send", returnType: "Response", params: [{ name: "body", type: "string" }] },
       { name: "json", returnType: "Response", params: [{ name: "jsonString", type: "string" }] },
     ]);
+    // V28: HttpClientResponse. Resultado de http.get(url) / http.post(url, body).
+    // El dialecto no soporta campos en struct, asi que se accede a status/body/header
+    // como metodos. `status()` devuelve number, `body()` devuelve string,
+    // `header(name)` devuelve string.
+    this.registerBuiltinInterface("HttpClientResponse", [
+      { name: "status", returnType: "number", params: [] },
+      { name: "body", returnType: "string", params: [] },
+      { name: "header", returnType: "string", params: [{ name: "name", type: "string" }] },
+    ]);
     this.registerBuiltinClass("Server", [
       { name: "get", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
       { name: "post", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
@@ -1390,7 +1399,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server", "HttpClientResponse"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
     // `Optional<T>` se aceptan siempre (son tipos del runtime).
@@ -2657,6 +2666,8 @@ export class TypeChecker {
         }
         if (objectType === "http") {
           // http.createServer() -> Server. http.param/query/header(req, name) -> string.
+          // http.get(url) -> Result<HttpClientResponse, string>.
+          // http.post(url, body, contentType?) -> Result<HttpClientResponse, string>.
           if (node.method === "createServer") {
             // http.createServer() -> Server
             if (node.args.length !== 0) this.report(node, "http.createServer() no acepta argumentos");
@@ -2671,7 +2682,25 @@ export class TypeChecker {
             result = "string";
             break;
           }
-          this.report(node, `http.${node.method} no es una API valida (usa createServer/param/query/header)`);
+          // http.get(url) -> Result<HttpClientResponse, string>
+          if (node.method === "get") {
+            if (node.args.length !== 1) this.report(node, "http.get(url) espera 1 argumento (url)");
+            this.require(this.expression(node.args[0]!, scope, "string"), "string", node.args[0]!);
+            result = "Result<HttpClientResponse,string>";
+            break;
+          }
+          // http.post(url, body, contentType?) -> Result<HttpClientResponse, string>
+          if (node.method === "post") {
+            if (node.args.length < 2 || node.args.length > 3) {
+              this.report(node, "http.post(url, body, contentType?) espera 2 o 3 argumentos");
+            }
+            this.require(this.expression(node.args[0]!, scope, "string"), "string", node.args[0]!);
+            this.require(this.expression(node.args[1]!, scope, "string"), "string", node.args[1]!);
+            if (node.args[2]) this.require(this.expression(node.args[2], scope, "string"), "string", node.args[2]!);
+            result = "Result<HttpClientResponse,string>";
+            break;
+          }
+          this.report(node, `http.${node.method} no es una API valida (usa createServer/param/query/header/get/post)`);
           result = "Server";
           break;
         }
@@ -2715,6 +2744,20 @@ export class TypeChecker {
           }
           this.report(node, `response.${node.method} no es un metodo (usa status/header/send/json)`);
           result = "Response";
+          break;
+        }
+        // V28: HttpClientResponse. Resultado de http.get/post. Accesores:
+        // status() -> number, body() -> string, header(name) -> string.
+        if (objectType === "HttpClientResponse") {
+          const methods = new Set(["status", "body", "header"]);
+          if (methods.has(node.method)) {
+            node.args.forEach(arg => this.expression(arg, scope));
+            if (node.method === "status") result = "number";
+            else result = "string";
+            break;
+          }
+          this.report(node, `HttpClientResponse.${node.method} no es un metodo (usa status/body/header)`);
+          result = "HttpClientResponse";
           break;
         }
         // Para un parámetro genérico `T` con constraint `A & B`, reunimos los métodos
