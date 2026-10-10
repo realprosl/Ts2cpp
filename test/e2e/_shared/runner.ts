@@ -22,7 +22,7 @@
 
 import { test } from "node:test";
 import { readFile, writeFile, readdir, mkdir, rm, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { cpus } from "node:os";
 import { join, dirname, resolve, basename } from "node:path";
@@ -157,7 +157,23 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
       join(REPO_ROOT, "runtime", "runtime_ets_poll.cpp"),
       join(REPO_ROOT, "runtime", "runtime_ets_net.cpp"),
     ].filter(p => existsSync(p));
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", "-fno-exceptions", "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", "-o", binPath], { cwd: workerScratch });
+
+    // V28: si el cpp generado usa el backend Drogon
+    // (#include "runtime/ets_http_drogon.hpp") y libdrogon-dev esta
+    // instalado en el sistema, anadimos los flags de Drogon. Si
+    // libdrogon-dev no esta, el test falla en compilacion con un
+    // error claro de drogon.h not found.
+    const cppText = readFileSync(cppPath);
+    const usesDrogon = cppText.includes("runtime/ets_http_drogon.hpp");
+    const drogonLibs = [
+      "-ldrogon", "-ltrantor", "-ljsoncpp",
+      "-lssl", "-lcrypto", "-lresolv",
+    ];
+    const drogonArgs = usesDrogon
+      ? ["-I", "/usr/include/jsoncpp", ...drogonLibs]
+      : [];
+
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", "-fno-exceptions", "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });

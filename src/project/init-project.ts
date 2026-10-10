@@ -531,6 +531,13 @@ declare global {
   }
 
   // Los handlers reciben (req: http.Request, res: http.Response).
+  //
+  // V28: decorator "cpp_drogon" (escribir como @cpp_drogon en el .ets)
+  // para activar el backend Drogon (alto rendimiento) en lugar del
+  // default cpp-httplib. Ejemplo:
+  //   @cpp_drogon
+  //   let server: Server = http.createServer()
+  // Requiere libdrogon-dev instalado. Compilacion: ver docs §17.
   class Server extends Sealed {
     /** Registra un handler para method + path. path puede tener :params. */
     get(path: string, handler: (req: http.Request, res: http.Response) => void): void;
