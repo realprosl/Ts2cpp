@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -143,6 +143,26 @@ async function fileExists(path: string): Promise<boolean> {
 export async function buildIncremental(config: ResolvedConfig, compilerRoot: string, options: IncrementalBuildOptions = {}): Promise<IncrementalBuildResult> {
   const progress = new BuildProgress(options.verbose ?? false);
   if (options.verbose) process.stderr.write(`   Cargando grafo de módulos...\n`);
+
+  // V30.5.6: pre-compilar el runtime si los .o no existen (clone fresco).
+  // El modo --unity (cli.ts) ya lo hace antes de enlazar, pero el modo
+  // --build (incremental) no, y un usuario que acaba de clonar el repo no
+  // tiene los .o (build/ esta en .gitignore). Sin esto, el linker falla
+  // con "undefined reference to ets::UvFdAwaiter::*" o
+  // "ets::LibuvEventLoop::*" en el primer build.
+  const runtimeObjDir = join(compilerRoot, "build");
+  const requiredObjs = ["runtime_ets_libuv.o", "runtime_ets_net_libuv.o", "runtime_ets_poll.o", "runtime_ets_net.o"];
+  const missingObjs = requiredObjs.filter(name => !existsSync(join(runtimeObjDir, name)));
+  if (missingObjs.length > 0) {
+    if (options.verbose) progress.log(`runtime .o no encontrados (${missingObjs.join(", ")}), pre-compilando con scripts/build-runtime.sh`);
+    try {
+      execFileSync("bash", [join(compilerRoot, "scripts", "build-runtime.sh")], { stdio: options.verbose ? "inherit" : "ignore" });
+    } catch (e) {
+      // No abortamos: puede que el usuario use solo el backend poll y
+      // no necesite libuv. El linker fallara mas tarde si realmente
+      // faltan simbolos.
+    }
+  }
   // 1) Cargamos el grafo (esto también valida resolución de imports y
   // visibilidad nominal). Cualquier error aquí aborta antes de tocar la
   // caché.
