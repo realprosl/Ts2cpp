@@ -223,7 +223,42 @@ async function processDemo(name: string, isSkipNetwork: boolean, workerId: numbe
   // Compile + link.
   const cppSource = await readFile(cppPath, "utf8");
   const needsTls = cppSource.includes("runtime/ets_tls.hpp");
-  const compileArgs = [...GXX_FLAGS, `-I${REPO_ROOT}`, "-o", binPath, ...LINK_FLAGS, cppPath, ...(needsTls ? ["-lssl", "-lcrypto"] : [])];
+  // V30.5.4: si el cpp usa el backend libuv (cualquier header libuv,
+  // ets_async con LibuvEventLoop, o wrappers de net/timer/fs), linkamos
+  // el runtime libuv pre-compilado y -luv. El e2e runner ya lo hace
+  // (test/e2e/_shared/runner.ts:172-198); el unit runner no, lo que
+  // causa 7 tests FAIL con "undefined reference to LibuvEventLoop::*",
+  // "UvFdAwaiter::*", "UvCancellableFdAwaiter::*".
+  //
+  // Deteccion: el cpp generado incluye o bien headers especificos
+  // (ets_async.hpp, ets_net_libuv.hpp, ets_timer.hpp, etc.) o el bundle
+  // `ets_runtime_full.hpp` (que a su vez incluye todos los wrappers
+  // async). Tambien detectamos `ets_runtime.hpp` (que incluye
+  // ets_async.hpp via runtime_full).
+  const needsLibuv = cppSource.includes("runtime/ets_async.hpp")
+                  || cppSource.includes("runtime/ets_net_libuv.hpp")
+                  || cppSource.includes("runtime/ets_event_loop_libuv.hpp")
+                  || cppSource.includes("runtime/ets_timer.hpp")
+                  || cppSource.includes("runtime/ets_fs_watcher.hpp")
+                  || cppSource.includes("runtime/ets_dns.hpp")
+                  || cppSource.includes("runtime/ets_http_curl_async.hpp")
+                  || cppSource.includes("runtime/ets_runtime_full.hpp")
+                  || cppSource.includes("runtime/ets_runtime.hpp");
+  const libuvObjectPaths = [
+    join(REPO_ROOT, "build/runtime_ets_libuv.o"),
+    join(REPO_ROOT, "build/runtime_ets_net_libuv.o"),
+  ];
+  const libuvObjects = needsLibuv ? libuvObjectPaths.filter(p => existsSync(p)) : [];
+  const libuvLinkArgs = libuvObjects.length > 0 ? [...libuvObjects, "-luv"] : ["-luv"];
+  const compileArgs = [
+    ...GXX_FLAGS,
+    `-I${REPO_ROOT}`,
+    "-o", binPath,
+    ...LINK_FLAGS,
+    cppPath,
+    ...(needsTls ? ["-lssl", "-lcrypto"] : []),
+    ...(needsLibuv ? libuvLinkArgs : []),
+  ];
   const compile = await localGxx(compileArgs);
   if (compile.code !== 0) {
     diagnostics.push(`stdout:\n${compile.stdout}`);
