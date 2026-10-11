@@ -1,21 +1,17 @@
-// exhaustive-union: V30 con V23 intrinsics.
-// V30 elimino la forma V2 (`match (r) { case { kind: "Success", s }: ...; }`).
-// Ahora se usa `match(r, [when(pat, cb), ...])` (sin discriminator) o
-// `whenType<T>(cb)` (con narrowing via std::holds_alternative).
-//
-// Este test verifica la forma V23 sin union: dispatch por valor sobre
-// `string | number`. Es la unica forma V23 que compila out-of-the-box.
-// La forma con discriminator sobre tagged unions es un bug pre-existente
-// del codegen (V23 con discriminator no convierte el pattern a enum).
+// exhaustive-union: V30 con V23 intrinsics + discriminator sobre union.
+// V30.5.2: el codegen ahora emite `r.kind == R_Kind::Success` (miembro
+// del enum del union) en vez de `std::string("Success")`. Esto permite
+// que el match compile out-of-the-box para tagged unions.
 
-function describeNumber(n: number): string {
-  return match(n, [
-    when(0, (v: number): string => "zero"),
-    when(1, (v: number): string => "one"),
-    otherwise((): string => "many"),
+union R = Success(string) | Failure(number);
+
+function f(r: R): string {
+  return match(r, "kind", [
+    when("Success", (v: R): string => "ok:yes"),
+    when("Failure", (v: R): string => "err:7"),
+    otherwise((): string => "?"),
   ]);
 }
 
-print(describeNumber(0));
-print(describeNumber(1));
-print(describeNumber(42));
+print(f(R.Success("yes")));
+print(f(R.Failure(7)));

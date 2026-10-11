@@ -1568,7 +1568,7 @@ export class CppGenerator {
   //   - Si no hay `otherwise` ni `whenType`, el else final aborta con
   //     `std::abort()`. La exhaustividad NO se valida en la nueva forma
   //     (solo V2 destructurado la enforce con `validateExhaustiveMatch`).
-  private emitNewMatch(node: { args: Expression[]; matchedDiscriminator?: string; matchedResultType?: TypeName }): string {
+  private emitNewMatch(node: { args: Expression[]; matchedDiscriminator?: string; matchedDiscriminatorType?: string; matchedResultType?: TypeName }): string {
     // El checker garantiza `args.length ∈ {2, 3}`. args[0] es el subject;
     // args[1] (o args[2] con discriminator) es el array literal de cases.
     const subject = node.args[0]!;
@@ -1614,7 +1614,22 @@ export class CppGenerator {
     // la comparación `subjAccess == patternText` funciona tal cual para
     // los tipos de caso comunes.
     const whensLines = whens.map(w => {
-      const patternText = this.emitExpression(w.pattern);
+      // V30.5.2: si el discriminator tiene un tipo anotado (el type-checker
+      // lo setea cuando el subject es una union y el discriminator es el
+      // campo `kind`), emitimos el pattern como `EnumType::Variant` en vez
+      // de `std::string("Variant")`. Esto permite que la comparacion
+      // `r.kind == R_Kind::Success` compile.
+      let patternText: string;
+      if (node.matchedDiscriminatorType) {
+        const variantName = w.pattern.kind === "LiteralExpression" && w.pattern.literalType === "string" ? String(w.pattern.value) : null;
+        if (variantName) {
+          patternText = `${node.matchedDiscriminatorType}::${variantName}`;
+        } else {
+          patternText = this.emitExpression(w.pattern);
+        }
+      } else {
+        patternText = this.emitExpression(w.pattern);
+      }
       // El callback puede tener 0 o 1 parámetro. Si tiene 1, le pasamos
       // el subject. Si tiene 0, lo invocamos sin argumentos (p.ej.
       // `otherwise(() => "default")`).

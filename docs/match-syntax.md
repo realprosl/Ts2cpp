@@ -35,11 +35,12 @@ const kind: string = match(v, [
 |----------------------------------------|------------------------------------------------|-----------|
 | `match(v, [when(pat, cb)])`            | Cadena de `if/else` con comparacion            | No        |
 | `match(v, "key", [when(pat, cb)])`    | `switch (v.key) { case pat: cb(); break; ...}`| No        |
-| `match(v, [whenType<T>(cb)])`          | `if (std::holds_alternative<T>(v)) { ... }`    | **Si**    |
+| `match(v, [whenType<T>(cb)])`          | `if (std::holds_alternative<T>(v)) { ... }`    | **Si** (callback recibe valor narrowed) |
 | `match(v, [otherwise(cb)])`            | Sin condicion (siempre ejecuta cb)             | No        |
 
-`whenType<T>` es la **unica forma que narrowa el tipo** automaticamente. En
-las demas formas, el callback recibe el subject sin narrowear.
+`whenType<T>` narrowa el subject (con `std::holds_alternative<T>` +
+`std::get<T>`) y pasa el valor narrowed al callback. Las demas formas
+no narrowan; el callback recibe el subject entero.
 
 ## Por que se elimino la forma V2 (`match (v) { case { kind: ... }: ... }`)
 
@@ -191,15 +192,16 @@ when(0, (v) => "cero")
 
 ## Limitaciones V23 (y V30)
 
-- **`whenType<T>(cb)` pasa el callback sin args**: aunque el codegen
-  narrowa correctamente el subject cuando es una union, NO se pasa
-  el valor narrowed al callback. Si necesitas acceder al valor
-  narrowed, usa la API de `Result<>` (`r.value()`, `r.error()`).
 - **`whenType` sobre subject no-union**: solo el primer `whenType` es
   la rama activa; los siguientes se marcan como `unreachable`.
+  Cuando el subject ES union, todos los `whenType` participan (cada
+  uno con su `T_i` via `std::holds_alternative<T>` + `std::get<T>`)
+  y reciben el valor narrowed en el callback.
 - **Sin exhaustividad enforced**: si no hay `otherwise` y el subject
-  no matchea ningun `when`, el runtime hace `std::abort()`. El
-  compilador no avisa (en V30, no enforce porque V2 se elimino).
+  no matchea ningún `when`/`whenType`, el runtime hace `std::abort()`.
+  El compilador no avisa (en V30, no enforce porque V2 se elimino).
+  En compilacion se ve un warning de GCC/Clang
+  `control reaches end of non-void function`.
 - **Sin pattern destructuring en `when`**: `when` solo compara
   igualdad (`==`). Para destructuring, usa la API de `Result<>`.
 - **Sin ranges**: `when(0..10, cb)` no se soporta. Usa varios `when`

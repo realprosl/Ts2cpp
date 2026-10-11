@@ -122,7 +122,12 @@ export interface CallExpression { kind: "CallExpression"; callee: string; typeAr
  *  con la nueva forma `match(v, [...])`, el codegen intercepta y emite un
  *  if/else chain. Sin esto, sería una llamada a función normal. */
   matchedKind?: "match"; /** V23: discriminador para `match` de 3 args (`match(v, "key", [...])`). */
-  matchedDiscriminator?: string; /** V23: tipo del resultado del match (R | R | R | ...) calculado
+  matchedDiscriminator?: string; /** V30.5.2: tipo C++ del discriminador. Si el subject es una union
+   *  y el discriminator coincide con el campo `kind`, el codegen emite el
+   *  pattern como `R_Kind::Success` (miembro del enum del union) en vez de
+   *  como string literal (`std::string("Success")`), que no compila
+   *  para unions (el operador == no esta sobrecargado para `R_Kind == std::string`). */
+  matchedDiscriminatorType?: string; /** V23: tipo del resultado del match (R | R | R | ...) calculado
    *  por el checker uniendo los retornos de cada callback. */
   matchedResultType?: TypeName; span: Span }
 export interface MemberExpression { kind: "MemberExpression"; object: Expression; member: string; optional?: boolean; span: Span }

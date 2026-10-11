@@ -1,3 +1,2 @@
-zero
-one
-many
+ok:yes
+err:7

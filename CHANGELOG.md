@@ -2,6 +2,55 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.5.1 (2026-10-11) — V30.5.2 match: V23 con discriminator sobre union compila
+
+V30.5.2 cierra dos limitaciones pre-existentes que V30.5.1 (PR #167)
+dejo documentadas:
+
+1. **V23 con discriminator sobre tagged union no compilaba**: el
+   codegen emitia `r.kind == std::string("Success")` cuando deberia
+   emitir `r.kind == R_Kind::Success`. Ahora el type-checker anota
+   `matchedDiscriminatorType = R_Kind` cuando el subject es una union
+   y el discriminator es el campo `kind`, y el codegen emite el
+   pattern como miembro del enum del union. Compila out-of-the-box.
+
+2. **`whenType<T>(cb)` ya narrowaba y pasaba el valor al callback**:
+   la documentacion de V30.5.1 (incluyendo `docs/match-syntax.md`)
+   decia incorrectamente que el callback se invocaba sin args. En
+   realidad, el codegen ya emitia
+   `auto narrowed = std::get<T>(subj); return cb(narrowed);`. La
+   limitacion 2 no existia; era un bug de documentacion. V30.5.2
+   corrige la doc para reflejar la realidad: `whenType<T>(cb)` SI
+   narrowa y SI pasa el valor al callback (cuando el callback tiene
+   1 parametro). Esto se verifica con el test e2e match-type-pattern.
+
+### Fixed
+
+- **Match con discriminator sobre tagged union** (V30.5.2,
+  `src/semantic/type-checker.ts:2270-2284` y
+  `src/codegen/cpp-generator.ts:1616-1631`): el type-checker anota
+  el tipo del discriminator (e.g. `R_Kind`) cuando el subject es
+  una union declarada; el codegen emite el pattern como
+  `R_Kind::Success` en vez de `std::string("Success")`. La
+  comparacion `r.kind == R_Kind::Success` compila.
+
+- **Documentacion `whenType<T>(cb)`** (V30.5.2,
+  `docs/match-syntax.md`): se elimino la afirmacion incorrecta
+  de que el callback se invoca sin args. La realidad es que el
+  callback SI recibe el valor narrowed (cuando tiene 1 parametro).
+  Sin este fix, los usuarios escribian codigo incorrecto basandose
+  en la doc.
+
+### Test coverage
+
+- **`test/unit/type-checker.test.ts`**: 2 tests nuevos
+  (`V30.5.2: match con discriminator sobre tagged union es valido`
+  y `V30.5.2: match con discriminator sobre struct no-union es valido`).
+- **`test/e2e/basics/match-exhaustive-union/`**: reescrito a
+  V23 con discriminator sobre union. Verifica end-to-end que el
+  codegen emite el pattern como miembro del enum y que el binario
+  compila y ejecuta correctamente. Output: `ok:yes\nerr:7\n`.
+
 ## v1.5.0 (2026-10-11) — V30.5.1 match: V23 unica forma, eliminada V2 destructurada
 
 V30.5.1 elimina la sintaxis de match destructurada V2

@@ -2263,6 +2263,24 @@ export class TypeChecker {
             }
             node.matchedDiscriminator = discArg.value as string;
             this.expression(discArg, scope, "string");
+            // V30.5.2: si el subject es una union (declarada con `union X = ...`)
+            // y el discriminator coincide con el campo del union que el codegen
+            // emite como `_Kind` (e.g. `R_Kind::Success`), anotamos el tipo C++
+            // del discriminador para que el codegen emita el pattern como
+            // miembro del enum en vez de string literal. Sin esto, la
+            // comparacion `r.kind == std::string("Success")` no compila.
+            const subjectBase = genericBase(subjectType);
+            if (this.unions.has(subjectBase)) {
+              const unionNode = this.unions.get(subjectBase)!;
+              // El campo discriminador del union en C++ es el nombre de la
+              // union seguido de `_Kind` (e.g. `R` -> `R_Kind`).
+              // El campo del struct que el codegen emite es `kind` (el
+              // literal del discriminator). Verificamos que coincida.
+              const expectedDiscField = "kind";
+              if (discArg.value === expectedDiscField) {
+                node.matchedDiscriminatorType = `${unionNode.name}_Kind`;
+              }
+            }
             caseList = casesArg;
           } else {
             caseList = node.args[1];

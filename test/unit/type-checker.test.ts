@@ -759,6 +759,40 @@ test("V30: match V23 con when/otherwise funciona con discriminador", () => {
   `);
 });
 
+// V30.5.2: el type-checker anota matchedDiscriminatorType cuando el
+// subject es union y el discriminator es el campo `kind`. Esto permite
+// que el codegen emita `r.kind == R_Kind::Success` (miembro del enum
+// del union) en vez de `std::string("Success")`, que no compila.
+test("V30.5.2: match con discriminator sobre tagged union es valido", () => {
+  // No debe reportar error. El codegen luego emite el pattern como
+  // miembro del enum del union (verificado por el test e2e
+  // match-exhaustive-union).
+  check(`
+    union R = Success(string) | Failure(number);
+    function f(r: R): string {
+      return match(r, "kind", [
+        when("Success", (v: R): string => "ok"),
+        when("Failure", (v: R): string => "err"),
+        otherwise((): string => "?"),
+      ]);
+    }
+  `);
+});
+
+// V30.5.2: cuando el subject NO es union, el discriminator se trata
+// como string literal (no se anota matchedDiscriminatorType).
+test("V30.5.2: match con discriminator sobre struct no-union es valido", () => {
+  check(`
+    class Color { kind: string; }
+    function f(c: Color): string {
+      return match(c, "kind", [
+        when("red", (v: Color): string => "r"),
+        when("blue", (v: Color): string => "b"),
+      ]);
+    }
+  `);
+});
+
 // V30.5.1 (revisado V30): el type-checker debe resolver el payload de
 // las variantes de Result<T, E = string> con los type parameters del
 // subject en el context del type-checker (no en el match V2 que se
