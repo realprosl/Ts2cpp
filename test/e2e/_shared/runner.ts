@@ -49,6 +49,7 @@ const BUCKETS = [
   "errors",        // #15
   "regressions",   // #18
   "http-server-drogon", // #153 (skipea si libdrogon-dev no esta)
+  "timers",         // #160 (V30.1: setTimeout/setInterval/cancelTimer)
 ] as const;
 type Bucket = typeof BUCKETS[number];
 

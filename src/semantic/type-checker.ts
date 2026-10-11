@@ -479,6 +479,22 @@ export class TypeChecker {
       { name: "delete", returnType: "void", params: [{ name: "path", type: "string" }, { name: "handler", type: "any" }] },
       { name: "listen", returnType: "void", params: [{ name: "port", type: "number" }] },
     ]);
+    // V30.1: Timer. Handle opaco a un uv_timer_t. Devuelto por
+    // setTimeout/setInterval. Mantener vivo mientras se quiera
+    // que el callback siga programado; cancelTimer(handle) lo
+    // cierra y libera.
+    this.registerBuiltinInterface("Timer", [
+      { name: "valid", returnType: "boolean", params: [] },
+    ]);
+    // Funciones globales para timers. setTimeout/setInterval toman
+    // un callback `()=>void` (lambda sin args que devuelve void);
+    // el codegen lo emite como lambda C++ convertible a
+    // std::function<void()>. Devuelven un Timer. cancelTimer toma
+    // un Timer.
+    const timerCallback = { type: "()=>void" as TypeName, out: false };
+    global.define("setTimeout", fn([timerCallback, input("number")], "Timer"));
+    global.define("setInterval", fn([timerCallback, input("number")], "Timer"));
+    global.define("cancelTimer", fn([input("Timer")], "void"));
     const readFile = fn([input("string"), output("string"), output("string")], "boolean");
     readFile.overloads.push({ typeParameters: [], variadicTypeParameters: [], params: [input("string")], returnType: "Result<string>" });
     global.define("readFile", readFile);
@@ -1399,7 +1415,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server", "HttpClientResponse"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server", "HttpClientResponse", "Timer", "FsWatcher", "FsEvent"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
     // `Optional<T>` se aceptan siempre (son tipos del runtime).

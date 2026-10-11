@@ -75,7 +75,7 @@ function cppTypeFromString(type: TypeName): string {
   if (type === "Request") return "ets::HttpRequest";
   if (type === "Response") return "ets::HttpResponse";
   if (type === "HttpClientResponse") return "ets::HttpClientResponse";
-  if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "FileReader", "Server"].includes(type)) return `ets::${type}`;
+  if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "FileReader", "Server", "Timer", "FsWatcher", "FsEvent"].includes(type)) return `ets::${type}`;
   if (type === "JsonValue") return "ets_json::Value";
   return type;
 }

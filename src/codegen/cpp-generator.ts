@@ -389,6 +389,28 @@ export class CppGenerator {
     };
     return visit(program);
   }
+  // V30.1: detecta si el programa usa timers (setTimeout/setInterval/
+  // cancelTimer). Si lo encuentra, fuerza el include de
+  // runtime/ets_timer.hpp. Mismo patron que usesHttpClient.
+  // Importante: en el AST, CallExpression.callee es un STRING
+  // (no un IdentifierExpression node), asi que se compara directo.
+  private usesTimer(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; callee?: unknown };
+      if (obj.kind === "CallExpression" && typeof obj.callee === "string") {
+        if (obj.callee === "setTimeout" || obj.callee === "setInterval" || obj.callee === "cancelTimer") return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
   // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
   // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
   // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
@@ -599,6 +621,8 @@ export class CppGenerator {
       // libcurl nos da HTTPS, HTTP/2, redirects, timeouts, decompression
       // built-in. Ver runtime/ets_http_curl_client.hpp.
       ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_curl_client.hpp\""] : []),
+      // V30.1: timers sobre libuv. Ver runtime/ets_timer.hpp.
+      ...(this.currentProgram !== undefined && this.usesTimer(this.currentProgram) ? ["#include \"runtime/ets_timer.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
@@ -2290,6 +2314,14 @@ export class CppGenerator {
         if (finalCallee === "asyncIoUringRead" || finalCallee === "asyncIoUringWrite" ||
             finalCallee === "ioUringRead" || finalCallee === "ioUringWrite") {
           return `ets::${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
+        }
+        // V30.1: timers sobre libuv. setTimeout/setInterval/cancelTimer
+        // se traducen a las funciones libres ets::setTimeout/...
+        // declaradas en runtime/ets_timer.hpp. El callback se emite
+        // como una lambda del dialecto (que es convertible a
+        // std::function<void()> por el prefijo [=]/[&]).
+        if (finalCallee === "setTimeout" || finalCallee === "setInterval" || finalCallee === "cancelTimer") {
+          return `ets::${finalCallee}(${args.join(", ")})`;
         }
         return finalCallee === "print" ? `print(${args.join(", ")})` : `${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
