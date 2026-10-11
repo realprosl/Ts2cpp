@@ -310,6 +310,32 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
     progress.beginPhase(`Enlazando binario (${config.compiler.command})`);
     const needsTls = result.header.includes("runtime/ets_tls.hpp") || result.modules.some(m => m.cpp.includes("runtime/ets_tls.hpp"));
     const tlsLibraries = needsTls ? ["-lssl", "-lcrypto"] : [];
+    // V30.5.5: detectar si el programa usa libuv (via el bundle
+    // ets_runtime_full.hpp o headers especificos) y añadir los .o del
+    // runtime libuv + -luv. Sin esto, ejemplos como http-server.ets,
+    // for-await-demo.ets, fs-demo.ets, etc. fallan con
+    // 'undefined reference to ets::UvFdAwaiter::*' o
+    // 'ets::LibuvEventLoop::*'. El cli.ts ya hace esto en modo
+    // --unity (PR #169); el incremental builder (este archivo) es el
+    // que se usa con --build (default cuando hay config) y no lo
+    // hacia.
+    const needsLibuv = result.header.includes("runtime/ets_event_loop_libuv")
+                    || result.header.includes("runtime/ets_runtime_full")
+                    || result.header.includes("runtime/ets_runtime.hpp")
+                    || result.modules.some(m =>
+                         m.cpp.includes("runtime/ets_async.hpp")
+                      || m.cpp.includes("runtime/ets_net_libuv.hpp")
+                      || m.cpp.includes("runtime/ets_timer.hpp")
+                      || m.cpp.includes("runtime/ets_fs_watcher.hpp")
+                      || m.cpp.includes("runtime/ets_dns.hpp")
+                      || m.cpp.includes("runtime/ets_http_curl_async.hpp"));
+    const runtimeObjDir = join(compilerRoot, "build");
+    const libuvObjectPaths = [
+      join(runtimeObjDir, "runtime_ets_libuv.o"),
+      join(runtimeObjDir, "runtime_ets_net_libuv.o"),
+    ];
+    const libuvObjects = needsLibuv ? libuvObjectPaths.filter(p => existsSync(p)) : [];
+    const libuvLinkArgs = libuvObjects.length > 0 ? [...libuvObjects, "-luv"] : (needsLibuv ? ["-luv"] : []);
     const linkArgs = [
       ...config.compiler.flags.filter(flag => flag !== "-c" && flag !== "-flto" && !flag.startsWith("-Wl,")),
       ...allObjects,
@@ -317,6 +343,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
       ...config.compiler.linkFlags,
       ...config.linkLibraries.map(lib => lib.startsWith("-") ? lib : `-l${lib}`),
       ...tlsLibraries,
+      ...libuvLinkArgs,
     ];
     await mkdir(dirname(binaryPath), { recursive: true });
     try { await runNative(config.compiler.command, linkArgs); }
