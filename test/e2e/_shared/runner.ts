@@ -234,18 +234,34 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
   if (skipNetwork && bucket === "networking") {
     return { name, bucket, ok: true, durationMs: Date.now() - start, skipped: true };
   }
-  const execResult = await new Promise<{ code: number; stdout: string }>(resolvePromise => {
+  // V30.2: el bucket "timers" contiene tests con callbacks async
+  // (watchFs dispara desde inotify, setInterval dispara cada N ms).
+  // Estos binarios se quedan en defaultEventLoop.run() esperando
+  // eventos. El runner los mata tras TIMEOUT_MS y devuelve la
+  // salida acumulada hasta ese momento.
+  const TIMEOUT_MS = bucket === "timers" ? 1500 : undefined;
+  const execResult = await new Promise<{ code: number; stdout: string; killed: boolean }>(resolvePromise => {
     const child = spawn(binPath, [], { cwd: SCRATCH_DIR });
     let stdout = "";
+    let killed = false;
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
-    child.once("error", () => resolvePromise({ stdout, code: -1 }));
+    child.once("error", () => resolvePromise({ stdout, code: -1, killed }));
     // Usamos `close` en lugar de `exit`: `close` se dispara cuando todos los
     // streams (stdout/stderr) están cerrados Y el proceso ha liberado sus
     // recursos, lo que evita perder el último chunk de stdout en escenarios
     // de alta concurrencia de compilación (flake observado con 4 workers
     // compilando ets_runtime.hpp simultáneamente).
-    child.once("close", code => resolvePromise({ stdout, code: code ?? -1 }));
+    child.once("close", (code: number | null) => resolvePromise({ stdout, code: code ?? -1, killed }));
+    if (TIMEOUT_MS !== undefined) {
+      // El runner tiene `types: ["node"]` y strict: true. `setTimeout`
+      // es global pero TS a veces no lo resuelve en Promise executor.
+      // Lo llamamos via `(globalThis as any).setTimeout` para no
+      // depender del contexto de resolucion.
+      (globalThis as unknown as { setTimeout: (cb: () => void, ms: number) => unknown }).setTimeout(() => {
+        if (!child.killed) { killed = true; child.kill("SIGKILL"); }
+      }, TIMEOUT_MS);
+    }
   });
 
   // 4. Compare
