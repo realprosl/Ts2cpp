@@ -541,6 +541,7 @@ export class TypeChecker {
     removeFile.overloads.push({ typeParameters: [], variadicTypeParameters: [], params: [input("string")], returnType: "Result<boolean>" });
     global.define("removeFile", removeFile);
     global.define("readFileAsync", fn([input("string")], "Promise<Result<string>>"));
+    global.define("resolveDns", fn([input("string")], "Promise<string>"));
     global.define("writeFileAsync", fn([input("string"), input("string")], "Promise<Result<boolean>>"));
     global.define("appendFileAsync", fn([input("string"), input("string")], "Promise<Result<boolean>>"));
     global.define("fileExistsAsync", fn([input("string")], "Promise<Result<boolean>>"));

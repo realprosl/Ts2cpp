@@ -1,0 +1,3 @@
+ok:resolved-127.0.0.1
+ok:resolved-localhost
+ok:invalid-host-empty

@@ -431,6 +431,19 @@ export class CppGenerator {
     };
     return visit(program);
   }
+  // V30.4: detecta si un statement es una call expression a `main`
+  // (ExpressionStatement con callee === "main"). El codegen
+  // renombra la funcion a `ets_user_main` (ver generate()) para
+  // evitar colision con la funcion global, asi que aqui
+  // comparamos contra el nombre original.
+  private isMainCallExpression(statement: unknown): boolean {
+    if (!statement || typeof statement !== "object") return false;
+    const obj = statement as { kind?: string; expression?: { kind?: string; callee?: unknown } };
+    return obj.kind === "ExpressionStatement" &&
+      obj.expression !== undefined &&
+      obj.expression.kind === "CallExpression" &&
+      obj.expression.callee === "main";
+  }
   // V30.2: detecta si el programa usa setInterval (no setTimeout,
   // porque setTimeout el callback ya dispara y termina solo).
   // Si lo encuentra, el codegen anyade ets::defaultEventLoop.run()
@@ -445,6 +458,27 @@ export class CppGenerator {
       }
       for (const key of Object.keys(node)) {
         if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
+  // V30.4: detecta si el main del programa es async (Promise<void>).
+  // Si lo es, el codegen anyade ets::defaultEventLoop.run() al final
+  // del main para que el event loop siga vivo mientras la coroutine
+  // main se ejecuta. Sin esto, el main retorna antes de que las
+  // awaits (resolveDns, etc.) se completen.
+  private mainIsAsync(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; async?: boolean; name?: string; returnType?: unknown };
+      if (obj.kind === "FunctionDeclaration" && obj.async === true && obj.name === "main") {
+        return true;
+      }
+      for (const key of Object.keys(node)) {
         const child = (node as Record<string, unknown>)[key];
         if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
         else if (child && typeof child === "object") { if (visit(child)) return true; }
@@ -667,8 +701,31 @@ export class CppGenerator {
       ...(this.currentProgram !== undefined && this.usesTimer(this.currentProgram) ? ["#include \"runtime/ets_timer.hpp\""] : []),
       // V30.2: filesystem watchers sobre libuv. Ver runtime/ets_fs_watcher.hpp.
       ...(this.currentProgram !== undefined && this.usesFsWatcher(this.currentProgram) ? ["#include \"runtime/ets_fs_watcher.hpp\""] : []),
+      // V30.4: DNS async sobre uv_getaddrinfo. Ver runtime/ets_dns.hpp.
+      ...(this.currentProgram !== undefined && this.usesDns(this.currentProgram) ? ["#include \"runtime/ets_dns.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
+  }
+  // V30.4: detecta si el programa usa resolveDns(). Si lo encuentra,
+  // fuerza el include de runtime/ets_dns.hpp. Patron identico a
+  // usesTimer/usesHttpClient. CallExpression.callee es un STRING
+  // (no un IdentifierExpression node).
+  private usesDns(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; callee?: unknown };
+      if (obj.kind === "CallExpression" && typeof obj.callee === "string") {
+        if (obj.callee === "resolveDns") return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
   }
   // V16: detecta si el programa tiene alguna lambda (FunctionType, captura,
   // closures). Esto fuerza la inclusión de `<functional>`.
@@ -724,7 +781,16 @@ export class CppGenerator {
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
     for (const node of classes) lines.push(this.classDeclaration(node), "");
-    for (const fn of functions) lines.push(this.signature(fn) + ";");
+    for (const fn of functions) {
+      // V30.4: renombrar `main` -> `ets_user_main` en la forward
+      // declaration.
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.signature(renamed) + ";");
+      } else {
+        lines.push(this.signature(fn) + ";");
+      }
+    }
     if (functions.length) lines.push("");
     // Declaramos las variables top-level a nivel de archivo (con internal linkage) para
     // que cualquier función declarada después pueda verlas. La inicialización ocurre en
@@ -768,7 +834,21 @@ export class CppGenerator {
     const externalFunctions = functions.filter(fn => fn.decorators?.some(d => d.name === "cpp_name"));
     const regularFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
     for (const fn of externalFunctions) lines.push(this.function(fn), "");
-    for (const fn of regularFunctions) lines.push(this.function(fn), "");
+    // V30.4: si el user define `function main` (no async, void
+    // return), renombramos a `ets_user_main` para evitar colision
+    // con `int main(int, char**)` que el codegen emite al final.
+    // El codegen transforma las calls top-level a `main` y
+    // `spawn(main)`/`syncWait(main)` en consecuencia. Patron
+    // mantenido para que el codigo del dialecto no choque con
+    // la funcion global.
+    for (const fn of regularFunctions) {
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.function(renamed), "");
+      } else {
+        lines.push(this.function(fn), "");
+      }
+    }
     lines.push("int main(int argc, char** argv) {"); this.indent++;
     lines.push(this.pad() + "ets_argc = argc;");
     lines.push(this.pad() + "ets_argv = argv;");
@@ -805,7 +885,16 @@ export class CppGenerator {
     // externamente). El cpp emite `extern "C" <sig>;` y el linker las
     // resuelve contra la librería.
     const headerFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
-    for (const fn of headerFunctions) lines.push(this.signature(fn) + ";");
+    for (const fn of headerFunctions) {
+      // V30.4: renombrar `main` -> `ets_user_main` en la forward
+      // declaration para evitar colision con la funcion global.
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.signature(renamed) + ";");
+      } else {
+        lines.push(this.signature(fn) + ";");
+      }
+    }
     if (headerFunctions.length) lines.push("");
     for (const node of allClasses) lines.push(this.classDeclaration(node), "");
     for (const fn of headerFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
@@ -845,7 +934,16 @@ export class CppGenerator {
     if (privateClasses.length) lines.push("");
     // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
     // una vez en C++; van en la definición, no en la forward).
-    for (const fn of privateFunctions) lines.push(this.signature(fn, true, false, false) + ";");
+    for (const fn of privateFunctions) {
+      // V30.4: renombrar `main` -> `ets_user_main` en las forward
+      // declarations static.
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.signature(renamed, true, false, false) + ";");
+      } else {
+        lines.push(this.signature(fn, true, false, false) + ";");
+      }
+    }
     if (privateFunctions.length) lines.push("");
     // V15: las clases NO se redeclaran en el cpp si ya están en el header
     // (sería "redefinition"). Solo emitimos las definiciones de clases en el
@@ -891,7 +989,14 @@ export class CppGenerator {
     for (const fn of externalFunctions) lines.push(this.function(fn), "");
     for (const fn of regularFunctions) {
       const exported = fn.exported;
-      lines.push(this.function(fn, !exported), "");
+      // V30.4: renombrar `main` -> `ets_user_main` para evitar
+      // colision con la funcion global.
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.function(renamed, !exported), "");
+      } else {
+        lines.push(this.function(fn, !exported), "");
+      }
     }
     lines.push(`void ${initializer}() {`); this.indent++;
     // V15: solo reasignamos variables mutables. Las `const` ya están inicializadas
@@ -906,19 +1011,58 @@ export class CppGenerator {
       }
     }
     for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
-    for (const statement of topLevel) lines.push(this.emitStatement(statement));
+    // V30.4: si main es async, las calls top-level a `main();` se
+    // envuelven en ets::syncWait() para que el event loop itere
+    // hasta que la coroutine main termine. Patron: el user
+    // escribe `main();` al final del archivo; lo transformamos
+    // a `ets::syncWait(ets_user_main());` (la funcion renombrada
+    // por el codegen para evitar colision con la int main global).
+    const programIsAsync = this.currentProgram !== undefined && this.mainIsAsync(this.currentProgram);
+    for (const statement of topLevel) {
+      if (programIsAsync && this.isMainCallExpression(statement)) {
+        const expr = (statement as unknown as { expression?: unknown }).expression;
+        const call = expr as { callee?: unknown };
+        lines.push(this.pad() + `ets::syncWait(ets_user_main());`);
+      } else {
+        lines.push(this.emitStatement(statement));
+      }
+    }
     this.indent--; lines.push("}", "");
     if (entryInitializers) {
       lines.push("int main(int argc, char** argv) {"); this.indent++;
       lines.push(this.pad() + "ets_argc = argc;", this.pad() + "ets_argv = argv;");
-      for (const name of entryInitializers) lines.push(this.pad() + `${name}();`);
+      // V30.4: si main es async, el call site debe spawnarlo
+      // (ets::spawn arranca la coroutine en el event loop). Si
+      // main es sync, se llama directamente.
+      const mainIsAsync = this.currentProgram !== undefined && this.mainIsAsync(this.currentProgram);
+      for (const name of entryInitializers) {
+        if (mainIsAsync && name === "main") {
+          lines.push(this.pad() + `ets::spawn(${name}());`);
+        } else {
+          lines.push(this.pad() + `${name}();`);
+        }
+      }
       // V30.2: si el codigo usa watchFs o setInterval (callbacks
       // async que necesitan que el event loop siga vivo), entramos
       // en el loop al final del main. Sin esto, el main retorna
       // inmediatamente y los callbacks nunca se ejecutan. NO se
       // anyade para setTimeout puro (el callback ya dispara y el
       // loop termina solo).
-      if (this.currentProgram !== undefined && (this.usesFsWatcher(this.currentProgram) || this.usesSetInterval(this.currentProgram))) {
+      // V30.2 / V30.4: si el codigo usa watchFs o setInterval
+      // (callbacks async que necesitan que el event loop siga
+      // vivo), entramos en el loop al final del main. Sin esto,
+      // el main retorna inmediatamente y los callbacks nunca se
+      // ejecutan. NO se anyade para setTimeout puro (el callback
+      // ya dispara y el loop termina solo). Tampoco se anyade
+      // para main async: en ese caso, el `ets::syncWait(...)`
+      // que añadimos al top-level ya itera el loop hasta que
+      // la coroutine main termina, asi que un `run()` adicional
+      // bloquearía el main para siempre (los uv_getaddrinfo
+      // internos mantienen handles activos).
+      const programUsesAsyncMain = this.currentProgram !== undefined &&
+        (this.usesFsWatcher(this.currentProgram) ||
+         this.usesSetInterval(this.currentProgram));
+      if (programUsesAsyncMain) {
         lines.push(this.pad() + "ets::defaultEventLoop.run();");
       }
       lines.push(this.pad() + "return 0;"); this.indent--; lines.push("}", "");
@@ -2332,6 +2476,10 @@ export class CppGenerator {
           createCancellation:  "ets::createCancellation",
           isCancelled:         "ets::isCancelled",
           ioUringAvailable:    "ets::ioUringAvailable",
+          // V30.4: DNS async sobre uv_getaddrinfo. La funcion toma
+          // un host (string) y devuelve Task<string> (= Promise<string>
+          // en el dialecto). Definida en runtime/ets_dns.hpp.
+          resolveDns:          "ets::resolveDns",
         };
         // V16: las funciones de red del dialecto (`listenTcp`, `acceptTcp`,
         // `readTcp`, `writeTcp`, `closeTcp`) viven en `ets::` (definidas en
