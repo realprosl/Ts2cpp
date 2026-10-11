@@ -235,6 +235,17 @@ export class Parser {
     const open = this.consume("{", "Las interfaces son estructurales y no admiten herencia; se esperaba '{'");
     const methods: InterfaceMethod[] = [];
     while (!this.check("}") && !this.check("eof")) {
+      // V30.5.3 fix: el bucle del parser de interfaces no llamaba a
+      // skipNewlines(), a diferencia del parser de clases (linea 273).
+      // Esto causaba que despues del `{` inicial, el primer token fuera
+      // un `newline` (no un `}` ni un `eof`), asi que el check
+      // `!this.check("}")` era `true`, y `consume("identifier", ...)`
+      // fallaba con "Se esperaba el nombre del metodo". El test
+      // `checker: anota resolvedSignature en InterfaceMethod` (y
+      // `... resolvedRuntimeType en InterfaceDeclaration`) fallaba
+      // desde V18+ con error en linea 3:7.
+      this.skipNewlines();
+      if (this.check("}") || this.check("eof")) break;
       // V18: `@cpp_name(...)` por método de la interface.
       const methodDecorators = this.parseDecorators();
       const methodName = this.consume("identifier", "Se esperaba el nombre del método");

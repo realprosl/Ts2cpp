@@ -155,6 +155,34 @@ test("parser: interface", () => {
   assert.equal(stmt.methods[0].name, "foo");
 });
 
+// V30.5.3 fix: el parser de interfaces no llamaba a skipNewlines()
+// en el bucle de métodos, lo que causaba que el primer método
+// después del `{` (cuando el método está en una línea nueva) no se
+// parseara. A diferencia de las clases (que sí tienen skipNewlines),
+// el parser de interfaces fallaba con "Se esperaba el nombre del
+// método" en línea 3:7 del programa:
+//
+//   interface I {
+//     foo(): number;
+//   }
+//
+// Este test verifica que el parser maneja correctamente un interface
+// con el método en la línea siguiente al `{` (caso real, no compactado
+// en una sola línea como el test anterior).
+test("parser: interface con método en línea siguiente al {", () => {
+  const stmt = firstStatement(`
+    interface I {
+      foo(x: number, y: number): number;
+    }
+  `) as { kind: string; name: string; methods: { name: string; params: unknown[]; returnType: string }[] };
+  assert.equal(stmt.kind, "InterfaceDeclaration");
+  assert.equal(stmt.name, "I");
+  assert.equal(stmt.methods.length, 1);
+  assert.equal(stmt.methods[0].name, "foo");
+  assert.equal(stmt.methods[0].params.length, 2);
+  assert.equal(stmt.methods[0].returnType, "number");
+});
+
 test("parser: new expression", () => {
   const stmt = firstStatement("const p: Foo = new Foo(10);") as { kind: string; initializer: { kind: string; className: string; args: unknown[] } };
   assert.equal(stmt.kind, "VariableDeclaration");
