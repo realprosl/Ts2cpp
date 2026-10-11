@@ -2,6 +2,70 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.5.0 (2026-10-11) — V30.5.1 match: V23 unica forma, eliminada V2 destructurada
+
+V30.5.1 elimina la sintaxis de match destructurada V2
+(`match (r) { case { kind: "X", x }: ...; case _: ...; }`) y unifica
+todo a la forma V23 (`match(value, [when(pat, cb), otherwise(cb)])`).
+Razon principal: la sintaxis V2 NO era TypeScript estandar, y el
+LSP de TS subrayaba `match`, `case`, y `{ kind: ... }` con errores
+rojos aunque el codigo compilara. V23 es la unica forma
+TS-compatible: el dialecto la emite como una `CallExpression`
+regular que el LSP entiende sin subrayados rojos.
+
+### Breaking changes
+
+- **Eliminado: forma V2 destructurada**.
+  - El parser rechaza `match (subject) { case ... }` con **E4410**
+    "Forma V2 (match(r) { case ... }) eliminada en V30".
+  - El type-checker ya no soporta `MatchExpression` con `variantMatch`.
+  - El codegen ya no emite el `emitV2Match` (switch sobre `kind_Kind`).
+  - Los tests V2 se migraron a V23.
+  - Los ejemplos `match-v2-demo.ets` y `match-union-demo.ets` se
+    reescribieron a V23.
+
+### Migration
+
+```ets
+// Antes (V2, eliminado):
+return match (r) {
+  case { kind: "Ok", v }: "ok:" + v;
+  case { kind: "Err", e }: "err:" + e;
+};
+
+// Despues (V30, V23 unica forma valida):
+return match(r, "kind", [
+  when("Ok",  (x: R): string => "ok"),
+  when("Err", (x: R): string => "err"),
+]);
+```
+
+Para acceder al valor narrowed del payload de una union, usa
+`whenType<T>` o un `if (x.kind === "S")` dentro del callback con
+discriminador.
+
+### Changed
+
+- **`docs/match-syntax.md`**: reescrito para reflejar la unica forma
+  V23. Se elimino la seccion "V2: match (subject) { case ...; }".
+  Tabla de evolucion historica: V1.10 → V2 → V23 → V30.
+
+- **`src/project/init-project.ts`**: el shim `types/estatic.d.ts` se
+  actualizo el comment del bloque "Match intrinsics" para indicar
+  que V23 es la unica forma valida en V30. Las declaraciones TS
+  de `when`/`whenType`/`otherwise`/`match` no cambiaron (ya eran
+  V23 desde V23.0).
+
+### Fixed
+
+- **Type-checker: el binding de variantes en match V2 sobre
+  `Result<T, E>` daba "E" literal en vez del argumento del subject**
+  (V30.5.1). El fix aplica `substituteType(payloadType, variantSubs)`
+  con los type parameters del subject mas los defaults del union.
+  Como V2 se elimino en V30.5.1, el fix ya no es necesario para
+  el match, pero los tests unit verifican que `Result<T>.value()` y
+  `Result<T>.isOk()` se siguen tipeando correctamente.
+
 ## v1.4.0 (2026-10-11) — V30 dialecto async: timers, fs watchers, DNS, await http
 
 V30 expone al dialecto `.ets` las APIs asíncronas que V29 dejó

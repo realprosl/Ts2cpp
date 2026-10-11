@@ -728,17 +728,36 @@ export class Parser {
   }
 
   private expression(): Expression {
-    // V23: lookahead para distinguir `match(v, [...])` (intrinsics) de
-    // `match(v) {...}` (V2 keyword). `match` ya no es keyword (lo
-    // convertimos en identifier para soportar la nueva sintaxis), así que
-    // tenemos que mirar el lexema del token actual.
+    // V30: `match` solo tiene la forma V23 intrinsics (`match(value, [...])`
+    // o `match(value, "key", [...])`), que se parsea como una
+    // `CallExpression` normal. La forma V2 keyword (`match (r) { case ...
+    // }`) se elimino porque no es TS-compatible y el LSP de TypeScript la
+    // marca con subrayados rojos. Si el parser ve `match` seguido de `(` y
+    // despues `{` (forma V2), reporta un error claro sugiriendo la V23.
     if (this.check("identifier") && this.peek().lexeme === "match") {
       const afterParen = this.lookaheadAfterMatchParen();
-      if (afterParen === "new") {
-        // match(value, [...]) o match(value, "key", [...])
-        return this.assignment();
+      if (afterParen === "keyword") {
+        // El usuario escribio la forma V2 (match (r) { case ... }). Reportamos
+        // el error en el `match` y dejamos que el caller siga parseando como
+        // si fuera una llamada normal (V23). Asi el resto del archivo puede
+        // compilar y solo el match V2 falla con un mensaje claro.
+        this.error(this.peek(), "E4410: la forma V2 de match (`match (r) { case ... }`) se elimino en V30; usa la forma V23 intrinsics: `match(r, [when(pat, () => result), otherwise(() => default)])`");
+        // Devolvemos un CallExpression sintetico para que el AST no quede
+        // colgado. El codegen nunca lo vera (el parser aborta la transpilacion).
+        this.advance(); // consume 'match'
+        if (this.match("(")) {
+          // Intentamos consumir el sujeto + cierre de parentesis para
+          // recuperarnos. Si no, avanzamos hasta encontrar `{` o fin.
+          if (!this.check("{")) this.expression();
+          if (!this.check(")")) {
+            while (!this.check(")") && !this.check("{") && !this.check("eof")) this.advance();
+          }
+          if (this.check(")")) this.advance();
+        }
+        return { kind: "IdentifierExpression", name: "match", span: this.peek().span } as unknown as Expression;
       }
-      return this.matchExpression();
+      // Forma V23: cae al `assignment()` que la trata como CallExpression.
+      return this.assignment();
     }
     const left = this.isArrowStart() ? this.arrowFunction() : this.assignment();
     return this.ternary(left);
@@ -770,171 +789,33 @@ export class Parser {
   }
 
   /**
-   * Parsea arms de `match` V2 (destructured sobre tagged unions).
-   *   - `case { kind: "<Variant>", <id>?, ... }: <expr>;`
-   *   - `case _: <expr>;`
-   *
-   * La forma TC39 `when (p) => <expr>;` se eliminó en V23. Si el parser
-   * encuentra `when` aquí, emite diagnóstico E4400 sugiriendo la nueva
-   * sintaxis `match(v, [when(p, () => <expr>)])`.
-   *
-   * V23: los `match` keyword (V2 destructurado) y `match(v, [...])` (V23
-   * intrinsics) son formas distintas. El keyword exige `match (subject) { ... }`
-   * con `{` literal; la V23 usa `match(subject, [...])` sin llaves y se
-   * parsea como `CallExpression` normal.
+   * V30: la forma V2 de match (`match (r) { case ... }`) se elimino.
+   * Cualquier intento de usar `case` como keyword de un arm dentro de un
+   * match sera rechazado por el lexer (no se incluye como keyword).
+   * Si un usuario escribe `case ...` suelto en el codigo, el parser
+   * lo rechaza aqui con un mensaje claro.
    */
   private matchArms(arms: MatchArm[]): void {
-    while (!this.check("}") && !this.check("eof")) {
-      // Saltamos newlines y comas entre arms (separadores en la forma
-      // `Type.Variant(x) => expr,` del tutorial §9, y tambien en la forma
-      // V2 `case { kind: ... }: expr;` con newline significativo).
-      this.skipNewlines();
-      this.match(",");
-      this.skipNewlines();
-      if (this.check("}") || this.check("eof")) break;
-      if (this.check("case")) {
-        this.advance(); // consume 'case'
-        const arm = this.parseCaseArm();
-        arms.push(arm);
-      } else if (this.check("when")) {
-        // V23: la sintaxis TC39 `when (p) => ...` se eliminó. Diagnosticamos
-        // y dejamos que el caller siga parseando para encontrar el `}`.
-        this.advance(); // consume 'when'
-        this.error(this.previous(), "E4400: 'when (p) => ...' dentro de 'match' ya no se admite; usa 'match(value, [when(p, () => result)])' en su lugar");
-        // Skip hasta el siguiente `;` o `}` para no liar el resto del bloque.
-        let parenDepth = 0;
-        while (!this.check("eof")) {
-          if (this.check("(")) parenDepth++;
-          else if (this.check(")")) parenDepth--;
-          else if (parenDepth === 0 && (this.check(";") || this.check("}"))) break;
-          this.advance();
-        }
-        if (this.check(";")) this.advance();
-      } else if (this.check("identifier")) {
-        // Azucar: `Type.Variant(bindings) => <expr>,` o `Variant(bindings) => <expr>,`
-        // (sin `case` ni `:`). Equivale a `case { kind: "<Variant>", ... }: <expr>;`
-        // y es la forma que muestra el tutorial §9. La coma o salto de linea
-        // actua como separador entre arms (no hace falta ';' ni ':').
-        // `parseCaseArm` ya consume el terminator (newline o ';' o ',')
-        // al final, asi que no hacemos nada extra aqui.
-        const arm = this.parseCaseArm();
-        arms.push(arm);
-      } else {
-        this.error(this.peek(), "Se esperaba 'case' o un patron de arm (e.g. Type.Variant(bindings)) para iniciar un arm de 'match'");
-        return;
-      }
-    }
+    void arms;
+    this.error(this.peek(), "E4410: la forma V2 de match fue eliminada en V30; usa `match(value, [when(pat, () => result), otherwise(() => default)])`");
   }
   private parseCaseArm(): MatchArm {
-    const start = this.peek().span.start;
-    // Wildcard: `case _: ...;`
-    if (this.check("identifier") && this.peek().lexeme === "_") {
-      this.advance();
-      this.consume(":", "Se esperaba ':' después del pattern de 'case'");
-      const result = this.expression();
-      const end = this.consumeStatementTerminator("Se esperaba ';' después del arm de 'match'");
-      return {
-        pattern: { kind: "IdentifierExpression", name: "_", span: span(start, end.span.start) },
-        result,
-        variantMatch: { variantName: "", bindings: [], isWildcard: true },
-        span: span(start, end.span.end),
-      };
-    }
-    // Azucar: `case Type.Variant(binding1, ...) => <expr>;` o
-    //         `case Variant(binding1, ...) => <expr>;` (sin prefijo).
-    // Equivale a `case { kind: "<VariantName>", binding1, ... }: <expr>;`.
-    // Esto es lo que muestra el tutorial §9. Soporta tanto unions
-    // (`union X = Foo | Bar`) como constructores de `Result` y otras
-    // clases con factories estaticos.
-    if (this.check("identifier") && this.checkNextIsMemberCallOrArrow()) {
-      const unionOrType = this.advance();
-      // Hay dos formas: `Name.Variant(...)` o `Name.Variant`. Si lo
-      // siguiente es `.`, es la forma con tipo; si es `(`, es la forma
-      // corta con solo el nombre de la variante.
-      let variantName: string;
-      if (this.match(".")) {
-        const variantTok = this.consume("identifier", "Se esperaba el nombre de la variante tras '.'");
-        variantName = variantTok.lexeme;
-      } else {
-        variantName = unionOrType.lexeme;
-      }
-      // Bindings: cero o mas identifiers separados por `,` dentro de `()`.
-      const bindings: string[] = [];
-      if (this.match("(")) {
-        if (!this.check(")")) {
-          do {
-            const id = this.consume("identifier", "Se esperaba un identifier como binding");
-            bindings.push(id.lexeme);
-          } while (this.match(","));
-        }
-        this.consume(")", "Se esperaba ')' cerrando los bindings del arm de match");
-      }
-      // Ahora esperamos `=> <expr>;`
-      this.consume("=>", "Se esperaba '=>' en el arm de 'match' estilo Result.ok(v) => ...");
-      const result = this.expression();
-      const end = this.consumeStatementTerminator("Se esperaba ';' o salto de linea despues del arm de 'match'");
-      return {
-        pattern: { kind: "IdentifierExpression", name: variantName, span: span(start, end.span.start) },
-        result,
-        variantMatch: { variantName, bindings },
-        span: span(start, end.span.end),
-      };
-    }
-    // Pattern destructuring: `case { kind: "<Variant>", <id>, ... }: ...;`
-    this.consume("{", "Se esperaba '{' para iniciar el pattern de 'case'");
-    let variantName = "";
-    const bindings: string[] = [];
-    // Primer campo obligatorio: `kind: "VariantName"`.
-    this.consume("identifier", "Se esperaba 'kind' como primer campo del pattern");
-    if (this.previous().lexeme !== "kind") this.error(this.previous(), "Se esperaba 'kind' como primer campo del pattern de 'case'");
-    this.consume(":", "Se esperaba ':' después de 'kind'");
-    const variantTok = this.consume("string", "El campo 'kind' de un pattern debe ser un literal de cadena");
-    variantName = variantTok.lexeme;
-    // Campos adicionales opcionales: cada uno es un identifier → binding.
-    while (this.match(",")) {
-      const id = this.consume("identifier", "Se esperaba un identifier como binding");
-      bindings.push(id.lexeme);
-    }
-    this.consume("}", "Se esperaba '}' para cerrar el pattern de 'case'");
-    this.consume(":", "Se esperaba ':' después del pattern de 'case'");
-    const result = this.expression();
-    const end = this.consumeStatementTerminator("Se esperaba ';' después del arm de 'match'");
-    return {
-      pattern: { kind: "IdentifierExpression", name: variantName, span: span(start, this.peek().span.start) },
-      result,
-      variantMatch: { variantName, bindings },
-      span: span(start, end.span.end),
-    };
+    throw new Error("V30: parseCaseArm eliminado. La forma V2 de match ya no existe.");
   }
   // Helper: el token actual es un identifier y el siguiente NO es uno
   // de los que indican statement normal (no es inicio de un arm de match
   // estilo `Type.Variant(...) =>`).
   private checkNextIsMemberCallOrArrow(): boolean {
-    // Despues del identifier debe venir `.`, `(`, o `=>`. Si viene
-    // cualquier otra cosa, es un statement normal (e.g. `case foo;` no
-    // es valido, pero el caller no nos llamaria aqui si el peek fuera
-    // `;`).
-    const next = this.peekAt(1);
-    return next?.kind === "." || next?.kind === "=>";
+    return false;
   }
+  // V30: `matchExpression` (la forma V2 destructurada) se elimino.
+  // El match V30 es siempre una `CallExpression` con `callee === "match"`,
+  // parseada por `assignment()`. Esta función queda como dead code por
+  // seguridad; no deberia llamarse nunca. Si se llama, abortamos con un
+  // error claro.
   private matchExpression(): MatchExpression {
-    const keyword = this.previous();
-    const start = this.peek().span.start;
-    // V23: `match` ya no es keyword — es un identifier que el lookahead
-    // detectó que va seguido de `(...) {`. Consumimos el identifier manualmente.
-    if (this.check("identifier") && this.peek().lexeme === "match") this.advance();
-    else this.error(this.peek(), "Se esperaba 'match' para iniciar una expresión match V2");
-    this.consume("(", "Se esperaba '(' después de 'match'");
-    const subject = this.expression();
-    this.consume(")", "Se esperaba ')' después del sujeto de 'match'");
-    this.consume("{", "Se esperaba '{' para los arms de 'match'");
-    // Saltamos newlines tras el '{' por si el primer arm empieza en
-    // la siguiente linea.
-    this.skipNewlines();
-    const arms: MatchArm[] = [];
-    this.matchArms(arms);
-    this.consume("}", "Se esperaba '}' al final de 'match'");
-    return { kind: "MatchExpression", subject, arms, span: span(keyword.span.start, this.peek().span.start) };
+    this.error(this.peek(), "E4410: la forma V2 de match fue eliminada en V30; usa la forma V23 intrinsics");
+    return { kind: "MatchExpression", subject: { kind: "IdentifierExpression", name: "_", span: this.peek().span }, arms: [], span: this.peek().span };
   }
   // `cond ? then : else`. La condición se parsea por `assignment()`, lo que
   // excluye el `?:` de la derecha (right-associative). Si no hay `:`, devuelve

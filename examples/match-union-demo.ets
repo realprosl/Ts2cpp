@@ -1,18 +1,21 @@
 // describeValue: dispatch sobre un valor `string | number | boolean` usando
-// la nueva sintaxis V23. Demuestra los cuatro caminos viables:
+// la sintaxis V23 (unica admitida en V30, despues de eliminar V2).
+//
+// Las tres formas validas:
 //
 //   1. V23 con `when` por valor: cuando el subject es UN SOLO tipo y
 //      queremos comparar contra literales concretos.
 //   2. V23 con discriminator: cuando el subject es una clase/struct
-//      con un campo `kind: string` (NO funciona con union cuyo kind
-//      es enum — ver nota al final).
+//      con un campo `kind: string`.
 //   3. V23 con `whenType<T>`: cuando el subject es una union, el
-//      codegen narrowa via `std::holds_alternative<T>` + `std::get<T>`
-//      (V23.2, anade narrowing real que V23.1 no tenia). El callback
-//      se invoca con 0 args; la discriminacion la hace el codegen.
-//   4. V2 destructurada: para tagged unions con narrowing real del
-//      payload Y exhaustividad enforced. RECOMENDADO cuando necesitas
-//      acceder al valor narrowed en el callback.
+//      codegen narrowa via `std::holds_alternative<T>` + `std::get<T>`.
+//      El callback se invoca con 0 args; la discriminacion la hace
+//      el codegen.
+//
+// V30 elimino la forma V2 destructurada (`match (r) { case { kind: ... }: ...; }`)
+// porque no era TS-compatible (el LSP subrayaba la sintaxis en rojo).
+// Si necesitas acceder al valor narrowed del payload, usa `whenType<T>`
+// (forma 3) o un `if` dentro del callback con discriminator (forma 2).
 
 // ──────────────────────────────────────────────────────────────────────
 // Patron 1: V23 con `when` por valor (un solo tipo en el subject)
@@ -79,35 +82,9 @@ describeWhenType(42);
 describeWhenType(true);
 
 // ──────────────────────────────────────────────────────────────────────
-// Patron 4: V2 destructurada (RECOMENDADO cuando necesitas el valor
-// narrowed en el callback). Exhaustividad enforced en compilacion.
+// NOTA: V30 elimino la forma V4 (V2 destructurada) del ejemplo
+// original. El acceso al valor narrowed del payload de una tagged
+// union ahora se hace con `whenType<T>` (forma 3) cuando el subject
+// es una union, o con un `if (v.kind === "S") { ... }` dentro del
+// callback cuando se usa discriminator (forma 2).
 // ──────────────────────────────────────────────────────────────────────
-
-union Value = S(string) | N(number) | B(boolean);
-
-function describeValueV2(v: Value): string {
-  return match (v) {
-    case { kind: "S", value }: "string:" + value;
-    case { kind: "N", value }: "number:" + numberToString(value);
-    case { kind: "B", value }: "boolean:" + (value ? "true" : "false");
-  };
-}
-
-print(describeValueV2(Value.S("hola")));
-print(describeValueV2(Value.N(42)));
-print(describeValueV2(Value.B(true)));
-
-// ──────────────────────────────────────────────────────────────────────
-// NOTA sobre unions y la forma V23 con discriminator:
-// ──────────────────────────────────────────────────────────────────────
-// `match(v, "kind", [...])` con `v: Union` NO funciona en V23.x porque
-// las unions del dialecto representan `kind` como un `enum class` (no
-// un `std::string`), y el codegen V23 emite `v.kind == std::string("S")`
-// que no compila. Para dispatch sobre unions, usa el `whenType<T>`
-// (patron 3) o la forma V2 destructurada (patron 4).
-//
-// Esto es un bug conocido del V23 que se resolveria en V24 emitiendo
-// la comparación contra el enum value cuando el discriminator es un
-// enum, pero requiere que el checker pase el tipo del discriminator al
-// codegen. Por ahora, la regla es: V23 con discriminator solo funciona
-// con clases/structs que tienen `kind: string` (no `kind: <enum>`).

@@ -1,194 +1,104 @@
-# Sintaxis `match` del dialecto Estatic
+# Sintaxis `match` del dialecto Estatic (V30)
 
-V23 introduce la forma TS-compatible `match(value, [when(...), ...])` y
-mantiene la forma V2 destructurada `match (r) { case { kind: ..., ... }:
-...; }`. Esta página documenta las dos formas y cómo se relacionan.
+V30 unifico **toda la sintaxis de `match`** a la **forma V23** (intrinseca,
+TS-compatible). La forma V2 destructurada (`match (r) { case { kind: "...",
+bindings }: ...; }`) se elimino por completo en V30. Razon principal: la
+sintaxis V2 no es TypeScript estandar, y el LSP de TS subrayaba `match`,
+`case`, `kind:` con errores rojos aunque el codigo compilara bien.
 
-## TL;DR
+## TL;DR — la UNICA forma valida
 
 ```ets
-// V23: sintaxis TS-compatible. Expresiones, no statements.
+// Sin discriminator (match por valor):
 const label: string = match(n, [
   when(0, (v: number): string => "cero"),
   when(1, (v: number): string => "uno"),
   otherwise((): string => "otro"),
 ]);
 
-// V2: pattern destructuring sobre tagged unions. Exhaustivo.
-const msg: string = match (r) {
-  case { kind: "Success", s }: "ok:" + s;
-  case { kind: "Failure", n }: "err:" + numberToString(n);
+// Con discriminator (match por campo `kind`):
+const msg: string = match(r, "kind", [
+  when("Success", (v: R): string => "ok"),
+  when("Failure", (v: R): string => "err"),
+]);
+
+// Con whenType<T> (narrowing real en C++):
+const kind: string = match(v, [
+  whenType<string>(() => "str"),
+  whenType<number>(() => "num"),
+]);
+```
+
+## Formas validas (V30)
+
+| Forma                                  | C++ emitido                                    | Narrowing |
+|----------------------------------------|------------------------------------------------|-----------|
+| `match(v, [when(pat, cb)])`            | Cadena de `if/else` con comparacion            | No        |
+| `match(v, "key", [when(pat, cb)])`    | `switch (v.key) { case pat: cb(); break; ...}`| No        |
+| `match(v, [whenType<T>(cb)])`          | `if (std::holds_alternative<T>(v)) { ... }`    | **Si**    |
+| `match(v, [otherwise(cb)])`            | Sin condicion (siempre ejecuta cb)             | No        |
+
+`whenType<T>` es la **unica forma que narrowa el tipo** automaticamente. En
+las demas formas, el callback recibe el subject sin narrowear.
+
+## Por que se elimino la forma V2 (`match (v) { case { kind: ... }: ... }`)
+
+- **No es TS-compatible**: el LSP subraya `match`, `case`, y `{ kind: ... }`
+  con errores rojos. No compila ni en `tsc --noEmit`.
+- **El narrowing real no se puede replicar sin extension** (TC39 stage 1).
+- **Dificil de mantener**: requiere un parser de patterns destructurados
+  paralelo al de TS.
+
+V30 lo elimino. Si necesitas destructuring + narrowing, usa `whenType<T>`
+o el callback con `if` adentro.
+
+## Ejemplo completo
+
+```ets
+union FileError = NotFound(string) | PermissionDenied | IOError(string);
+
+function describe(err: FileError): string {
+  return match(err, "kind", [
+    when("NotFound",        (e: FileError): string => "missing"),
+    when("PermissionDenied", (e: FileError): string => "denied"),
+    when("IOError",         (e: FileError): string => "io-error"),
+    otherwise((): string => "other"),
+  ]);
+}
+```
+
+## Cuadro comparativo de la evolucion
+
+| Version | Sintaxis                                       | TS-compatible | Narrowing |
+|---------|------------------------------------------------|---------------|-----------|
+| V1.10   | `match v { case 0: ...; case 1: ...; case _: ...; }` | No (con case keyword) | No |
+| V2      | `match (r) { case { kind: "X", x }: ...; }`    | No            | **Si**    |
+| V23     | `match(r, [when(pat, cb), otherwise(cb)])`     | **Si**        | Solo con `whenType<T>` |
+| V30     | (V23 es la unica forma)                        | **Si**        | Solo con `whenType<T>` |
+
+V30 **rompe** la sintaxis V2 deliberadamente. Migracion:
+
+```ets
+// Antes (V2, eliminado en V30):
+return match (r) {
+  case { kind: "Ok", v }: "ok:" + v;
+  case { kind: "Err", e }: "err:" + e;
 };
+
+// Despues (V23, unica forma valida en V30):
+return match(r, "kind", [
+  when("Ok",  (x: R): string => {
+    // narrowing manual con if + cast:
+    if (x.kind === "Ok") return "ok";
+    return "?";
+  }),
+  when("Err", (x: R): string => {
+    return "err";
+  }),
+]);
 ```
 
-**Cuándo usar cada una**:
-
-| Caso                                                              | Forma       |
-|-------------------------------------------------------------------|-------------|
-| Dispatch por valor (`when(0, ...)`, `when("a", ...)`)             | V23 nueva   |
-| Dispatch por tipo sobre union (`whenType<T>`)                    | V23 nueva (V23.2) |
-| Tagged unions con payload que extraer                             | V2 actual   |
-| Type dispatching sin acceso al valor narrowed                     | V23 nueva (`whenType` con 0 args) |
-| Exhaustividad enforced en compilación                             | V2 actual   |
-
-## V23: `match(value, [...])`
-
-### Forma 1: value matching (sin discriminator)
-
-```ets
-match(value, [
-  when(pattern1, callback1),
-  when(pattern2, callback2),
-  otherwise(defaultCallback),
-])
-```
-
-Cada `when(p, cb)` se compila a `if (value == p) return cb(value);` (o
-`cb()` si el callback tiene 0 parámetros). El último `otherwise(cb)` (o
-el primer `whenType`, en orden de aparición) se usa como `else` del
-último `if`. Si no hay `otherwise` ni `whenType`, el else final es
-`std::abort()`.
-
-**Sin narrowing para `when` por valor**: `match(value, [...])` con
-`when(0, cb)` no usa `std::holds_alternative`; solo compara con `==`.
-Para type dispatching real, usa `whenType` (que sí narrowa en V23.2) o
-la forma V2.
-
-### Forma 2: con discriminator (string key)
-
-```ets
-match(value, "key", [
-  when("a", (v: T): R => ...),
-  when("b", (v: T): R => ...),
-])
-```
-
-El codegen emite `if (value.key == "a") return cb(value); else if
-(value.key == "b") return cb(value);`. Útil para clases con campo
-`kind`:
-
-```ets
-class Fake { kind: string; payload: number; }
-
-function f(r: Fake): string {
-  return match(r, "kind", [
-    when("a", (x: Fake): string => "A:" + numberToString(x.payload)),
-    when("b", (x: Fake): string => "B:" + numberToString(x.payload)),
-  ]);
-}
-```
-
-### `whenType<T>(callback)` — V23.2 narrowa con unions
-
-```ets
-function f(v: number | string): string {
-  return match(v, [
-    whenType<number>(() => "num"),
-    whenType<string>(() => "str"),
-  ]);
-}
-
-print(f(42));     // "num"
-print(f("hi"));   // "str"
-```
-
-**V23.2**: cuando el subject es una union (`T1 | T2 | ...`), el codegen
-emite `std::holds_alternative<T_i>(v)` encadenado para cada `whenType<T_i>`.
-Esto es narrowing real (a nivel de C++, no solo del LSP). El primer
-`whenType` que matchea ejecuta su callback.
-
-**Limitación**: el callback se invoca **sin argumentos** (no se le pasa
-el subject narrowed a `T`). Si necesitas acceder al valor narrowed en
-el callback, usa la forma V2 destructurada:
-
-```ets
-union V = S(string) | N(number);
-function f(v: V): string {
-  return match (v) {
-    case { kind: "S", value }: "string:" + value;  // value es string aqui
-    case { kind: "N", value }: "number:" + numberToString(value);
-  };
-}
-```
-
-Si el subject NO es union (caso degenerado: `whenType<number>` sobre un
-`v: number` puro), el `whenType` cae al comportamiento legacy: solo el
-primero es la rama activa, los siguientes se marcan como `unreachable`.
-
-### Tabla de los 3 intrinsics
-
-| Intrinsic                | Argumentos                              | Callback  | Semántica                                                                 |
-|--------------------------|-----------------------------------------|-----------|---------------------------------------------------------------------------|
-| `when(pattern, callback)`| `pattern: T`, `callback: (T) => R` u `() => R` | 0 o 1 | Si `value == pattern`, ejecuta el callback pasando `value`.               |
-| `whenType<T>(callback)`  | `callback: () => R`                     | 0         | Si subject es union: `holds_alternative<T>` + `get<T>` (V23.2). Si no, primer `whenType` siempre-activo. |
-| `otherwise(callback)`    | `callback: (any) => R` u `() => R`      | 0 o 1     | Default. Se ejecuta si ningún `when` previo matcheó.                      |
-
-### Arrow functions requieren tipo explícito
-
-El dialecto NO infiere el tipo del parámetro en arrow functions (no
-hay inference contextual como en TypeScript). Esto significa:
-
-```ets
-// Correcto: tipo explícito en el lambda.
-when(0, (v: number): string => "cero")
-
-// Error de parser: "Los parámetros de una función flecha necesitan tipo".
-when(0, (v) => "cero")
-```
-
-## V2: `match (subject) { case ...; case ... }`
-
-La forma V2 sigue intacta. Se usa para tagged unions:
-
-```ets
-union Result<T, E> = Ok(T) | Err(E);
-
-function unwrap<T, E>(r: Result<T, E>): T {
-  return match (r) {
-    case { kind: "Ok", value }: value;
-    case { kind: "Err", error }: throw("unwrapped an Err: " + error);
-  };
-}
-```
-
-**Exhaustividad enforced**: el type-checker rechaza el programa si
-alguna variante no está cubierta y no hay wildcard `case _:`.
-
-## Diagnósticos
-
-| Código  | Significado                                                                |
-|---------|----------------------------------------------------------------------------|
-| E4400   | `when (p) => r` dentro de `match` V2 (TC39 eliminado en V23).              |
-| E4401   | `when`/`whenType`/`otherwise` usado fuera de un `match(...)`.              |
-| E4402   | `match` espera un array de cases como 2º (o 3º) argumento.                |
-| E4403   | `match` con 3 argumentos espera un string literal como discriminator.     |
-| E4404   | `when` espera 2 args (pattern, callback); `whenType`/`otherwise` 1 arg.  |
-| E4405   | `whenType`/`otherwise` callback debe ser arrow function.                   |
-| E4406   | `when`/`whenType`/`otherwise` callback debe tener 0 o 1 parámetros.       |
-| E4407   | `whenType<T>` requiere exactamente 1 type argument.                        |
-| E4408   | `match` cases no admite spread elements (`...`).                          |
-| E4409   | `match` cases deben ser `when`/`whenType`/`otherwise`.                    |
-
-## Limitaciones V23.2
-
-- **`whenType<T>(cb)` pasa el callback sin args**: aunque el codegen
-  narrowa correctamente el subject cuando es una union, NO se pasa
-  el valor narrowed al callback. Si necesitas acceder al valor
-  narrowed (p.ej. para llamar a métodos del tipo), usa la forma V2
-  destructurada que SI narrowa en el body del callback.
-- **`whenType` sobre subject no-union**: solo el primer `whenType` es
-  la rama activa; los siguientes se marcan como `unreachable`.
-- **Sin exhaustividad enforced**: si no hay `otherwise` y el subject
-  no matchea ningún `when`, el runtime hace `std::abort()`. El
-  compilador no avisa.
-- **Sin pattern destructuring en `when`**: `when` solo compara
-  igualdad (`==`). Para destructuring, usa la forma V2.
-- **Sin ranges**: `when(0..10, cb)` no se soporta. Usa varios `when`
-  consecutivos.
-- **Sin guards**: `when(x, x > 0, cb)` no se soporta. Usa una
-  función helper o un `if` antes del `match`.
-
-## Migración desde V1.10 (TC39)
+## Migracion desde V1.10 (TC39)
 
 ```ets
 // V1.10 (eliminado en V23):
@@ -200,7 +110,7 @@ function classify(x: number): string {
   };
 }
 
-// V23:
+// V23 (y V30):
 function classify(x: number): string {
   return match(x, [
     when(0, (v: number): string => "zero"),
@@ -210,18 +120,97 @@ function classify(x: number): string {
 }
 ```
 
-Notas de la migración:
+Notas de la migracion:
 - `when (p) => r` → `when(p, (v: T): R => r)`. El callback lleva tipo
-  explícito.
+  explicito.
 - `when (_) => r` → `otherwise((): R => r)`.
-- Los paréntesis alrededor del sujeto (`match (x)`) se quitan; la
-  nueva forma es `match(x, [...])` sin paréntesis extra.
+- Los parentesis alrededor del sujeto (`match (x)`) se quitan; la
+  nueva forma es `match(x, [...])` sin parentesis extra.
 - Las llaves `{ ... }` se reemplazan por corchetes `[ ... ]`.
 
-## Cómo se compila
+## Migracion desde V2 (a V30)
+
+```ets
+// V2 (eliminado en V30):
+return match (r) {
+  case { kind: "Ok", v }: v;
+  case { kind: "Err", e }: e.length;
+};
+
+// V30:
+return match(r, "kind", [
+  when("Ok",  (x: R): string => {
+    // x.kind === "Ok" aqui; x es R. Para acceder al payload narrowed
+    // usa whenType o un cast.
+    if (x.kind === "Ok") return "ok";
+    return "?";
+  }),
+  when("Err", (x: R): string => {
+    if (x.kind === "Err") return "err";
+    return "?";
+  }),
+]);
+```
+
+## Intrinsics
+
+| Intrinsic                | Argumentos                              | Callback  | Semantica                                                                 |
+|--------------------------|-----------------------------------------|-----------|---------------------------------------------------------------------------|
+| `when(pattern, callback)`| `pattern: T`, `callback: (T) => R` u `() => R` | 0 o 1 | Si `value == pattern`, ejecuta el callback pasando `value`.               |
+| `whenType<T>(callback)`  | `callback: () => R`                     | 0         | Si subject es union: `holds_alternative<T>` + `get<T>` (V23.2). Si no, primer `whenType` siempre-activo. |
+| `otherwise(callback)`    | `callback: (any) => R` u `() => R`      | 0 o 1     | Default. Se ejecuta si ningun `when` previo matcheo.                      |
+
+## Arrow functions requieren tipo explicito
+
+El dialecto NO infiere el tipo del parametro en arrow functions (no
+hay inference contextual como en TypeScript). Esto significa:
+
+```ets
+// Correcto: tipo explicito en el lambda.
+when(0, (v: number): string => "cero")
+
+// Error de parser: "Los parametros de una funcion flecha necesitan tipo".
+when(0, (v) => "cero")
+```
+
+## Diagnosticos
+
+| Codigo  | Significado                                                                |
+|---------|----------------------------------------------------------------------------|
+| E4400   | `when (p) => r` dentro de `match` V2 (eliminado en V30).                   |
+| E4401   | `when`/`whenType`/`otherwise` usado fuera de un `match(...)`.              |
+| E4402   | `match` espera un array de cases como 2º (o 3º) argumento.                |
+| E4403   | `match` con 3 argumentos espera un string literal como discriminator.     |
+| E4404   | `when` espera 2 args (pattern, callback); `whenType`/`otherwise` 1 arg.  |
+| E4405   | `whenType`/`otherwise` callback debe ser arrow function.                   |
+| E4406   | `when`/`whenType`/`otherwise` callback debe tener 0 o 1 parametros.       |
+| E4407   | `whenType<T>` requiere exactamente 1 type argument.                        |
+| E4408   | `match` cases no admite spread elements (`...`).                          |
+| E4409   | `match` cases deben ser `when`/`whenType`/`otherwise`.                    |
+| E4410   | Forma V2 (`match (r) { case ... }`) eliminada en V30.                       |
+
+## Limitaciones V23 (y V30)
+
+- **`whenType<T>(cb)` pasa el callback sin args**: aunque el codegen
+  narrowa correctamente el subject cuando es una union, NO se pasa
+  el valor narrowed al callback. Si necesitas acceder al valor
+  narrowed, usa la API de `Result<>` (`r.value()`, `r.error()`).
+- **`whenType` sobre subject no-union**: solo el primer `whenType` es
+  la rama activa; los siguientes se marcan como `unreachable`.
+- **Sin exhaustividad enforced**: si no hay `otherwise` y el subject
+  no matchea ningun `when`, el runtime hace `std::abort()`. El
+  compilador no avisa (en V30, no enforce porque V2 se elimino).
+- **Sin pattern destructuring en `when`**: `when` solo compara
+  igualdad (`==`). Para destructuring, usa la API de `Result<>`.
+- **Sin ranges**: `when(0..10, cb)` no se soporta. Usa varios `when`
+  consecutivos.
+- **Sin guards**: `when(x, x > 0, cb)` no se soporta. Usa una
+  funcion helper o un `if` antes del `match`.
+
+## Como se compila
 
 El codegen intercepta la `CallExpression` con `matchedKind === "match"`
-(que el type-checker marca durante la fase semántica) y emite un IIFE
+(que el type-checker marca durante la fase semantica) y emite un IIFE
 estilo:
 
 ```cpp

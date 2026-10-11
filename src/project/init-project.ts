@@ -297,19 +297,22 @@ declare global {
   function move<T>(x: ptr<T>): ptr<T>;
   function move<T>(x: constPtr<T>): constPtr<T>;
 
-  // ─── Match intrinsics (V23) ────────────────────────────────────────
+  // ─── Match intrinsics (V23 — unica forma valida en V30) ────────────
   // El dialecto expone una API declarativa para pattern matching
   // compatible con TypeScript. match(value, [when(pattern, callback),
   // ...]) se compila a un if/else chain (no a una llamada a funcion);
   // los intrinsics when/whenType/otherwise SOLO son validos dentro del
   // array de cases de match.
   //
+  // V30 elimino la forma V2 destructurada (match(r) { case { kind: "X",
+  // x }: ...; case _: ... }) porque NO era TS-compatible: el LSP de TS
+  // subrayaba 'match', 'case', y '{ kind: ... }' con errores rojos.
+  // Estas declaraciones son la UNICA forma de match valida.
+  //
   // Limitacion V23.1: whenType NO narrowa el tipo del subject. El
   // callback se invoca sin argumentos (usa captura por referencia si
-  // necesitas el subject). Issue #95 deja el narrowing fuera de
-  // alcance. Para type dispatching real, usa el V2 destructurado:
-  //   match (r) { case { kind: "X", x }: ...; case _: ... }
-  // que SI enforce exhaustividad.
+  // necesitas el subject). Issue #95 deja el narrowing completo fuera
+  // de alcance.
   interface MatchValueCase<P, R> {
     readonly __matchKind: "value";
     readonly __pattern: P;
