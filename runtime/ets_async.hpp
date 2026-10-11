@@ -205,11 +205,11 @@ private:
 template <typename T>
 T syncWait(Task<T>& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); return task.await_resume(); }
 template <typename T>
-T syncWait(Task<T>&& task) { return syncWait(task); }
+T syncWait(Task<T>&& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); return task.await_resume(); }
 template <typename T>
 T syncWait(const Task<T>& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); return task.await_resume(); }
+inline void syncWait(Task<void>&& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); }
 inline void syncWait(Task<void>& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); }
-inline void syncWait(Task<void>&& task) { syncWait(task); }
 inline void syncWait(const Task<void>& task) { task.start(); while (!task.done()) defaultEventLoop.runOne(); }
 
 inline void spawn(Task<void>&& task) {

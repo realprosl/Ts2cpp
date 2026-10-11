@@ -50,6 +50,7 @@ const BUCKETS = [
   "regressions",   // #18
   "http-server-drogon", // #153 (skipea si libdrogon-dev no esta)
   "timers",         // #160 (V30.1: setTimeout/setInterval/cancelTimer)
+  "dns",            // #163 (V30.4: resolveDns sobre uv_getaddrinfo)
 ] as const;
 type Bucket = typeof BUCKETS[number];
 
