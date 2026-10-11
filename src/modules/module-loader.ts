@@ -5,6 +5,7 @@ import { parse, analyze } from "../compiler.ts";
 import { CppGenerator } from "../codegen/cpp-generator.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { validateModuleVisibility } from "./module-visibility.ts";
+import { detectRuntimeBackends, type RuntimeBackends } from "./runtime-backends.ts";
 import type { Program, Statement } from "../ast/nodes.ts";
 
 // V22-gap-#1: soporta `import type { Foo } from "..."` (forma TS).
@@ -29,6 +30,9 @@ export interface ModuleCompilationResult {
   /** V18: link flags y headers externos detectados por decoradores. */
   linkFlags: string[];
   externalHeaders: string[];
+  /** V30.6.0: backends runtime que el programa necesita (libuv, curl, tls, io_uring).
+   * Detectado mirando el AST, no escaneando includes del cpp (mas fiable). */
+  runtimeBackends: RuntimeBackends;
 }
 export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string>; minimal?: boolean }
 
@@ -164,7 +168,7 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
       cpp: generator.generateModule(moduleAst, ast, headerName, stableInitName(module.file), index === ordered.length - 1 ? moduleInitializers : undefined),
     };
   });
-    return { ast, header, modules, moduleNames: ordered.map(m => m.file), linkFlags: generator.linkFlags, externalHeaders: generator.externalHeaders };
+    return { ast, header, modules, moduleNames: ordered.map(m => m.file), linkFlags: generator.linkFlags, externalHeaders: generator.externalHeaders, runtimeBackends: detectRuntimeBackends(ast) };
   } catch (error) {
     if (!(error instanceof DiagnosticError)) throw error;
     const diagnostics: Diagnostic[] = error.diagnostics.map(diagnostic => {

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --experimental-strip-types --no-warnings
 import { readFile } from "node:fs/promises";
 import { Lexer } from "../lexer/lexer.ts";
 import { DiagnosticError, formatDiagnostic } from "../core/diagnostic.ts";

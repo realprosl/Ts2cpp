@@ -5,21 +5,26 @@
   "type": "module",
   "description": "Transpilador modular de un subconjunto estático de TypeScript a C++20",
   "bin": {
-    "estatic": "src/cli.ts",
-    "estatic-lexer": "src/tools/lexer.ts",
-    "estatic-parser": "src/tools/parser.ts",
-    "estatic-semantic": "src/tools/semantic.ts",
-    "estatic-codegen": "src/tools/codegen.ts",
-    "estatic-format": "src/tools/format.ts",
-    "estatic-doc": "src/tools/doc.ts"
+    "etsc": "src/cli.ts",
+    "etsc-lexer": "src/tools/lexer.ts",
+    "etsc-parser": "src/tools/parser.ts",
+    "etsc-semantic": "src/tools/semantic.ts",
+    "etsc-codegen": "src/tools/codegen.ts",
+    "etsc-format": "src/tools/format.ts",
+    "etsc-doc": "src/tools/doc.ts"
   },
   "scripts": {
     "start": "node --experimental-strip-types src/cli.ts",
     "init": "node --experimental-strip-types src/cli.ts init",
     "demos": "node --experimental-strip-types scripts/build-demo-page.ts",
     "watch": "node --experimental-strip-types scripts/watch.ts",
-    "test": "node --experimental-strip-types --test test/unit/lexer.test.ts test/unit/parser.test.ts test/unit/type-checker.test.ts test/unit/cpp-types.test.ts test/unit/codegen.test.ts test/unit/init-project.test.ts test/unit/docs-sync.test.ts test/runner.ts",
-    "test:e2e": "node --experimental-strip-types --test test/e2e/_shared/runner.ts"
+    "test": "node --experimental-strip-types --test test/unit/lexer.test.ts test/unit/parser.test.ts test/unit/type-checker.test.ts test/unit/cpp-types.test.ts test/unit/codegen.test.ts test/unit/init-project.test.ts test/unit/docs-sync.test.ts test/unit/runtime-backends.test.ts test/runner.ts",
+    "test:e2e": "node --experimental-strip-types --test test/e2e/_shared/runner.ts",
+    "postinstall": "bash scripts/postinstall.sh",
+    "install:skip-sysdeps": "bash scripts/postinstall.sh --skip-sysdeps",
+    "install:with-sysdeps": "bash scripts/postinstall.sh --with-sysdeps",
+    "setup:link": "npm link",
+    "setup:unlink": "npm unlink -g estatic-ts-cpp"
   },
   "engines": { "node": ">=22.6" }
 }
