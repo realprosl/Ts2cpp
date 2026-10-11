@@ -47,7 +47,8 @@ TARGETS   = $(BUILD_DIR)/validate_architecture \
             $(BUILD_DIR)/benchmark_buffer_pool \
             $(BUILD_DIR)/benchmark_accept4 \
             $(BUILD_DIR)/test_multi_loop \
-            $(BUILD_DIR)/test_wrappers_v29
+            $(BUILD_DIR)/test_wrappers_v29 \
+            $(BUILD_DIR)/test_tls_handshake
 ALL_SRCS  = validate_architecture.cpp \
             tests/test_wait_until.cpp \
             tests/test_notify_post.cpp \
@@ -65,7 +66,8 @@ ALL_SRCS  = validate_architecture.cpp \
             tests/benchmark_buffer_pool.cpp \
             tests/benchmark_accept4.cpp \
             tests/test_multi_loop.cpp \
-            tests/test_wrappers_v29.cpp
+            tests/test_wrappers_v29.cpp \
+            tests/test_tls_handshake.cpp
 
 .PHONY: all clean run
 
@@ -126,6 +128,12 @@ $(BUILD_DIR)/test_multi_loop: tests/test_multi_loop.cpp $(RUNTIME_OBJS_LIBUV) | 
 # y ets_timer.hpp) sobre libuv.
 $(BUILD_DIR)/test_wrappers_v29: tests/test_wrappers_v29.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread
+
+# V30.5: test de los wrappers TLS server-side (ets_tls.hpp)
+# sobre libuv + OpenSSL. Usa `openssl s_client` como cliente
+# externo para validar el handshake y el I/O cifrado.
+$(BUILD_DIR)/test_tls_handshake: tests/test_tls_handshake.cpp $(RUNTIME_OBJS_LIBUV) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -I$(CURDIR)/../ -I$(CURDIR)/../.. -o $@ $< $(RUNTIME_OBJS_LIBUV) $(LDLIBS) -pthread -lssl -lcrypto
 
 $(BUILD_DIR):
 	mkdir -p $@

@@ -52,6 +52,7 @@ const BUCKETS = [
   "http",                // #164 (V30.3: cliente HTTP async con corutinas)
   "timers",         // #160 (V30.1: setTimeout/setInterval/cancelTimer)
   "dns",            // #163 (V30.4: resolveDns sobre uv_getaddrinfo)
+  "tls",            // V30.5: TLS server (createTlsServer/acceptTls/readTls/writeTls/closeTls)
 ] as const;
 type Bucket = typeof BUCKETS[number];
 
@@ -196,6 +197,8 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     const cppText = readFileSync(cppPath);
     const usesDrogon = cppText.includes("runtime/ets_http_drogon.hpp");
     const usesCurl = cppText.includes("runtime/ets_http_curl_client.hpp");
+    // V30.5: TLS server-side (ets_tls.hpp) requiere OpenSSL.
+    const usesTls = cppText.includes("runtime/ets_tls.hpp");
     const drogonLibs = [
       "-ldrogon", "-ltrantor", "-ljsoncpp",
       "-lssl", "-lcrypto", "-lresolv",
@@ -209,8 +212,12 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
       : [];
     // V29: el cliente HTTP sobre libcurl requiere -lcurl.
     const curlArgs = usesCurl ? ["-lcurl"] : [];
+    // V30.5: TLS requiere OpenSSL. Se anade solo si el codegen
+    // arrastra el header `runtime/ets_tls.hpp`. Esto se aplica
+    // ademas de las drogonLibs si el backend es Drogon + TLS.
+    const tlsArgs = usesTls && !usesDrogon ? ["-lssl", "-lcrypto"] : [];
 
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, ...libuvArgs, "-o", binPath], { cwd: workerScratch });
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, ...tlsArgs, ...libuvArgs, "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
