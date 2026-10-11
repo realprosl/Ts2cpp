@@ -411,6 +411,48 @@ export class CppGenerator {
     };
     return visit(program);
   }
+  // V30.2: detecta si el programa usa filesystem watchers
+  // (watchFs/unwatchFs). Si lo encuentra, fuerza el include
+  // de runtime/ets_fs_watcher.hpp.
+  private usesFsWatcher(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; callee?: unknown };
+      if (obj.kind === "CallExpression" && typeof obj.callee === "string") {
+        if (obj.callee === "watchFs" || obj.callee === "unwatchFs") return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
+  // V30.2: detecta si el programa usa setInterval (no setTimeout,
+  // porque setTimeout el callback ya dispara y termina solo).
+  // Si lo encuentra, el codegen anyade ets::defaultEventLoop.run()
+  // al final del main para que el loop siga vivo mientras el
+  // callback se ejecuta periodicamente.
+  private usesSetInterval(program: Program): boolean {
+    const visit = (node: unknown): boolean => {
+      if (!node || typeof node !== "object") return false;
+      const obj = node as { kind?: string; callee?: unknown };
+      if (obj.kind === "CallExpression" && typeof obj.callee === "string") {
+        if (obj.callee === "setInterval") return true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "callee") continue;
+        const child = (node as Record<string, unknown>)[key];
+        if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
+        else if (child && typeof child === "object") { if (visit(child)) return true; }
+      }
+      return false;
+    };
+    return visit(program);
+  }
   // V7: detecta si el programa usa los helpers de colecciones sobre `T[]`
   // (`arr.filter`, `arr.map`, `arr.reduce`). Recorremos el AST buscando
   // `MemberCallExpression` cuyo método es uno de los tres. Solo lo hacemos
@@ -623,6 +665,8 @@ export class CppGenerator {
       ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_curl_client.hpp\""] : []),
       // V30.1: timers sobre libuv. Ver runtime/ets_timer.hpp.
       ...(this.currentProgram !== undefined && this.usesTimer(this.currentProgram) ? ["#include \"runtime/ets_timer.hpp\""] : []),
+      // V30.2: filesystem watchers sobre libuv. Ver runtime/ets_fs_watcher.hpp.
+      ...(this.currentProgram !== undefined && this.usesFsWatcher(this.currentProgram) ? ["#include \"runtime/ets_fs_watcher.hpp\""] : []),
       ...(usesIoUringAsync ? ["#include \"runtime/ets_io_uring.hpp\"", "#include \"runtime/ets_io_uring_async.hpp\""] : []),
     ];
   }
@@ -868,6 +912,15 @@ export class CppGenerator {
       lines.push("int main(int argc, char** argv) {"); this.indent++;
       lines.push(this.pad() + "ets_argc = argc;", this.pad() + "ets_argv = argv;");
       for (const name of entryInitializers) lines.push(this.pad() + `${name}();`);
+      // V30.2: si el codigo usa watchFs o setInterval (callbacks
+      // async que necesitan que el event loop siga vivo), entramos
+      // en el loop al final del main. Sin esto, el main retorna
+      // inmediatamente y los callbacks nunca se ejecutan. NO se
+      // anyade para setTimeout puro (el callback ya dispara y el
+      // loop termina solo).
+      if (this.currentProgram !== undefined && (this.usesFsWatcher(this.currentProgram) || this.usesSetInterval(this.currentProgram))) {
+        lines.push(this.pad() + "ets::defaultEventLoop.run();");
+      }
       lines.push(this.pad() + "return 0;"); this.indent--; lines.push("}", "");
     }
     return lines.join("\n");
@@ -2323,6 +2376,20 @@ export class CppGenerator {
         if (finalCallee === "setTimeout" || finalCallee === "setInterval" || finalCallee === "cancelTimer") {
           return `ets::${finalCallee}(${args.join(", ")})`;
         }
+        // V30.2: filesystem watchers sobre libuv. watchFs/unwatchFs
+        // se traducen a las funciones libres ets::watchFs/...
+        // declaradas en runtime/ets_fs_watcher.hpp. El callback
+        // toma un FsEvent (struct) y devuelve void; el codegen
+        // lo emite como una lambda con un parametro `const FsEvent&`
+        // (pasada por referencia para evitar copia).
+        if (finalCallee === "watchFs" || finalCallee === "unwatchFs") {
+          return `ets::${finalCallee}(${args.join(", ")})`;
+        }
+        // V30.2: stopLoop() cierra el event loop actual. La
+        // implementacion es ets::defaultEventLoop.stop() (libuv).
+        if (finalCallee === "stopLoop") {
+          return `ets::defaultEventLoop.stop()`;
+        }
         return finalCallee === "print" ? `print(${args.join(", ")})` : `${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {
@@ -2407,6 +2474,15 @@ export class CppGenerator {
           // Mapear nombres del dialecto a nombres del struct C++.
           const cppMethod = method === "status" ? "status_code" : method === "body" ? "body_str" : method;
           return `${obj}.${cppMethod}(${args})`;
+        }
+        // V30.2: FsEvent. El struct C++ tiene campos publicos (path,
+        // flags), no metodos. El dialecto los expone como metodos
+        // (ev.path(), ev.flags()) para consistencia con el resto de
+        // la API. Aqui los emitimos como accesos a campo.
+        if (this.expressionType(node.object) === "FsEvent") {
+          const obj = this.emitExpression(node.object);
+          const args = node.args.map(a => this.emitExpression(a)).join(", ");
+          return `${obj}.${method}(${args})`;
         }
         // Codepath legacy de `HttpResponse` (cliente HTTP antiguo, struct
         // plano). El cliente HTTP reescrito en V28 vive en

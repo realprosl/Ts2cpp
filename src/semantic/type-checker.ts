@@ -495,6 +495,32 @@ export class TypeChecker {
     global.define("setTimeout", fn([timerCallback, input("number")], "Timer"));
     global.define("setInterval", fn([timerCallback, input("number")], "Timer"));
     global.define("cancelTimer", fn([input("Timer")], "void"));
+    // V30.2: stopLoop() cierra el event loop actual (lo saca de
+    // run() sin matar el proceso). Util para auto-cancelar
+    // setInterval: el callback compara un contador y llama a
+    // stopLoop() cuando ha disparado N veces. El main entra en
+    // run() automaticamente si detecta watchFs o setInterval.
+    global.define("stopLoop", fn([], "void"));
+    // V30.2: FsWatcher / FsEvent. Handle opaco a un uv_fs_event_t
+    // que vigila un directorio. El callback se invoca con un
+    // FsEvent { path: string, flags: number } cada vez que hay
+    // un cambio. Mantener el FsWatcher vivo mientras se quiera
+    // recibir eventos; unwatchFs(handle) lo cierra.
+    this.registerBuiltinInterface("FsWatcher", [
+      { name: "valid", returnType: "boolean", params: [] },
+    ]);
+    // FsEvent es un struct con dos campos: path (string) y flags
+    // (number). El dialecto accede a ellos como metodos.
+    this.registerBuiltinInterface("FsEvent", [
+      { name: "path", returnType: "string", params: [] },
+      { name: "flags", returnType: "number", params: [] },
+    ]);
+    // watchFs(path, callback, recursive?) -> FsWatcher. El callback
+    // toma un FsEvent y devuelve void. recursive es opcional (default
+    // false). unwatchFs(handle) cierra el watcher.
+    const fsCallback = { type: "(FsEvent)=>void" as TypeName, out: false };
+    global.define("watchFs", fn([input("string"), fsCallback, input("boolean")], "FsWatcher"));
+    global.define("unwatchFs", fn([input("FsWatcher")], "void"));
     const readFile = fn([input("string"), output("string"), output("string")], "boolean");
     readFile.overloads.push({ typeParameters: [], variadicTypeParameters: [], params: [input("string")], returnType: "Result<string>" });
     global.define("readFile", readFile);

@@ -88,6 +88,9 @@ export function cppParameterDeclaration(parameter: Parameter, renderedType: stri
   //   http.Response -> ets::HttpResponse&      (mutable, encadenable)
   if (renderedType === "ets::HttpRequest") type = "ets::HttpRequest const&";
   else if (renderedType === "ets::HttpResponse") type = "ets::HttpResponse&";
+  // V30.2: FsEvent se pasa por const& a las callbacks de
+  // watchFs (mismo patron que HttpRequest).
+  else if (renderedType === "ets::FsEvent") type = "ets::FsEvent const&";
   else if (mode === "out") type = `${renderedType}&`;
   else type = renderedType; // V22: T siempre por valor.
   if (parameter.variadic) {
