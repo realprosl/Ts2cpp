@@ -49,6 +49,7 @@ const BUCKETS = [
   "errors",        // #15
   "regressions",   // #18
   "http-server-drogon", // #153 (skipea si libdrogon-dev no esta)
+  "http",                // #164 (V30.3: cliente HTTP async con corutinas)
   "timers",         // #160 (V30.1: setTimeout/setInterval/cancelTimer)
   "dns",            // #163 (V30.4: resolveDns sobre uv_getaddrinfo)
 ] as const;

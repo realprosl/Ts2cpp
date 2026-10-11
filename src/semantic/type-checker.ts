@@ -2738,14 +2738,18 @@ export class TypeChecker {
             result = "string";
             break;
           }
-          // http.get(url) -> Result<HttpClientResponse, string>
+          // V30.3: http.get(url) -> Promise<Result<HttpClientResponse, string>>.
+          // Antes retornaba Result<...> sincrono. Ahora retorna Promise<Result<...>>
+          // y se traduce a `co_await ::ets::httpClientGetAsync(url)`. El cliente
+          // async (runtime/ets_http_curl_async.hpp) usa BlockingAwaiter + worker
+          // thread para no bloquear el event loop.
           if (node.method === "get") {
             if (node.args.length !== 1) this.report(node, "http.get(url) espera 1 argumento (url)");
             this.require(this.expression(node.args[0]!, scope, "string"), "string", node.args[0]!);
-            result = "Result<HttpClientResponse,string>";
+            result = "Promise<Result<HttpClientResponse,string>>";
             break;
           }
-          // http.post(url, body, contentType?) -> Result<HttpClientResponse, string>
+          // V30.3: http.post(url, body, contentType?) -> Promise<Result<HttpClientResponse, string>>.
           if (node.method === "post") {
             if (node.args.length < 2 || node.args.length > 3) {
               this.report(node, "http.post(url, body, contentType?) espera 2 o 3 argumentos");
@@ -2753,7 +2757,7 @@ export class TypeChecker {
             this.require(this.expression(node.args[0]!, scope, "string"), "string", node.args[0]!);
             this.require(this.expression(node.args[1]!, scope, "string"), "string", node.args[1]!);
             if (node.args[2]) this.require(this.expression(node.args[2], scope, "string"), "string", node.args[2]!);
-            result = "Result<HttpClientResponse,string>";
+            result = "Promise<Result<HttpClientResponse,string>>";
             break;
           }
           this.report(node, `http.${node.method} no es una API valida (usa createServer/param/query/header/get/post)`);

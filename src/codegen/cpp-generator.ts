@@ -696,7 +696,12 @@ export class CppGenerator {
       // V29: cliente HTTP sobre libcurl (sustituye al TCP plano de V28).
       // libcurl nos da HTTPS, HTTP/2, redirects, timeouts, decompression
       // built-in. Ver runtime/ets_http_curl_client.hpp.
-      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_curl_client.hpp\""] : []),
+      // V30.3: para await http.get/post, se incluye tambien el wrapper async
+      // (runtime/ets_http_curl_async.hpp) que usa BlockingAwaiter + worker
+      // thread. El include se hace siempre que el programa use el cliente;
+      // el wrapper async define httpClientGetAsync/Post que retornan
+      // Task<Result<HttpClientResponse>> y se usan con `co_await`.
+      ...(this.currentProgram !== undefined && this.usesHttpClient(this.currentProgram) ? ["#include \"runtime/ets_http_curl_async.hpp\""] : []),
       // V30.1: timers sobre libuv. Ver runtime/ets_timer.hpp.
       ...(this.currentProgram !== undefined && this.usesTimer(this.currentProgram) ? ["#include \"runtime/ets_timer.hpp\""] : []),
       // V30.2: filesystem watchers sobre libuv. Ver runtime/ets_fs_watcher.hpp.
@@ -2580,9 +2585,14 @@ export class CppGenerator {
           if (method === "header") return `::ets::http_header(${argList})`;
           // V28: cliente HTTP. http.get(url) / http.post(url, body, contentType?)
           // -> ets::httpClientGet / ets::httpClientPost (decl en
-          // runtime/ets_http_client.hpp). Devuelven Result<HttpClientResponse>.
-          if (method === "get") return `::ets::httpClientGet(${argList})`;
-          if (method === "post") return `::ets::httpClientPost(${argList})`;
+          // runtime/ets_http_curl_client.hpp). Devuelven Result<HttpClientResponse>.
+          // V30.3: ahora el type-checker marca como Promise<Result<...>>, asi que
+          // emitimos httpClientGetAsync / httpClientPostAsync (decl en
+          // runtime/ets_http_curl_async.hpp) que retornan Task<Result<HttpClientResponse>>
+          // y se pueden usar con `await`. El `await` se traduce a `co_await` en
+          // el dialecto (ver emitStatement/AwaitExpression).
+          if (method === "get") return `::ets::httpClientGetAsync(${argList})`;
+          if (method === "post") return `::ets::httpClientPostAsync(${argList})`;
           // No deberiamos llegar aqui: el type-checker ya reporto el error.
           return `/* http.${method} no soportado */`;
         }

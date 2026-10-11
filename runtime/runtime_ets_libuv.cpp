@@ -177,9 +177,26 @@ void LibuvEventLoop::runOne() {
     { std::lock_guard lock(postedMutex_); hasPosted = !posted_.empty(); }
     bool hasTimers = !timers_.empty();
     bool hasPolls = !polls_.empty();
+    // V30.3 fix: `UV_RUN_ONCE` con un solo `uv_async_t` activo
+    // NO bloquea (libuv optimization). Para que syncWait +
+    // BlockingAwaiter funcione, necesitamos un timer dummy que
+    // fuerce a libuv a entrar en epoll_wait. Anadimos un timer
+    // dummy al loop solo si no hay timers ni polls (caso comun
+    // de syncWait). El dummy se cierra al final.
+    uv_timer_t dummy{};
+    bool needDummy = !hasTimers && !hasPolls;
+    if (needDummy) {
+        uv_timer_init(&loop_, &dummy);
+        uv_timer_start(&dummy, [](uv_timer_t*){}, 1000, 0);
+    }
     if (hasPosted) uv_run(&loop_, UV_RUN_NOWAIT);
     else if (hasTimers || hasPolls) uv_run(&loop_, UV_RUN_ONCE);
-    else uv_run(&loop_, UV_RUN_NOWAIT);
+    else uv_run(&loop_, UV_RUN_ONCE);  // con dummy timer, bloquea
+    if (needDummy) {
+        uv_timer_stop(&dummy);
+        uv_close(reinterpret_cast<uv_handle_t*>(&dummy), nullptr);
+        uv_run(&loop_, UV_RUN_NOWAIT);  // drena el close
+    }
     // 3. Chequear cancelaciones en polls DESPUES del uv_run.
     for (auto& [fd, ps] : polls_) {
         for (auto& e : ps.entries) {
@@ -199,8 +216,13 @@ void LibuvEventLoop::runOne() {
             }
         }
     }
-    uv_async_send(&wake_);
-    uv_run(&loop_, UV_RUN_NOWAIT);
+    // V30.3 fix: NO hacer `uv_async_send(&wake_)` ni `uv_run(NOWAIT)`
+    // aca. Esos consumen el eventfd signal del thread worker y
+    // llaman a `onWake` con `posted_` vacio. El siguiente `runOne`
+    // procesara el `onWake` correctamente porque el eventfd
+    // estara marcado y `posted_` ya tendra el handle (si el
+    // BlockingAwaiter capturo el `loop` correctamente en su
+    // thread de origen — ver BlockingAwaiter::await_suspend).
     // 4. Limpiar timers fired (V26: O(K) via timers_to_reap_, no O(N)).
     for (auto* t : timers_to_reap_) {
         if (!t->closed) {
