@@ -27,6 +27,8 @@ namespace ets {
 // CancellationToken, CancellationSource y WaitResult se declaran en
 // ets_event_loop_iface.hpp y vienen incluidos vía ets_event_loop.hpp.
 
+#ifndef ETS_RESULT_DEFINED
+#define ETS_RESULT_DEFINED 1
 template <typename T>
 class [[nodiscard]] Result {
 public:
@@ -43,7 +45,7 @@ private:
     std::optional<T> value_;
     std::string error_;
 };
-#define ETS_RESULT_DEFINED 1
+#endif
 
 template <typename T>
 Result<T> ok(T value) { return Result<T>::success(std::move(value)); }

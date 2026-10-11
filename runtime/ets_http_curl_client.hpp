@@ -127,6 +127,10 @@ inline CURL* makeEasyHandle(const std::string& url, long timeoutSec = 10) {
 
 }  // namespace detail
 
+}  // namespace ets  // cierre del namespace ets abierto en linea 36
+    // (HttpClientResponse y detail::*). Reabrimos namespace ets para
+    // Result y las funciones httpClientGet/Post a continuacion.
+
 // Result<T> en namespace ets. Mismo nombre que el de ets_async.hpp
 // para mantener compatibilidad con el codegen del dialecto. El
 // `ETS_RESULT_DEFINED` evita redefinition cuando el dialecto ya
@@ -153,13 +157,15 @@ private:
 }  // namespace ets
 #endif
 
-inline Result<HttpClientResponse> httpClientGet(const std::string& url) {
+namespace ets {
+
+inline ets::Result<ets::HttpClientResponse> httpClientGet(const std::string& url) {
     detail::ensureCurlGlobalInit();
     CURL* h = nullptr;
     try {
         h = detail::makeEasyHandle(url);
     } catch (const std::exception& e) {
-        return Result<HttpClientResponse>::failure(std::string("curl init: ") + e.what());
+        return ets::Result<ets::HttpClientResponse>::failure(std::string("curl init: ") + e.what());
     }
     detail::WriteBuf wb;
     HttpClientResponse resp;
@@ -173,17 +179,17 @@ inline Result<HttpClientResponse> httpClientGet(const std::string& url) {
         std::string err = "GET " + url + " failed: ";
         err += curl_easy_strerror(rc);
         curl_easy_cleanup(h);
-        return Result<HttpClientResponse>::failure(std::move(err));
+        return ets::Result<ets::HttpClientResponse>::failure(std::move(err));
     }
     long status = 0;
     curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
     resp.status_ = static_cast<int>(status);
     resp.body_ = std::move(wb.data);
     curl_easy_cleanup(h);
-    return Result<HttpClientResponse>::success(std::move(resp));
+    return ets::Result<ets::HttpClientResponse>::success(std::move(resp));
 }
 
-inline Result<HttpClientResponse> httpClientPost(const std::string& url,
+inline ets::Result<ets::HttpClientResponse> httpClientPost(const std::string& url,
                                                 const std::string& body,
                                                 const std::string& contentType) {
     detail::ensureCurlGlobalInit();
@@ -191,7 +197,7 @@ inline Result<HttpClientResponse> httpClientPost(const std::string& url,
     try {
         h = detail::makeEasyHandle(url);
     } catch (const std::exception& e) {
-        return Result<HttpClientResponse>::failure(std::string("curl init: ") + e.what());
+        return ets::Result<ets::HttpClientResponse>::failure(std::string("curl init: ") + e.what());
     }
     detail::WriteBuf wb;
     HttpClientResponse resp;
@@ -214,14 +220,14 @@ inline Result<HttpClientResponse> httpClientPost(const std::string& url,
         std::string err = "POST " + url + " failed: ";
         err += curl_easy_strerror(rc);
         curl_easy_cleanup(h);
-        return Result<HttpClientResponse>::failure(std::move(err));
+        return ets::Result<ets::HttpClientResponse>::failure(std::move(err));
     }
     long status = 0;
     curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
     resp.status_ = static_cast<int>(status);
     resp.body_ = std::move(wb.data);
     curl_easy_cleanup(h);
-    return Result<HttpClientResponse>::success(std::move(resp));
+    return ets::Result<ets::HttpClientResponse>::success(std::move(resp));
 }
 
 }  // namespace ets
