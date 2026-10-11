@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --experimental-strip-types --no-warnings
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, basename, extname, dirname, join } from "node:path";
@@ -13,7 +13,7 @@ import { BuildLogger } from "./core/build-logger.ts";
 import { initializeProject } from "./project/init-project.ts";
 
 function usage(): never {
-  console.error("Uso:\n  estatic init [directorio]\n  estatic [entrada.ts|entrada.ets] [-o salida.cpp] [--config estatic.config.ts] [--build] [--unity]");
+  console.error("Uso:\n  etsc init [directorio]\n  etsc [entrada.ts|entrada.ets] [-o salida.cpp] [--config estatic.config.ts] [--build] [--unity]");
   process.exit(2);
 }
 
@@ -159,20 +159,11 @@ try {
     // compartido entre todos los proyectos del usuario). Si existe, se
     // copia al build/ local y se usa. Si no, fallback al local.
     //
-    // Deteccion:
-    //   - Si unified contiene "runtime/ets_event_loop_libuv", el programa
-    //     usa LibuvEventLoop -> necesitamos runtime_ets_libuv.o.
-    //   - Si unified contiene "runtime/ets_runtime_full" o
-    //     "runtime/ets_runtime.hpp" (que a su vez incluye el bundle
-    //     completo con ets_async, ets_net, ets_dns, ets_timer, etc.),
-    //     tambien usamos libuv como backend (V30.5+).
-    //   - PollEventLoop siempre (selector lo incluye via poll como fallback).
-    //
-    // Si los .o no existen (caso fresh install), caemos al path inline
-    // de back-compat: el header los define y se compilan en cada TU.
-    const useLibuvBackend = unified.includes("runtime/ets_event_loop_libuv")
-                          || unified.includes("runtime/ets_runtime_full")
-                          || unified.includes("runtime/ets_runtime.hpp");
+    // V30.6.0: deteccion declarativa de libuv desde el AST, no desde
+    // un escaneo de includes del cpp (que era fragil y se rompio con
+    // el bundle runtime/ets_runtime_full.hpp). El AST ya sabe que
+    // funciones runtime usa el programa (readTcp, setTimeout, etc.).
+    const useLibuvBackend = result.runtimeBackends.libuv;
 
     // Lee la version de Ts2cpp desde package.json (cacheado para no
     // leerlo cada build).

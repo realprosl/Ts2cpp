@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -144,24 +144,20 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   const progress = new BuildProgress(options.verbose ?? false);
   if (options.verbose) process.stderr.write(`   Cargando grafo de módulos...\n`);
 
-  // V30.5.6: pre-compilar el runtime si los .o no existen (clone fresco).
-  // El modo --unity (cli.ts) ya lo hace antes de enlazar, pero el modo
-  // --build (incremental) no, y un usuario que acaba de clonar el repo no
-  // tiene los .o (build/ esta en .gitignore). Sin esto, el linker falla
-  // con "undefined reference to ets::UvFdAwaiter::*" o
-  // "ets::LibuvEventLoop::*" en el primer build.
+  // V30.6.0: el pre-compile de los .o del runtime ahora lo hace
+  // `scripts/postinstall.sh` (llamado por `npm install` automaticamente).
+  // El incremental ya no intenta compilar nada del runtime — eso es
+  // responsabilidad del postinstall. Si los .o no existen, fallamos
+  // rapido con un mensaje claro en vez de intentar compilarlos aqui
+  // (lo cual era fragil y duplicaba logica).
   const runtimeObjDir = join(compilerRoot, "build");
-  const requiredObjs = ["runtime_ets_libuv.o", "runtime_ets_net_libuv.o", "runtime_ets_poll.o", "runtime_ets_net.o"];
-  const missingObjs = requiredObjs.filter(name => !existsSync(join(runtimeObjDir, name)));
-  if (missingObjs.length > 0) {
-    if (options.verbose) progress.log(`runtime .o no encontrados (${missingObjs.join(", ")}), pre-compilando con scripts/build-runtime.sh`);
-    try {
-      execFileSync("bash", [join(compilerRoot, "scripts", "build-runtime.sh")], { stdio: options.verbose ? "inherit" : "ignore" });
-    } catch (e) {
-      // No abortamos: puede que el usuario use solo el backend poll y
-      // no necesite libuv. El linker fallara mas tarde si realmente
-      // faltan simbolos.
-    }
+  if (!existsSync(runtimeObjDir) || !existsSync(join(runtimeObjDir, "runtime_ets_libuv.o"))) {
+    throw new Error(
+      `Los .o del runtime no se encontraron en ${runtimeObjDir}/.\n` +
+      `Esto ocurre tras un clone fresco. Ejecuta 'npm install' en ${compilerRoot}\n` +
+      `para compilar el runtime, o 'bash scripts/postinstall.sh --skip-sysdeps' si\n` +
+      `ya tienes libuv-dev/libcurl-dev/libssl-dev instalados.`
+    );
   }
   // 1) Cargamos el grafo (esto también valida resolución de imports y
   // visibilidad nominal). Cualquier error aquí aborta antes de tocar la
@@ -328,27 +324,14 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   });
   if (!binaryExists || linkFlagsChanged || compiled.length > 0) {
     progress.beginPhase(`Enlazando binario (${config.compiler.command})`);
-    const needsTls = result.header.includes("runtime/ets_tls.hpp") || result.modules.some(m => m.cpp.includes("runtime/ets_tls.hpp"));
-    const tlsLibraries = needsTls ? ["-lssl", "-lcrypto"] : [];
-    // V30.5.5: detectar si el programa usa libuv (via el bundle
-    // ets_runtime_full.hpp o headers especificos) y añadir los .o del
-    // runtime libuv + -luv. Sin esto, ejemplos como http-server.ets,
-    // for-await-demo.ets, fs-demo.ets, etc. fallan con
-    // 'undefined reference to ets::UvFdAwaiter::*' o
-    // 'ets::LibuvEventLoop::*'. El cli.ts ya hace esto en modo
-    // --unity (PR #169); el incremental builder (este archivo) es el
-    // que se usa con --build (default cuando hay config) y no lo
-    // hacia.
-    const needsLibuv = result.header.includes("runtime/ets_event_loop_libuv")
-                    || result.header.includes("runtime/ets_runtime_full")
-                    || result.header.includes("runtime/ets_runtime.hpp")
-                    || result.modules.some(m =>
-                         m.cpp.includes("runtime/ets_async.hpp")
-                      || m.cpp.includes("runtime/ets_net_libuv.hpp")
-                      || m.cpp.includes("runtime/ets_timer.hpp")
-                      || m.cpp.includes("runtime/ets_fs_watcher.hpp")
-                      || m.cpp.includes("runtime/ets_dns.hpp")
-                      || m.cpp.includes("runtime/ets_http_curl_async.hpp"));
+    // V30.6.0: deteccion declarativa desde el AST, no escaneo de
+    // includes del cpp. Cubre libuv, tls y curl con una sola fuente de
+    // verdad (runtime-backends.ts) y elimina la heuristica fragil.
+    const needsLibuv = result.runtimeBackends.libuv;
+    const needsTls   = result.runtimeBackends.tls;
+    const needsCurl  = result.runtimeBackends.curl;
+    const tlsLibraries  = needsTls  ? ["-lssl", "-lcrypto"] : [];
+    const curlLibraries = needsCurl ? ["-lcurl"] : [];
     const runtimeObjDir = join(compilerRoot, "build");
     const libuvObjectPaths = [
       join(runtimeObjDir, "runtime_ets_libuv.o"),
@@ -363,6 +346,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
       ...config.compiler.linkFlags,
       ...config.linkLibraries.map(lib => lib.startsWith("-") ? lib : `-l${lib}`),
       ...tlsLibraries,
+      ...curlLibraries,
       ...libuvLinkArgs,
     ];
     await mkdir(dirname(binaryPath), { recursive: true });

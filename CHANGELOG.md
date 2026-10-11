@@ -2,6 +2,66 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.6.0 (2026-10-11) — V30.6.0 install declarativo + AST detection
+
+V30.6.0 cierra la cadena de bugs de "clone fresco no compila" (PRs
+#169, #170, #171) con un rediseño basado en tres piezas:
+
+### Added
+
+- **`scripts/postinstall.sh`**: nuevo script ejecutado por npm al
+  instalar el paquete. Detecta la distro (debian/ubuntu/fedora/arch/
+  alpine/macos), comprueba que `libuv-dev`, `libcurl-dev`, `libssl-dev`
+  están instaladas (instruye al usuario o las instala con `--with-sysdeps`),
+  y pre-compila el runtime a `.o` cacheados en `build/`. Sin este paso,
+  el primer build del usuario (sobre un clon fresco) fallaba con errores
+  crípticos de linker porque `build/` está en `.gitignore`.
+
+- **`src/modules/runtime-backends.ts`**: nuevo módulo con
+  `detectRuntimeBackends(program)` que recorre el AST y declara
+  qué backends runtime necesita el programa (libuv, curl, tls,
+  io_uring). Reemplaza la heurística de "escanear includes del
+  cpp" (PRs #169, #170, #171) que era frágil y se rompía con
+  bundles como `runtime/ets_runtime_full.hpp`.
+
+- **`etsc` global**: comandos binarios renombrados de `estatic*`
+  a `etsc*` (incluyendo el principal). El postinstall ofrece
+  `npm link` (con confirmación interactiva) para que `etsc` esté
+  disponible globalmente.
+
+- **Shebangs con `--experimental-strip-types`**: los 7 entrypoints
+  (`src/cli.ts` + `src/tools/*.ts`) usan
+  `#!/usr/bin/env -S node --experimental-strip-types --no-warnings`
+  para que el symlink global funcione sin flags manuales.
+
+### Changed
+
+- **`ModuleCompilationResult.runtimeBackends`**: nuevo campo con
+  la info de qué backends necesita el programa. `cli.ts` y
+  `incremental-builder.ts` lo consultan en vez de escanear
+  el cpp.
+
+- **`incremental-builder.ts`**: ya no intenta compilar el
+  runtime. Si los `.o` no existen, falla con un mensaje claro
+  apuntando a `npm install`. El pre-compile de #171 se elimina
+  (es responsabilidad del postinstall).
+
+- **Detección de TLS y curl**: además de libuv, el cli detecta
+  desde el AST si el programa usa TLS (y añade `-lssl -lcrypto`)
+  o curl (y añade `-lcurl`).
+
+### Tests
+
+- **`test/unit/runtime-backends.test.ts`** (nuevo): 13 tests
+  unitarios que verifican la detección de libuv, tls, curl y
+  io_uring, incluyendo llamadas dentro de lambdas, if/else,
+  bucles y awaits.
+
+- Suite estable: 72 OK / 4 FAIL pre-existentes (async-files,
+  match-union-demo, match-v2-demo, template-strings-demo).
+  0 regresiones. `etsc` global probado en un proyecto nuevo
+  desde otra carpeta: rc=0, binario linkeado contra `libuv.so.1`.
+
 ## v1.5.1 (2026-10-11) — V30.5.2 match: V23 con discriminator sobre union compila
 
 V30.5.2 cierra dos limitaciones pre-existentes que V30.5.1 (PR #167)
