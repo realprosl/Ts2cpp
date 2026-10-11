@@ -1873,15 +1873,33 @@ export class TypeChecker {
         // tagged union y verificamos:
         //   - el kind declarado de cada arm corresponde a una variante real
         //   - los bindings se registran como variables locales antes de
-        //     evaluar el resultado (path/message/etc. extraen el payload)
+        //   evaluar el resultado (path/message/etc. extraen el payload)
         //   - la suma de variantes cubiertas + un wildcard cubre TODAS
-        //     las variantes declaradas (exhaustividad)
+        //   las variantes declaradas (exhaustividad)
         const subjectType = this.expression(node.subject, scope);
         const subjectUnion = this.unions.get(genericBase(subjectType));
         const hasV2Arms = node.arms.some(arm => arm.variantMatch);
         if (hasV2Arms) {
           if (!subjectUnion) this.report(node, "El 'match' exhaustivo solo aplica a tagged unions; el sujeto no es ninguna unión declarada");
           else this.validateExhaustiveMatch(node, subjectUnion, scope);
+        }
+        // V30.5.1 fix: si el subject es un union generico (e.g.
+        // `Result<TlsContext>`), el payload de la variante es el
+        // type parameter literal (e.g. `"E"`), no el argumento
+        // real (e.g. `"string"`). Construimos un map de sustituciones
+        // a partir de los argumentos del subject, aplicando los
+        // defaults declarados en el union si faltan. Asi `match
+        // (r) { Result.Err(e) => ... }` ve `e: string` (default
+        // de `Result<T, E = string>`) en vez de `e: E`.
+        let variantSubs: Map<string, TypeName> | undefined;
+        if (subjectUnion && subjectUnion.typeParameters.length > 0) {
+          const subjectArgs = genericArguments(subjectType);
+          variantSubs = new Map<string, TypeName>();
+          subjectUnion.typeParameters.forEach((param, index) => {
+            const provided = subjectArgs[index];
+            if (provided) variantSubs!.set(param.name, provided);
+            else if (param.default) variantSubs!.set(param.name, param.default);
+          });
         }
         let resultType: TypeName | undefined;
         for (const arm of node.arms) {
@@ -1895,7 +1913,12 @@ export class TypeChecker {
           const armScope = scope;
           if (arm.variantMatch && !arm.variantMatch.isWildcard && subjectUnion) {
             const variant = subjectUnion.variants.find(v => v.name === arm.variantMatch!.variantName);
-            const payloadType = variant?.payload;
+            // V30.5.1 fix: sustituimos los type parameters en el payload.
+            // Antes se usaba `variant?.payload` literal, lo que daba
+            // `e: "E"` en vez de `e: "string"`.
+            const payloadType = variant?.payload
+              ? this.substituteType(variant.payload, variantSubs ?? new Map())
+              : undefined;
             const local = new Scope(scope);
             arm.variantMatch.bindings.forEach((name, index) => {
               if (payloadType) this.defineVariable(local, name, payloadType, false);

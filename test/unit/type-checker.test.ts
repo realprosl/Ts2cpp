@@ -778,6 +778,61 @@ test("V2: match exhaustivo reporta variante inexistente", () => {
   `, "no tiene variante");
 });
 
+// V30.5.1: el type-checker debe resolver el payload de las variantes
+// de Result<T, E = string> con los type parameters del subject.
+// Antes del fix, `case { kind: "Err", e }` daba error "se esperaba
+// operando numerico, se obtuvo 'E'" porque el payload del variant
+// era el type parameter literal "E" en vez del argumento real
+// (string por default). El fix aplica substituteType() con los
+// argumentos del subject (mas los defaults del union) para que
+// `e: string` y `v: T` (T es el argumento del subject).
+test("V30.5.1: match sobre Result<T, E = string> tipa bindings con argumentos resueltos", () => {
+  // No debe reportar error. El `e` debe tiparse como string
+  // (default de E) y `v` como T (argumento del subject).
+  // Usamos una operacion sensible al tipo para forzar la
+  // validacion: `e.length` requiere string, `v + 1` requiere number.
+  const { ast, checker } = check(`
+    function handle(x: Result<number, string>): number {
+      return match (x) {
+        case { kind: "Ok", v }: v;
+        case { kind: "Err", e }: e.length;
+      };
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
+});
+
+// V30.5.1: variante solo con T explicito, E usa el default (string).
+test("V30.5.1: match sobre Result<T> (1 arg) usa default string para E", () => {
+  const { ast, checker } = check(`
+    function handle(x: Result<number>): number {
+      return match (x) {
+        case { kind: "Ok", v }: v;
+        case { kind: "Err", e }: e.length;
+      };
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
+});
+
+// V30.5.1: variante con E explicito (no default). Usamos una
+// operacion sensible al tipo de E para forzar la validacion:
+// `e` debe tiparse como boolean.
+test("V30.5.1: match sobre Result<T, E> usa E explicito cuando se da", () => {
+  const { ast, checker } = check(`
+    function handle(x: Result<number, boolean>): number {
+      return match (x) {
+        case { kind: "Ok", v }: v;
+        case { kind: "Err", e }: e ? 1 : 0;
+      };
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
+});
+
 // V14: Optional<T> estilo Rust. Métodos intrínsecos, sin magia.
 test("V14: Optional.isPresent/isEmpty retornan boolean", () => {
   const { ast } = check(`
