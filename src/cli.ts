@@ -162,11 +162,17 @@ try {
     // Deteccion:
     //   - Si unified contiene "runtime/ets_event_loop_libuv", el programa
     //     usa LibuvEventLoop -> necesitamos runtime_ets_libuv.o.
+    //   - Si unified contiene "runtime/ets_runtime_full" o
+    //     "runtime/ets_runtime.hpp" (que a su vez incluye el bundle
+    //     completo con ets_async, ets_net, ets_dns, ets_timer, etc.),
+    //     tambien usamos libuv como backend (V30.5+).
     //   - PollEventLoop siempre (selector lo incluye via poll como fallback).
     //
     // Si los .o no existen (caso fresh install), caemos al path inline
     // de back-compat: el header los define y se compilan en cada TU.
-    const useLibuvBackend = unified.includes("runtime/ets_event_loop_libuv");
+    const useLibuvBackend = unified.includes("runtime/ets_event_loop_libuv")
+                          || unified.includes("runtime/ets_runtime_full")
+                          || unified.includes("runtime/ets_runtime.hpp");
 
     // Lee la version de Ts2cpp desde package.json (cacheado para no
     // leerlo cada build).
