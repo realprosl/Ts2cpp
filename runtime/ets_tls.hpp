@@ -86,7 +86,7 @@ inline Task<Result<TlsConnection>> acceptTls(TcpListener listener, TlsContext co
             const auto message = tlsError("Handshake TLS fallido"); ::SSL_free(ssl); co_return Result<TlsConnection>::failure(message);
         }
         const short events = error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT;
-        const auto waited = co_await CancellableFdAwaiter{connection.fd(), events, deadline, token};
+        const auto waited = co_await NetCancellableFdAwaiter{connection.fd(), events, deadline, token};
         if (waited != WaitResult::ready) {
             const auto message = waitError(waited, "Handshake TLS"); ::SSL_free(ssl); co_return Result<TlsConnection>::failure(message);
         }
@@ -106,7 +106,7 @@ inline Task<Result<std::string>> readTls(TlsConnection connection, double reques
         if (error == SSL_ERROR_ZERO_RETURN) { buffer.clear(); co_return Result<std::string>::success(std::move(buffer)); }
         if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE) co_return Result<std::string>::failure(tlsError("Lectura TLS fallida"));
         const short events = static_cast<short>(error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT);
-        const auto waited = co_await CancellableFdAwaiter{connection.fd(), events, deadline, token};
+        const auto waited = co_await NetCancellableFdAwaiter{connection.fd(), events, deadline, token};
         if (waited != WaitResult::ready) co_return Result<std::string>::failure(waitError(waited, "Lectura TLS"));
     }
 }
@@ -121,7 +121,7 @@ inline Task<Result<double>> writeTls(TlsConnection connection, std::string data,
         const int error = ::SSL_get_error(connection.native(), written);
         if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE) co_return Result<double>::failure(tlsError("Escritura TLS fallida"));
         const short events = static_cast<short>(error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT);
-        const auto waited = co_await CancellableFdAwaiter{connection.fd(), events, deadline, token};
+        const auto waited = co_await NetCancellableFdAwaiter{connection.fd(), events, deadline, token};
         if (waited != WaitResult::ready) co_return Result<double>::failure(waitError(waited, "Escritura TLS"));
     }
     co_return Result<double>::success(static_cast<double>(offset));

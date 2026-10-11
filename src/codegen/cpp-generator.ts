@@ -2498,6 +2498,11 @@ export class CppGenerator {
           writeTcp:       "ets::writeTcp",
           writeTcpUntil:  "ets::writeTcpUntil",
           closeTcp:       "ets::closeTcp",
+          createTlsServer:"ets::createTlsServer",
+          acceptTls:      "ets::acceptTls",
+          readTls:        "ets::readTls",
+          writeTls:       "ets::writeTls",
+          closeTls:       "ets::closeTls",
         };
         // V16: constructores `ok<T>(t)` / `err<T>(e)` viven en `ets::`.
         const resultCalleeMap: Record<string, string> = {
