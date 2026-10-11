@@ -1529,65 +1529,24 @@ export class CppGenerator {
     }
   }
 
-  // Emite `match (subject) { ... }`. Dos codegen posibles:
-  //   - V2 (algún arm trae `variantMatch`): `switch (subject.kind) { case
-  //     Variant: ...; default: <wildcard> }`. Cada arm con bindings extrae
-  //     el payload con `std::get<index>`. La exhaustividad ya fue
-  //     verificada en el type-checker; aquí solo emitimos.
-  //   - Legacy TC39 `when`: cadena de ternarios `(subject == pattern ?
-  //     result : ...)`.
-  private emitMatch(node: { subject: Expression; arms: { pattern: Expression; result: Expression; variantMatch?: { variantName: string; bindings: string[]; isWildcard?: boolean } }[] }): string {
-    if (node.arms.length === 0) return "/* empty match */";
-    if (node.arms.some(arm => arm.variantMatch)) return this.emitV2Match(node);
-    const subject = this.emitExpression(node.subject);
-    const last = node.arms[node.arms.length - 1];
-    let result = this.emitExpression(last.result);
-    for (let index = node.arms.length - 2; index >= 0; index--) {
-      const arm = node.arms[index];
-      const patternText = this.emitExpression(arm.pattern);
-      const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
-      if (isWildcard) result = this.emitExpression(arm.result);
-      else result = `(${subject} == ${patternText} ? ${this.emitExpression(arm.result)} : ${result})`;
-    }
-    return result;
+  // V30: la forma V2 de match (`match (subject) { ... }`) se elimino.
+  // El match V30 es siempre una `CallExpression` con `callee === "match"`,
+  // parseada por `assignment()`. Si llegamos aqui (caso degenerado
+  // despues de un error E4410 del parser), emitimos un comentario y void
+  // para no romper el resto del codegen.
+  private emitMatch(node: { subject: Expression; arms: { pattern: Expression; result: Expression }[] }): string {
+    void node;
+    return "/* E4410: match V2 eliminado en V30; usa match(value, [when(pat, cb), otherwise(cb)]) */";
   }
-  private emitV2Match(node: { subject: Expression; arms: { pattern: Expression; result: Expression; variantMatch?: { variantName: string; bindings: string[]; isWildcard?: boolean } }[] }): string {
-    const subjectType = this.expressionType(node.subject);
-    const subjectUnion = subjectType ? this.unionFromType(subjectType) : undefined;
-    if (!subjectUnion) return "/* V2 match: subject no es union */";
-    const kindEnum = `${subjectUnion.name}_Kind`;
-    const subjectStr = this.emitExpression(node.subject);
-    const arms = node.arms.filter(arm => arm.variantMatch);
-    const wildcard = arms.find(arm => arm.variantMatch!.isWildcard);
-    const resultType = this.cppTypeForMatchReturn(arms);
-    // Sin IIFE: declaramos el resultado en el scope del call site y le
-    // asignamos desde cada case. La exhaustividad está garantizada por el
-    // type-checker; el `default` aborta si la lógica se rompe en runtime.
-    const cases = arms.filter(arm => !arm.variantMatch!.isWildcard).map(arm => {
-      const vm = arm.variantMatch!;
-      const variant = subjectUnion.variants.find(v => v.name === vm.variantName)!;
-      const index = subjectUnion.variants.indexOf(variant);
-      const payloadAccess = variant.payload ? `std::get<${index}>(${subjectStr}.payload)` : undefined;
-      const bindings = vm.bindings.map((bindingName) =>
-        `            const auto& ${this.cppName(bindingName)} = ${payloadAccess};`
-      ).join("\n");
-      const resultExpr = this.emitExpression(arm.result);
-      const bindingsBlock = bindings ? `\n${bindings}` : "";
-      return `        case ${kindEnum}::${vm.variantName}: {${bindingsBlock}\n            __ets_match_result = ${resultExpr};\n            break;\n        }`;
-    }).join("\n");
-    const defaultExpr = wildcard
-      ? `__ets_match_result = ${this.emitExpression(wildcard.result)}; break;`
-      : `[[unlikely]] std::abort();`;
-    return `([&]() -> ${resultType} {\n    auto&& __ets_match_subject = (${subjectStr});\n    ${resultType} __ets_match_result{};\n    switch (__ets_match_subject.kind) {\n${cases}\n        default: ${defaultExpr}\n    }\n    return __ets_match_result;\n}())`;
+  // V30: dead code (V2 match eliminado). Queda por seguridad.
+  private emitV2Match(node: { subject: Expression; arms: { pattern: Expression; result: Expression }[] }): string {
+    void node;
+    return "/* E4410: match V2 eliminado en V30 */";
   }
-  // Tipo de retorno del lambda que evalúa el match V2. Usa el primer arm no
-  // wildcard (su tipo de resultado es el del match completo). El wildcard
-  // debe coincidir (verificado por el type-checker con `typeMatches`).
-  private cppTypeForMatchReturn(arms: { result: Expression; variantMatch?: { variantName: string; bindings: string[]; isWildcard?: boolean } }[]): string {
-    const first = arms.find(arm => arm.variantMatch && !arm.variantMatch.isWildcard) ?? arms[0];
-    if (!first) return "void";
-    const t = this.expressionType(first.result);
-    return t ? cppType(t) : "auto";
+  // V30: dead code (V2 match eliminado). Queda por seguridad.
+  private cppTypeForMatchReturn(arms: { result: Expression }[]): string {
+    void arms;
+    return "void";
   }
 
   // V23: codegen de la nueva forma `match(value, [when(...), otherwise(...)])`
@@ -1595,7 +1554,7 @@ export class CppGenerator {
   //
   // Estrategia: emitir un IIFE que capture el subject en una variable local y
   // construya un if/else chain. Es estructuralmente análogo al V2 destructurado
-  // (`emitV2Match`) pero más simple: cada arm tiene una condición de igualdad
+  // (`emitNewMatch` en V23) pero más simple: cada arm tiene una condición de igualdad
   // directa, no hay extracción de `std::get<i>`.
   //
   // Limitaciones documentadas (issue #95):
@@ -1609,7 +1568,7 @@ export class CppGenerator {
   //   - Si no hay `otherwise` ni `whenType`, el else final aborta con
   //     `std::abort()`. La exhaustividad NO se valida en la nueva forma
   //     (solo V2 destructurado la enforce con `validateExhaustiveMatch`).
-  private emitNewMatch(node: { args: Expression[]; matchedDiscriminator?: string; matchedResultType?: TypeName }): string {
+  private emitNewMatch(node: { args: Expression[]; matchedDiscriminator?: string; matchedDiscriminatorType?: string; matchedResultType?: TypeName }): string {
     // El checker garantiza `args.length ∈ {2, 3}`. args[0] es el subject;
     // args[1] (o args[2] con discriminator) es el array literal de cases.
     const subject = node.args[0]!;
@@ -1655,7 +1614,22 @@ export class CppGenerator {
     // la comparación `subjAccess == patternText` funciona tal cual para
     // los tipos de caso comunes.
     const whensLines = whens.map(w => {
-      const patternText = this.emitExpression(w.pattern);
+      // V30.5.2: si el discriminator tiene un tipo anotado (el type-checker
+      // lo setea cuando el subject es una union y el discriminator es el
+      // campo `kind`), emitimos el pattern como `EnumType::Variant` en vez
+      // de `std::string("Variant")`. Esto permite que la comparacion
+      // `r.kind == R_Kind::Success` compile.
+      let patternText: string;
+      if (node.matchedDiscriminatorType) {
+        const variantName = w.pattern.kind === "LiteralExpression" && w.pattern.literalType === "string" ? String(w.pattern.value) : null;
+        if (variantName) {
+          patternText = `${node.matchedDiscriminatorType}::${variantName}`;
+        } else {
+          patternText = this.emitExpression(w.pattern);
+        }
+      } else {
+        patternText = this.emitExpression(w.pattern);
+      }
       // El callback puede tener 0 o 1 parámetro. Si tiene 1, le pasamos
       // el subject. Si tiene 0, lo invocamos sin argumentos (p.ej.
       // `otherwise(() => "default")`).
@@ -1803,7 +1777,7 @@ export class CppGenerator {
       body = unreachableComments.map(c => `        // ${c}`).join("\n") + "\n" + body;
     }
     const allLines = body;
-    // IIFE estilo `emitV2Match`: captura por referencia `[&]`, deduce
+    // IIFE estilo V23: captura por referencia `[&]`, deduce
     // tipo de retorno con `-> R`, y devuelve el resultado. Si el tipo de
     // retorno es `void`, omitimos la flecha y los returns.
     if (resultType === "void") {

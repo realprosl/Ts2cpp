@@ -1107,43 +1107,12 @@ export class TypeChecker {
     }
   }
 
+  // V30: la forma V2 de match (`case { kind: ... }:`) se elimino.
+  // La exhaustividad la enforce el dialecto a traves de `otherwise(...)`
+  // en la forma V23 (`match(value, [when(...), otherwise(...)])`).
+  // Esta funcion queda como dead code por seguridad.
   private validateExhaustiveMatch(node: MatchExpression, subjectUnion: UnionDeclaration, scope: Scope): void {
-    // Conjunto de variantes cubiertas explícitamente y bandera de wildcard.
-    const covered = new Set<string>();
-    let hasWildcard = false;
-    for (const arm of node.arms) {
-      if (!arm.variantMatch) {
-        // Arm legacy (`when (...)`); en un match V2 no lo aceptamos: el
-        // codegen V2 emite `switch` sobre `kind` y necesita la metadata.
-        this.report(arm, "Un 'match' exhaustivo solo admite arms 'case'; los arms 'when' pertenecen al flujo TC39 stage 2");
-        continue;
-      }
-      if (arm.variantMatch.isWildcard) { hasWildcard = true; continue; }
-      const variantName = arm.variantMatch.variantName;
-      const variant = subjectUnion.variants.find(v => v.name === variantName);
-      if (!variant) {
-        this.report(arm, `La unión '${subjectUnion.name}' no tiene variante '${variantName}' (variantes: ${subjectUnion.variants.map(v => v.name).join(", ")})`);
-        continue;
-      }
-      if (covered.has(variantName)) this.report(arm, `La variante '${variantName}' ya estaba cubierta por un arm anterior`);
-      covered.add(variantName);
-      // Verificar el número de bindings contra el payload de la variante.
-      const payloadFields = variant.payload ? 1 : 0;
-      if (arm.variantMatch.bindings.length !== payloadFields) {
-        this.report(arm, `La variante '${variantName}' tiene ${payloadFields} payload(s); el pattern declara ${arm.variantMatch.bindings.length} binding(s)`);
-        continue;
-      }
-      // Los bindings deben ser identifiers no reservados (no shadowean
-      // símbolos en el scope actual — basta con detectar keywords del
-      // dialecto que también son names de variable frecuentes).
-      for (const binding of arm.variantMatch.bindings) {
-        if (!binding) continue;
-        if (binding === "_") this.report(arm, `El binding '${binding}' es un identificador inválido (reservado como wildcard)`);
-      }
-    }
-    if (hasWildcard) return; // el wildcard cubre cualquier variante restante
-    const missing = subjectUnion.variants.filter(v => !covered.has(v.name)).map(v => v.name);
-    if (missing.length) this.report(node, `'match' no es exhaustivo: faltan variantes ${missing.join(", ")}`);
+    void node; void subjectUnion; void scope;
   }
   // V3: rango de un literal numérico contra un tipo numérico concreto (i8..u64, f32, f64).
   // Se invoca cuando una declaración anota explícitamente el tipo numérico y el
@@ -1865,75 +1834,15 @@ export class TypeChecker {
         break;
       }
       case "MatchExpression": {
-        // Cada arm devuelve un valor; todos deben compartir tipo. El subject
-        // y los patterns se evalúan para propagar tipos; el type-check de
-        // pattern == subject se hace en codegen (runtime), no aquí.
-        //
-        // V2: cuando algún arm trae `variantMatch`, el subject debe ser una
-        // tagged union y verificamos:
-        //   - el kind declarado de cada arm corresponde a una variante real
-        //   - los bindings se registran como variables locales antes de
-        //   evaluar el resultado (path/message/etc. extraen el payload)
-        //   - la suma de variantes cubiertas + un wildcard cubre TODAS
-        //   las variantes declaradas (exhaustividad)
-        const subjectType = this.expression(node.subject, scope);
-        const subjectUnion = this.unions.get(genericBase(subjectType));
-        const hasV2Arms = node.arms.some(arm => arm.variantMatch);
-        if (hasV2Arms) {
-          if (!subjectUnion) this.report(node, "El 'match' exhaustivo solo aplica a tagged unions; el sujeto no es ninguna unión declarada");
-          else this.validateExhaustiveMatch(node, subjectUnion, scope);
-        }
-        // V30.5.1 fix: si el subject es un union generico (e.g.
-        // `Result<TlsContext>`), el payload de la variante es el
-        // type parameter literal (e.g. `"E"`), no el argumento
-        // real (e.g. `"string"`). Construimos un map de sustituciones
-        // a partir de los argumentos del subject, aplicando los
-        // defaults declarados en el union si faltan. Asi `match
-        // (r) { Result.Err(e) => ... }` ve `e: string` (default
-        // de `Result<T, E = string>`) en vez de `e: E`.
-        let variantSubs: Map<string, TypeName> | undefined;
-        if (subjectUnion && subjectUnion.typeParameters.length > 0) {
-          const subjectArgs = genericArguments(subjectType);
-          variantSubs = new Map<string, TypeName>();
-          subjectUnion.typeParameters.forEach((param, index) => {
-            const provided = subjectArgs[index];
-            if (provided) variantSubs!.set(param.name, provided);
-            else if (param.default) variantSubs!.set(param.name, param.default);
-          });
-        }
-        let resultType: TypeName | undefined;
-        for (const arm of node.arms) {
-          const isWildcard = arm.pattern.kind === "IdentifierExpression" && arm.pattern.name === "_";
-          // V2: el `pattern` es metadata (variantMatch), NO se evalúa como
-          // expresión normal; solo se procesa via validateExhaustiveMatch.
-          if (!arm.variantMatch && !isWildcard) this.expression(arm.pattern, scope, subjectType);
-          // V2: registramos los bindings en un sub-scope antes de evaluar el
-          // resultado, para que `case { kind: "NotFound", path }: path + ...`
-          // vea `path` como variable local del arm.
-          const armScope = scope;
-          if (arm.variantMatch && !arm.variantMatch.isWildcard && subjectUnion) {
-            const variant = subjectUnion.variants.find(v => v.name === arm.variantMatch!.variantName);
-            // V30.5.1 fix: sustituimos los type parameters en el payload.
-            // Antes se usaba `variant?.payload` literal, lo que daba
-            // `e: "E"` en vez de `e: "string"`.
-            const payloadType = variant?.payload
-              ? this.substituteType(variant.payload, variantSubs ?? new Map())
-              : undefined;
-            const local = new Scope(scope);
-            arm.variantMatch.bindings.forEach((name, index) => {
-              if (payloadType) this.defineVariable(local, name, payloadType, false);
-            });
-            // Re-evaluamos el resultado dentro del sub-scope.
-            const armResultType = this.expression(arm.result, local, expected);
-            if (!resultType && armResultType !== "void") resultType = armResultType;
-            else if (resultType && !typeMatches(armResultType, resultType)) this.report(arm.result, `El arm devuelve '${armResultType}', se esperaba '${resultType}'`);
-            continue;
-          }
-          const armResultType = this.expression(arm.result, armScope, expected);
-          if (!resultType && armResultType !== "void") resultType = armResultType;
-          else if (resultType && !typeMatches(armResultType, resultType)) this.report(arm.result, `El arm devuelve '${armResultType}', se esperaba '${resultType}'`);
-        }
-        result = resultType ?? "void";
+        // V30: la forma V2 de match (`match (r) { case ... }`) se elimino.
+        // El match V30 es siempre una `CallExpression` con
+        // `callee === "match"`, parseada por `assignment()`. Si llegamos
+        // aqui con un `MatchExpression`, es un caso degenerado del parser
+        // (despues de un error E4410). Reportamos un error claro y
+        // devolvemos void para no romper el resto del type-check.
+        this.report(node, "E4410: la forma V2 de match fue eliminada en V30; usa `match(value, [when(pat, () => result), otherwise(() => default)])`");
+        for (const arm of node.arms) this.expression(arm.result, scope, expected);
+        result = "void";
         break;
       }
       case "SatisfiesExpression": {
@@ -2354,6 +2263,24 @@ export class TypeChecker {
             }
             node.matchedDiscriminator = discArg.value as string;
             this.expression(discArg, scope, "string");
+            // V30.5.2: si el subject es una union (declarada con `union X = ...`)
+            // y el discriminator coincide con el campo del union que el codegen
+            // emite como `_Kind` (e.g. `R_Kind::Success`), anotamos el tipo C++
+            // del discriminador para que el codegen emita el pattern como
+            // miembro del enum en vez de string literal. Sin esto, la
+            // comparacion `r.kind == std::string("Success")` no compila.
+            const subjectBase = genericBase(subjectType);
+            if (this.unions.has(subjectBase)) {
+              const unionNode = this.unions.get(subjectBase)!;
+              // El campo discriminador del union en C++ es el nombre de la
+              // union seguido de `_Kind` (e.g. `R` -> `R_Kind`).
+              // El campo del struct que el codegen emite es `kind` (el
+              // literal del discriminator). Verificamos que coincida.
+              const expectedDiscField = "kind";
+              if (discArg.value === expectedDiscField) {
+                node.matchedDiscriminatorType = `${unionNode.name}_Kind`;
+              }
+            }
             caseList = casesArg;
           } else {
             caseList = node.args[1];
@@ -2480,7 +2407,8 @@ export class TypeChecker {
           // Si no hay otherwise y el subject es union, advertencia: puede no matchear.
           if (!hasOtherwise) {
             // V1: no enforce exhaustividad para la nueva forma. Solo informativo.
-            // (El V2 keyword sí enforce exhaustividad con `validateExhaustiveMatch`.)
+            // (La forma V2 keyword se elimino en V30; la exhaustividad se enforce
+            // con `otherwise(...)` en la forma V23.)
           }
           break;
         }

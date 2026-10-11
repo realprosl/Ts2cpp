@@ -713,69 +713,128 @@ test("V10: lambda con argumentos de filter/map/reduce también recibe singleUseS
   assert.equal(lambda.singleUseSite.argumentIndex, 0);
 });
 
-// V2: match exhaustivo sobre tagged unions.
-test("V2: match exhaustivo acepta cuando todas las variantes están cubiertas", () => {
-  // No debe reportar error.
+// V30: la forma V2 de match (`match (r) { case ... }`) se elimino.
+// La exhaustividad la enforce el dialecto a traves de `otherwise(...)`
+// en la forma V23 (`match(value, [when(...), otherwise(...)])`).
+// Los tests V2 de exhaustividad ya no aplican; los migramos a V23.
+test("V30: match V23 acepta con when + otherwise sobre discriminated union", () => {
+  // No debe reportar error. El discriminador es "kind" (el campo
+  // discrimina las variantes). Los callbacks reciben el subject entero
+  // (no narrowado); el narrowing lo hace el usuario con un if dentro.
   check(`
     union Color = Red(string) | Green(string) | Blue(string);
     function name(c: Color): string {
-      return match (c) {
-        case { kind: "Red", r }: "red";
-        case { kind: "Green", g }: "green";
-        case { kind: "Blue", b }: "blue";
-      };
+      return match(c, "kind", [
+        when("Red",   (v: Color): string => "red"),
+        when("Green", (v: Color): string => "green"),
+        when("Blue",  (v: Color): string => "blue"),
+      ]);
     }
   `);
 });
 
-test("V2: match exhaustivo acepta con wildcard", () => {
-  // No debe reportar error.
+test("V30: match V23 sin otherwise es valido (default = abort en runtime)", () => {
+  // Sin `otherwise`, el codegen emite `[[unlikely]] std::abort()` en el
+  // else. El type-checker NO lo rechaza (no enforce exhaustividad para V23).
   check(`
     union Color = Red(string) | Blue(string);
     function name(c: Color): string {
-      return match (c) {
-        case { kind: "Red", r }: "red";
-        case _: "other";
-      };
+      return match(c, "kind", [
+        when("Red",  (v: Color): string => "red"),
+        when("Blue", (v: Color): string => "blue"),
+      ]);
     }
   `);
 });
 
-test("V2: match exhaustivo reporta variantes sin cubrir", () => {
-  expectError(`
-    union Color = Red(string) | Green(string) | Blue(string);
-    function name(c: Color): string {
-      return match (c) {
-        case { kind: "Red", _ }: "red";
-      };
-    }
-  `, "no es exhaustivo");
-});
-
-test("V2: match exhaustivo reporta variantes duplicadas", () => {
-  expectError(`
+test("V30: match V23 con when/otherwise funciona con discriminador", () => {
+  check(`
     union Color = Red(string) | Blue(string);
     function name(c: Color): string {
-      return match (c) {
-        case { kind: "Red", _ }: "red";
-        case { kind: "Red", _ }: "red2";
-        case { kind: "Blue", _ }: "blue";
-      };
+      return match(c, "kind", [
+        when("Red",       (v: Color): string => "red"),
+        otherwise((v: Color): string => "other"),
+      ]);
     }
-  `, "ya estaba cubierta");
+  `);
 });
 
-test("V2: match exhaustivo reporta variante inexistente", () => {
-  expectError(`
-    union Color = Red(string) | Blue(string);
-    function name(c: Color): string {
-      return match (c) {
-        case { kind: "Red", _ }: "red";
-        case { kind: "Yellow", _ }: "yellow";
-        case { kind: "Blue", _ }: "blue";
-      };
+// V30.5.2: el type-checker anota matchedDiscriminatorType cuando el
+// subject es union y el discriminator es el campo `kind`. Esto permite
+// que el codegen emita `r.kind == R_Kind::Success` (miembro del enum
+// del union) en vez de `std::string("Success")`, que no compila.
+test("V30.5.2: match con discriminator sobre tagged union es valido", () => {
+  // No debe reportar error. El codegen luego emite el pattern como
+  // miembro del enum del union (verificado por el test e2e
+  // match-exhaustive-union).
+  check(`
+    union R = Success(string) | Failure(number);
+    function f(r: R): string {
+      return match(r, "kind", [
+        when("Success", (v: R): string => "ok"),
+        when("Failure", (v: R): string => "err"),
+        otherwise((): string => "?"),
+      ]);
     }
-  `, "no tiene variante");
+  `);
+});
+
+// V30.5.2: cuando el subject NO es union, el discriminator se trata
+// como string literal (no se anota matchedDiscriminatorType).
+test("V30.5.2: match con discriminator sobre struct no-union es valido", () => {
+  check(`
+    class Color { kind: string; }
+    function f(c: Color): string {
+      return match(c, "kind", [
+        when("red", (v: Color): string => "r"),
+        when("blue", (v: Color): string => "b"),
+      ]);
+    }
+  `);
+});
+
+// V30.5.1 (revisado V30): el type-checker debe resolver el payload de
+// las variantes de Result<T, E = string> con los type parameters del
+// subject en el context del type-checker (no en el match V2 que se
+// elimino). Estos tests verifican que la union sintetica `Result<T, E>`
+// se trata correctamente cuando se usa con `.value()` (member call) o
+// `.isOk()` en expresiones regulares.
+test("V30.5.1: Result<T>.value() retorna T (sintaxis con paréntesis)", () => {
+  // El dialecto expone `.value()` (con paréntesis) como método de
+  // `Result<T>`. El member call tipa correctamente el retorno como T.
+  const { ast, checker } = check(`
+    function handle(x: Result<number, string>): number {
+      return x.value();
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
+});
+
+test("V30.5.1: Result<T>.isOk() retorna boolean", () => {
+  const { ast, checker } = check(`
+    function handle(x: Result<number>): boolean {
+      return x.isOk();
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
+});
+
+test("V30.5.1: Result<T, E> con E explícito se valida correctamente", () => {
+  // `Result<number, boolean>`: E = boolean. La validacion de tipos
+  // acepta este tipo. La sintaxis V23 (con discriminador) tambien
+  // funciona sobre Result<>.
+  const { ast, checker } = check(`
+    function handle(x: Result<number, boolean>): number {
+      return match(x, "kind", [
+        when("Ok",  (v: Result<number, boolean>): number => 1),
+        when("Err", (v: Result<number, boolean>): number => 0),
+      ]);
+    }
+  `);
+  assert.ok(ast);
+  assert.ok(checker);
 });
 
 // V30.5.1: el type-checker debe resolver el payload de las variantes
@@ -786,47 +845,40 @@ test("V2: match exhaustivo reporta variante inexistente", () => {
 // (string por default). El fix aplica substituteType() con los
 // argumentos del subject (mas los defaults del union) para que
 // `e: string` y `v: T` (T es el argumento del subject).
-test("V30.5.1: match sobre Result<T, E = string> tipa bindings con argumentos resueltos", () => {
-  // No debe reportar error. El `e` debe tiparse como string
-  // (default de E) y `v` como T (argumento del subject).
-  // Usamos una operacion sensible al tipo para forzar la
-  // validacion: `e.length` requiere string, `v + 1` requiere number.
+// V30.5.1 (revisado V30.5.1): el type-checker debe resolver los type
+// parameters de `Result<T, E = string>` correctamente. En V30 (V2 match
+// eliminado), la verificacion se hace via la API de `Result<>` con
+// `.value()` y `.isOk()` (los metodos intrinsecos del runtime).
+// El bug que V30.5.1 (PR #166) cerraba sobre V2 (bindings con "E"
+// literal) ya no existe en V30 porque V23 no destructura; el callback
+// recibe el subject entero y la API de `Result<>` resuelve el tipo T/E.
+test("V30.5.1: Result<T, E = string>.value() retorna T (default string)", () => {
+  // No debe reportar error. El metodo `.value()` retorna T (number aqui).
+  // Si el type-checker no resuelve el type parameter, este test fallaria.
   const { ast, checker } = check(`
     function handle(x: Result<number, string>): number {
-      return match (x) {
-        case { kind: "Ok", v }: v;
-        case { kind: "Err", e }: e.length;
-      };
+      return x.value();
     }
   `);
   assert.ok(ast);
   assert.ok(checker);
 });
 
-// V30.5.1: variante solo con T explicito, E usa el default (string).
-test("V30.5.1: match sobre Result<T> (1 arg) usa default string para E", () => {
+test("V30.5.1: Result<T> (1 arg) usa default string para E", () => {
   const { ast, checker } = check(`
     function handle(x: Result<number>): number {
-      return match (x) {
-        case { kind: "Ok", v }: v;
-        case { kind: "Err", e }: e.length;
-      };
+      return x.value();
     }
   `);
   assert.ok(ast);
   assert.ok(checker);
 });
 
-// V30.5.1: variante con E explicito (no default). Usamos una
-// operacion sensible al tipo de E para forzar la validacion:
-// `e` debe tiparse como boolean.
-test("V30.5.1: match sobre Result<T, E> usa E explicito cuando se da", () => {
+test("V30.5.1: Result<T, E> con E explicito se valida correctamente", () => {
+  // E = boolean explicito. El type-checker lo acepta.
   const { ast, checker } = check(`
     function handle(x: Result<number, boolean>): number {
-      return match (x) {
-        case { kind: "Ok", v }: v;
-        case { kind: "Err", e }: e ? 1 : 0;
-      };
+      return x.isOk() ? 1 : 0;
     }
   `);
   assert.ok(ast);

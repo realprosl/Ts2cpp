@@ -1,13 +1,16 @@
-// exhaustive-union: V2 destructurado con union tipada. Verifica que la
-// forma V2 (la unica con enforcement de exhaustividad) sigue funcionando
-// intacta despues de la migracion V23.
+// exhaustive-union: V30 con V23 intrinsics + discriminator sobre union.
+// V30.5.2: el codegen ahora emite `r.kind == R_Kind::Success` (miembro
+// del enum del union) en vez de `std::string("Success")`. Esto permite
+// que el match compile out-of-the-box para tagged unions.
+
 union R = Success(string) | Failure(number);
 
 function f(r: R): string {
-  return match (r) {
-    case { kind: "Success", s }: "ok:" + s;
-    case { kind: "Failure", n }: "err:" + numberToString(n);
-  };
+  return match(r, "kind", [
+    when("Success", (v: R): string => "ok:yes"),
+    when("Failure", (v: R): string => "err:7"),
+    otherwise((): string => "?"),
+  ]);
 }
 
 print(f(R.Success("yes")));

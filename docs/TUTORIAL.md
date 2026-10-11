@@ -113,10 +113,11 @@ print(point[0], point[1]);
 // unions.ets
 union Shape = Circle(radius: number) | Rectangle(width: number, height: number);
 let c: Shape = Shape.Circle(5.0);
-match (c) {
-  Circle(r) => print("círculo radio", r),
-  Rectangle(w, h) => print("rectángulo", w, h),
-}
+// V30: V23 es la UNICA forma de match valida (V2 destructurada eliminado).
+match(c, "kind", [
+  when("Circle",    (s: Shape): void => print("círculo")),
+  when("Rectangle", (s: Shape): void => print("rectángulo")),
+]);
 ```
 
 ---
@@ -315,10 +316,11 @@ function divide(a: number, b: number): Result<number, string> {
 }
 
 let r: Result<number, string> = divide(10, 2);
-match (r) {
-  Result.ok(v) => print("ok:", v),
-  Result.err(e) => print("error:", e),
-}
+// V30: V23 unica forma valida.
+match(r, "kind", [
+  when("Ok",  (x: Result<number, string>): void => print("ok")),
+  when("Err", (x: Result<number, string>): void => print("error")),
+]);
 ```
 
 ---
@@ -964,10 +966,11 @@ let r: Result<HttpClientResponse, string> = http.post(
   "https://httpbin.org/post",
   "nombre=alberto&edad=30"
 )
-match (r) {
-  Result.Ok(v) => print("status=" + numberToString(v.status()))
-  Result.Err(e) => print("error: " + e)
-}
+// V30: V23 unica forma valida.
+match(r, "kind", [
+  when("Ok",  (x: Result<HttpClientResponse, string>): void => print("status")),
+  when("Err", (x: Result<HttpClientResponse, string>): void => print("error")),
+]);
 ```
 
 HTTPS funciona out-of-the-box sin flags extra (libcurl-openssl-dev
@@ -1155,10 +1158,11 @@ async function main(): Promise<void> {
   let r: Result<HttpClientResponse, string> = await http.get(
     "https://api.github.com/repos/realprosl/Ts2cpp"
   )
-  match (r) {
-    Result.Ok(v) => print("status=" + numberToString(v.status()))
-    Result.Err(e) => print("error: " + e)
-  }
+  // V30: V23 unica forma valida.
+  match(r, "kind", [
+    when("Ok",  (x: Result<HttpClientResponse, string>): void => print("status")),
+    when("Err", (x: Result<HttpClientResponse, string>): void => print("error")),
+  ]);
 }
 main()
 ```
