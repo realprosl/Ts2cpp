@@ -7,7 +7,7 @@
 //
 // Uso tipico:
 //   auto handle = ets::watchFs("/tmp/dir", [](FsEvent ev) {
-//     printf("cambio en %s, flags=%d\n", ev.path.c_str(), ev.flags);
+//     printf("cambio en %s, flags=%d\n", ev.path().c_str(), ev.flags());
 //   });
 //   ... (mas tarde)
 //   ets::unwatchFs(handle);
@@ -37,9 +37,15 @@ namespace ets {
 // FsEvent — evento emitido por un watcher de filesystem.
 // `path` es el nombre del archivo relativo al directorio vigilado.
 // `flags` es una OR de bits UV_RENAME, UV_CHANGE (ver <uv.h>).
+// V30.2: el dialecto expone path/flags como metodos (ev.path(),
+// ev.flags()) para consistencia con el resto de la API; el struct
+// C++ tiene los accesores inline que delegan en los campos.
 struct FsEvent {
-    std::string path;
-    int flags = 0;
+    // Los campos son privados; se accede a ellos solo via los metodos.
+    std::string path_;
+    int flags_ = 0;
+    const std::string& path() const noexcept { return path_; }
+    int flags() const noexcept { return flags_; }
 };
 
 // FsWatcher — handle opaco a un uv_fs_event_t. Mantener vivo
@@ -116,8 +122,8 @@ inline FsWatcher watchFs(const std::string& path,
             auto* w = static_cast<FsWatcher*>(h->data);
             if (!w || !w->callback_) return;
             FsEvent ev;
-            ev.path = filename ? std::string(filename) : std::string();
-            ev.flags = events;
+            ev.path_ = filename ? std::string(filename) : std::string();
+            ev.flags_ = events;
             w->callback_(std::move(ev));
         }, path.c_str(), flags) != 0) {
         uv_close(reinterpret_cast<uv_handle_t*>(handle), [](uv_handle_t* hh) {
