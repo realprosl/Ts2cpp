@@ -33,6 +33,7 @@ g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
 29. [Servidor HTTP Express-style](#16-servidor-http-express-style) (V28)
 30. [Backend HTTP dual: cpp-httplib vs Drogon](#17-backend-http-dual-cpp-httplib-vs-drogon) (V28)
 31. [Runtime async sobre libuv + cliente HTTP sobre libcurl](#18-runtime-async-sobre-libuv-y-cliente-http-sobre-libcurl) (V29)
+32. [Corutinas sobre libuv: timers, fs watchers, DNS, await http](#19-corutinas-sobre-libuv-v30) (V30)
 
 ---
 
@@ -1042,21 +1043,246 @@ watchFs, y watchFs + setTimeout en el mismo loop. **5/5 verde**.
 
 ### Roadmap V30+
 
-Lo que queda pendiente para terminar el ciclo runtime:
+V30 expone al dialecto `.ets` las APIs async que V29 dejó como
+wrappers C++ de runtime. Cada feature se entregó en un PR pequeño:
 
-- **Exponer `setTimeout`/`setInterval` al dialecto `.ets`**:
-  declaración en `src/project/init-project.ts` + dispatch en
-  `src/codegen/cpp-generator.ts`. Riesgo bajo: ya tenemos los
-  wrappers C++.
-- **Exponer `watchFs` al dialecto**: igual que arriba, con un
-  tipo `FsWatcher` y un `FsEvent` (path + flags).
-- **DNS asíncrono** con `uv_getaddrinfo`: hoy el cliente HTTP
-  hace resolve bloqueante. libcurl lo resuelve async en su
-  internals, pero un wrapper directo sobre `uv_getaddrinfo`
-  sería útil para casos no-HTTP.
-- **TLS server** sobre `uv_tls_t` (libuv no trae TLS built-in;
-  habría que integrar OpenSSL directamente).
-- **HTTP/3 / QUIC** si la dependencia de QUIC se justifica.
+| PR | Feature | Estado |
+|----|---------|--------|
+| #160 | V30.1 timers (`setTimeout`/`setInterval`/`cancelTimer`) | ✅ |
+| #161 | V30.2 filesystem watchers (`watchFs`/`unwatchFs`/`stopLoop`) | ✅ |
+| #162 | V30.4 DNS async (`resolveDns` sobre `uv_getaddrinfo`) | ✅ |
+| #163 | V30.3 cliente HTTP async (`await http.get`/`http.post`) | ✅ |
+
+Lo que queda pendiente para cerrar el ciclo runtime:
+
+- **TLS server**: `runtime/ets_tls.hpp` ya existe (wrappers sobre
+  OpenSSL). Falta exponer al dialecto + test e2e con handshake
+  real. Riesgo medio por dependencias de OpenSSL.
+- **HTTP/3 / QUIC**: dependencia de quiche o msquic. Hay que
+  justificar la adopción antes de empezar.
+- **V22 borrow checker PR#6**: sesión dedicada para cerrar los
+  conflictos aliasing `ref+ref` y `ref+constRef`. Tests específicos
+  primero (E4206/E4207), implementación incremental contra 202/202
+  tests existentes.
+
+---
+
+## 19. Corutinas sobre libuv (V30)
+
+V30 cierra el ciclo: expone al dialecto `.ets` las APIs async que
+V29 dejó como wrappers C++ de runtime, y añade la integración con
+las corutinas de C++20 para que el código del dialecto se vea
+secuencial (`await ...`) aunque por debajo haya un event loop
+no bloqueante.
+
+### Lo que entrega V30
+
+| Sub-fase | API expuesta al dialecto | PR | Detalle |
+|----------|--------------------------|-----|---------|
+| V30.1 | `setTimeout`, `setInterval`, `cancelTimer` | #160 | timers sobre `uv_timer_t` |
+| V30.2 | `watchFs`, `unwatchFs`, `stopLoop` | #161 | watchers sobre `uv_fs_event_t` |
+| V30.3 | `await http.get`, `await http.post` | #163 | `BlockingAwaiter` + worker thread |
+| V30.4 | `resolveDns` (con `await`) | #162 | sobre `uv_getaddrinfo` |
+
+V30.1 y V30.2 son **no-await**: devuelven handles (`Timer`,
+`FsWatcher`) y disparan callbacks síncronos. V30.3 y V30.4 son
+**await-friendly**: devuelven `Promise<Result<...>>` y se usan
+con `co_await` en funciones `async`.
+
+### V30.1 — Timers
+
+`runtime/ets_timer.hpp` envuelve `uv_timer_t`. Mapea 1:1 a los
+wrappers C++ que ya tenía V29.4.
+
+```ets
+let t: Timer = setTimeout(() => print("hola"), 200)
+let i: Timer = setInterval(() => print("tick"), 1000)
+// ... más tarde:
+cancelTimer(t)
+cancelTimer(i)
+```
+
+El tipo `Timer` expone un método `cancel()` equivalente a
+`cancelTimer(t)`. El codegen traduce `setTimeout` a
+`::ets::setTimeout(...)` y `cancelTimer` a `::ets::cancelTimer(...)`.
+
+Si no necesitas esperar nada, tu `main` puede seguir siendo
+síncrono:
+
+```ets
+// .ets (no async, no await)
+setTimeout(() => print("timeout"), 100)
+// El main retorna antes de que dispare el callback.
+// Para mantener vivo el loop, llama stopLoop o un await.
+stopLoop()
+```
+
+Si tu `main` es `async`, los timers se entrelazan con awaits de
+otras corutinas (mismo event loop).
+
+### V30.2 — Filesystem watchers
+
+`runtime/ets_fs_watcher.hpp` envuelve `uv_fs_event_t`. Abstrae
+inotify (Linux), FSEvents (macOS) y ReadDirectoryChangesW
+(Windows). Recursive opcional.
+
+```ets
+let w: FsWatcher = watchFs("/tmp", (ev: FsEvent) => {
+  print("cambio: " + ev.path + " flags=" + numberToString(ev.flags))
+})
+// ... más tarde:
+unwatchFs(w)
+```
+
+`FsEvent` es `{ path: string, flags: number }`. `flags` viene de
+`uv_fs_event_t` y codifica create/rename/delete/change.
+
+`stopLoop()` es un helper que llama `ets::defaultEventLoop.stop()`
+desde un callback para terminar el programa limpiamente.
+
+### V30.3 — Cliente HTTP async con corutinas
+
+V30.3 es el corazón de V30: hace que `http.get(url)` y
+`http.post(url, body, contentType?)` se puedan usar con `await`.
+Antes (V29), `http.get` era síncrono y bloqueante (aunque
+`curl_easy_perform` se ejecutaba; el main thread no podía hacer
+otra cosa mientras esperaba). Ahora, `await` suspende la corutina,
+el HTTP request se hace en un worker thread, y al terminar la
+corutina se reanuda en el event loop.
+
+```ets
+async function main(): Promise<void> {
+  let r: Result<HttpClientResponse, string> = await http.get(
+    "https://api.github.com/repos/realprosl/Ts2cpp"
+  )
+  match (r) {
+    Result.Ok(v) => print("status=" + numberToString(v.status()))
+    Result.Err(e) => print("error: " + e)
+  }
+}
+main()
+```
+
+**Lo que pasa por debajo**:
+
+1. El codegen traduce `await http.get("...")` a
+   `co_await ::ets::httpClientGetAsync("...")`.
+2. `httpClientGetAsync` retorna `Task<Result<HttpClientResponse>>`.
+   Internamente usa `runBlocking` (que crea un `BlockingAwaiter`)
+   con un lambda que llama `httpClientGet` (la versión síncrona
+   de V29).
+3. El `BlockingAwaiter::await_suspend` encola el lambda en el
+   `blockingExecutor()` (thread pool) y devuelve el control al
+   main thread.
+4. El worker thread ejecuta el lambda, llama `curl_easy_perform`
+   (bloqueante), y al terminar hace `loop->post(handle)` para
+   reanudar la corutina.
+5. El main thread (en `syncWait`) itera `runOne` hasta que la
+   corutina completa. Cada `runOne` espera al eventfd del
+   `wake_` async, que el worker marca con `uv_async_send`.
+6. `onWake` se ejecuta en el main thread, hace `swap(posted_)`,
+   ve el handle de la corutina, llama `handle.resume()`. La
+   corutina continúa, el `co_return` entrega el `Result`, y
+   `task.done()` se vuelve true.
+7. `syncWait` retorna el `Result`.
+
+**Detalle clave**: `BlockingAwaiter` captura
+`loop = &defaultEventLoop` en el thread principal (el que llama
+`await_suspend`), NO en el worker. Esto es crucial: `defaultEventLoop`
+es `thread_local`, así que cada thread tiene su propia instancia.
+Si el worker accediera a `defaultEventLoop` directamente, postearía
+a OTRO loop, y la corutina quedaría huérfana.
+
+**Fixes de runtime** (parte de #163, necesarios para que todo
+lo anterior funcione):
+
+- `runOne` añade un `uv_timer` dummy de 1s al loop cuando no
+  hay timers ni polls. Sin esto, `uv_run(UV_RUN_ONCE)` con solo
+  `uv_async_t` activo retorna inmediatamente (libuv optimiza:
+  sin fds lentos, no entra en `epoll_wait`). El dummy fuerza
+  a libuv a esperar.
+- Se eliminó el `uv_async_send(&wake_)` + `uv_run(UV_RUN_NOWAIT)`
+  al final de `runOne`. Ese par consumía el eventfd signal del
+  thread worker antes de que `posted_` estuviera listo,
+  llamando a `onWake` con `posted_` vacío.
+
+**Tests**:
+
+- `test/e2e/http/async-get/`: test del dialecto que valida
+  que `await http.get(url)` se transpila, compila con
+  `-lcurl -luv`, y ejecuta.
+- `runtime/libuv/tests/test_http_async_get.cpp`: roundtrip real
+  con un server `cpp-httplib` local en :18090. 3 awaits
+  (básico, json, fallo) validando status/body/headers.
+  PASA.
+
+**Limitaciones** (documentadas en #163):
+
+- **Concurrencia**: varios `await` en paralelo no son paralelos
+  (cada uno ocupa un worker del pool secuencialmente). Para
+  paralelismo real habría que usar `curl_multi` o un pool
+  mayor. Esto es V30.5+.
+- **Cancelación**: si la corutina se cancela mientras curl está
+  en vuelo, `curl_easy_perform` sigue hasta terminar. No hay
+  interrupción de libcurl todavía.
+- **HTTPS, HTTP/2, redirects, decompression**: igual que la
+  versión síncrona (heredado de libcurl).
+
+### V30.4 — DNS async
+
+`runtime/ets_dns.hpp` envuelve `uv_getaddrinfo`. La corutina se
+suspende mientras libuv resuelve el nombre en background, y se
+reanuda cuando hay respuesta (o error).
+
+```ets
+let ip: string = await resolveDns("localhost")
+if (ip == "127.0.0.1") print("ok")
+```
+
+`resolveDns` retorna `Promise<Result<string, string>>`. El `Ok`
+es la primera IP (string), el `Err` es el error (string). Si
+la resolución falla, `Ok` contiene un string vacío (decisión de
+diseño: permite usar `await` sin `match` cuando solo te importa
+el éxito).
+
+Útil para casos no-HTTP (el cliente HTTP ya hace resolve
+interno via libcurl, pero a veces quieres un resolve explícito
+antes de hacer el request).
+
+### Compilación
+
+Los 4 sub-fases requieren:
+
+```bash
+apt install libuv1-dev libcurl4-openssl-dev
+
+cd runtime/libuv
+make
+
+# Compilar un programa del dialecto
+g++ -std=c++20 -O2 -fno-exceptions programa.cpp \
+    /root/Ts2cpp/build/runtime_ets_libuv.o \
+    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
+    -lstdc++fs -luv -lcurl -o programa
+```
+
+El runner e2e (`npm run test:e2e`) lo hace automáticamente
+cuando detecta que el programa usa alguna de las APIs V30.
+
+### Resumen
+
+V30 completa el ciclo runtime del dialecto:
+
+| Feature | Mecanismo subyacente | PR |
+|---------|---------------------|-----|
+| `setTimeout`/`setInterval` | `uv_timer_t` | #160 |
+| `watchFs`/`unwatchFs` | `uv_fs_event_t` (inotify/FSEvents) | #161 |
+| `resolveDns` | `uv_getaddrinfo` | #162 |
+| `await http.get/post` | `curl_easy_perform` en worker + `BlockingAwaiter` | #163 |
+
+Todo sobre libuv. Todo expuesto al dialecto. Todo con tests e2e
+verdes (más allá de los 28 pre-existentes FAIL que son issues
+anteriores sin relación).
 
 ---
 
@@ -1073,4 +1299,5 @@ Lo que queda pendiente para terminar el ciclo runtime:
 - **V25**: backend libuv para el event loop (17 PRs, V25 Fase 1-8)
 - **V26**: optimizaciones reactor async (`PollEntry` + back-pointers, buffer pool, `accept4+SOCK_NONBLOCK`, `MultiLoopRunner` con N loops)
 - **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable) + cliente HTTP (`http.get`/`http.post`, `HttpClientResponse`) + backend HTTP dual (cpp-httplib por defecto, Drogon opcional con decorator `@cpp_drogon` para alta carga)
-- **V29**: cliente HTTP sobre libcurl (HTTPS, HTTP/2, redirects, decompression, timeouts built-in) + reactor async sobre libuv como único backend de red (elimina el backend poll duplicado) + wrappers de timers (`setTimeout`/`setInterval`/`cancelTimer`) y filesystem watchers (`watchFs`/`unwatchFs`) sobre libuv. 5 PRs (#155-#159).
+- **V29**: libuv como único backend de red (elimina el reactor poll-based de V22) + cliente HTTP sobre libcurl (sustituye al cliente TCP plano de V28). PRs #155-#159.
+- **V30**: APIs async del dialecto `.ets` (timers, fs watchers, DNS, `await http.get/post`) sobre libuv. PRs #160, #161, #162, #163. Ver §19 para detalle.

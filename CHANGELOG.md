@@ -2,6 +2,144 @@
 
 Todas las versiones siguen [Semantic Versioning](https://semver.org/).
 
+## v1.4.0 (2026-10-11) — V30 dialecto async: timers, fs watchers, DNS, await http
+
+V30 expone al dialecto `.ets` las APIs asíncronas que V29 dejó
+como wrappers C++ de runtime. Cada feature se entregó en un PR
+pequeño para mantener la suite verde en cada paso:
+
+| PR | Feature | Resumen |
+|----|---------|---------|
+| #160 | V30.1 timers | `setTimeout`/`setInterval`/`cancelTimer` al dialecto |
+| #161 | V30.2 fs watchers | `watchFs`/`unwatchFs`/`stopLoop` al dialecto |
+| #162 | V30.4 DNS async | `resolveDns` sobre `uv_getaddrinfo` |
+| #163 | V30.3 cliente HTTP async | `await http.get/post` con corutinas C++20 |
+
+### Added
+
+- **Timers al dialecto `.ets`** (`runtime/ets_timer.hpp` +
+  `src/codegen/cpp-generator.ts`): `setTimeout(cb, ms)`,
+  `setInterval(cb, ms)`, `cancelTimer(handle)`. El tipo retornado
+  es `Timer` con método `cancel()`. Mapea 1:1 a los wrappers
+  C++ de V29.4 sobre `uv_timer_t`. Link con `-luv`.
+
+  ```ets
+  let t: Timer = setTimeout(() => print("hola"), 200)
+  // ... más tarde:
+  cancelTimer(t)
+  ```
+
+- **Filesystem watchers al dialecto** (`runtime/ets_fs_watcher.hpp`):
+  `watchFs(path, callback, recursive?)` retorna un `FsWatcher`.
+  `unwatchFs(handle)` lo cancela. El callback recibe un
+  `FsEvent { path: string, flags: number }` con cada cambio.
+  Usa `uv_fs_event_t` (inotify/FSEvents/ReadDirectoryChangesW).
+  Helper `stopLoop()` para parar el event loop desde un callback.
+
+  ```ets
+  let w: FsWatcher = watchFs("/tmp", (ev: FsEvent) => {
+    print("cambio: " + ev.path)
+  })
+  // ... más tarde:
+  unwatchFs(w)
+  ```
+
+- **DNS asíncrono** (`runtime/ets_dns.hpp`): `resolveDns(host) -> Promise<Result<string, string>>`
+  sobre `uv_getaddrinfo`. No bloquea el event loop. Devuelve la
+  primera IP del resultado o un string vacío si falla.
+
+  ```ets
+  let ip: string = await resolveDns("localhost")
+  if (ip == "127.0.0.1") print("ok")
+  ```
+
+- **Cliente HTTP async con corutinas** (`runtime/ets_http_curl_async.hpp`):
+  `await http.get(url)` y `await http.post(url, body, contentType?)`.
+  API del dialecto: `http.get/post` ahora retornan
+  `Promise<Result<HttpClientResponse, string>>` (antes `Result<...>`
+  síncrono). El wrapper async usa `BlockingAwaiter` + worker thread
+  del `blockingExecutor` para que `curl_easy_perform` (bloqueante)
+  no bloquee el event loop. La corutina se suspende, el worker
+  hace el HTTP request, y cuando termina hace `loop->post(handle)`
+  para reanudar la corutina en el event loop.
+
+  ```ets
+  let r: Result<HttpClientResponse, string> = await http.get(
+    "https://api.github.com/repos/realprosl/Ts2cpp"
+  )
+  match (r) {
+    Result.Ok(v) => print("status=" + numberToString(v.status()))
+    Result.Err(e) => print("error: " + e)
+  }
+  ```
+
+  **Implementación clave**: `BlockingAwaiter` captura
+  `loop = &defaultEventLoop` en el thread principal (el que llama
+  `await_suspend`), NO en el worker. Esto es crucial porque
+  `defaultEventLoop` es `thread_local`: cada thread tiene su
+  propia instancia, y postear al loop equivocado perdería la
+  corutina.
+
+- **Fix runtime V30.3 prep** (parte de #163): `LibuvEventLoop::runOne()`
+  ahora añade un `uv_timer` dummy de 1s al loop cuando no hay
+  timers ni polls. Esto fuerza a libuv a entrar en `epoll_wait`
+  cuando se hace `uv_run(UV_RUN_ONCE)` con solo `uv_async_t`
+  activo (sin esto, libuv retorna inmediatamente por una
+  optimización que evita bloquearse sin fds lentos). También se
+  eliminó el `uv_async_send(&wake_)` + `uv_run(UV_RUN_NOWAIT)`
+  al final de `runOne` que consumía el eventfd signal del thread
+  worker antes de que `posted_` estuviera listo. Sin este fix,
+  el patrón `syncWait` + `BlockingAwaiter` no funcionaba.
+
+### Changed
+
+- **Type-checker y codegen**: `http.get`/`http.post` ahora
+  retornan `Promise<Result<HttpClientResponse, string>>` y se
+  traducen a `co_await ::ets::httpClientGetAsync(url)` /
+  `co_await ::ets::httpClientPostAsync(url, body, ct)`. El
+  include cambió de `runtime/ets_http_curl_client.hpp` a
+  `runtime/ets_http_curl_async.hpp` (que arrastra el primero).
+  Esto es **breaking** para cualquier código que use
+  `http.get`/`http.post` sin `await` (ahora el resultado es
+  una `Task<...>`, no un `Result<...>` directo). Solución:
+  añadir `await` o usar `ets::syncWait` para esperar.
+
+- **Bugfix pre-existente** (parte de #163): `runtime/ets_async.hpp`
+  no tenía `#ifndef ETS_RESULT_DEFINED` antes de `class Result`,
+  causando redefinition cuando se incluía junto con
+  `ets_http_curl_client.hpp`.
+
+- **Bugfix pre-existente** (parte de #163): `runtime/ets_http_curl_client.hpp`
+  tenía `namespace ets` abierto incorrectamente — `HttpClientResponse`
+  y `detail::*` estaban en un namespace, y `httpClientGet`/`httpClientPost`
+  en otro, con un cierre duplicado. Reestructurado: tres bloques
+  `namespace ets { ... }` correctamente cerrados.
+
+### Tests
+
+- `test/e2e/timers/` (V30.1): tests e2e para `setTimeout`,
+  `setInterval`, `cancelTimer`. 3/3 verde.
+- `test/e2e/filesystem/` (V30.2): tests e2e para `watchFs`/
+  `unwatchFs`/`stopLoop`. 2/2 verde.
+- `test/e2e/dns/resolve-basic/` (V30.4): test e2e para
+  `resolveDns` (loopback + localhost + host inválido).
+  1/1 verde.
+- `test/e2e/http/async-get/` (V30.3): test e2e del dialecto
+  que valida que `await http.get` se transpila a
+  `co_await ::ets::httpClientGetAsync(url)`, compila con
+  `-lcurl -luv`, y ejecuta el codepath completo. 1/1 verde.
+- `runtime/libuv/tests/test_http_async_get.cpp` (V30.3):
+  roundtrip real con server cpp-httplib local en :18090,
+  3 awaits (basico, json, fallo) validando status/body/headers.
+  PASA.
+- Suite completa: 63 OK, 28 FAIL pre-existentes, 0 regresiones.
+
+### Documentation
+
+- `docs/TUTORIAL.md`: nueva §19 cubre V30 (timers, fs watchers,
+  DNS async, await http.get/post) con ejemplos y referencias.
+- Roadmap V30+ actualizado: V30.1-V30.4 marcados como entregados.
+
 ## v1.3.0 (2026-10-10) — V29 runtime async sobre libuv + cliente HTTP sobre libcurl
 
 ### Added
