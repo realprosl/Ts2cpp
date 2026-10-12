@@ -1,7 +1,10 @@
-# Reactor async (V30.6.0) — Guía del backend libuv
+# Runtime async sobre libuv (V30.6.0)
 
-Este documento describe el reactor async de Ts2cpp a V30.6.0: cómo se
-traducen las corutinas C++20 a operaciones async reales sobre libuv.
+Este documento describe cómo el dialecto Estatic mapea a operaciones
+async sobre **libuv** (el único backend, desde V29.3). A diferencia
+de V26 (que tenía un "reactor" propio sobre libuv + poll dual-backend),
+V30+ usa **libuv directamente** como event loop: `ets::EventLoop`
+es un alias de `LibuvEventLoop` y no hay capa intermedia.
 
 ## Estado actual
 
@@ -51,7 +54,7 @@ namespace ets { using EventLoop = LibuvEventLoop; }
 +-------------------------------------------------------------+
 ```
 
-## El reactor en detalle
+## El event loop en detalle (libuv)
 
 ### `LibuvEventLoop`
 

@@ -57,9 +57,10 @@ Si la cabecera TLS aparece en la salida, el CLI añade `-lssl -lcrypto` al enlac
   `ets_runtime.hpp:112-128`.
 - io_uring se compila solo si `__linux__ && __NR_io_uring_setup && __NR_io_uring_enter`.
 
-## Reactor async V26 (rendimiento)
+## Optimizaciones V26 sobre libuv (rendimiento)
 
-El reactor sobre libuv entrega las optimizaciones del V26 (Alberto 2026-10-07):
+Las optimizaciones del V26 (Alberto 2026-10-07) se entregan **sobre
+libuv** (el único backend desde V29.3). No hay un reactor intermedio:
 
 - **Cleanup event-driven** (V26.2): callbacks pushean a colas `*_to_reap_`;
   `runOne` ya no hace scans O(N) sobre timers/polls/detached. ~10% mejora en
@@ -75,4 +76,4 @@ El reactor sobre libuv entrega las optimizaciones del V26 (Alberto 2026-10-07):
   `stop()`, `join()`, `nextLoop()` round-robin. Validado en
   `runtime/libuv/tests/test_multi_loop.cpp`.
 
-Más detalle en `docs/reactor-async.md`.
+Más detalle en `docs/runtime-async-libuv.md`.

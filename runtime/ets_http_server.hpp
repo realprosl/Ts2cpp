@@ -1,6 +1,7 @@
-// runtime/ets_http_server.hpp — Servidor HTTP/1.1 sobre el reactor async
-// de Ts2cpp (libuv/poll). API de routing estilo app, sin dependencias
-// externas mas alla de la stdlib de C++20 y el reactor del runtime.
+// runtime/ets_http_server.hpp — Servidor HTTP/1.1 sobre el event loop
+// de Ts2cpp (libuv, unico backend desde V29.3). API de routing estilo
+// app, sin dependencias externas mas alla de la stdlib de C++20 y
+// libuv.
 //
 // API del dialecto:
 //
