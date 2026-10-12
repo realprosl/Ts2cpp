@@ -4,38 +4,66 @@ Transpilador modular escrito en TypeScript de un lenguaje con sintaxis inspirada
 
 > **¿Qué se soporta exactamente?** Lee [`LIMITATIONS.md`](./LIMITATIONS.md) para ver la lista completa de features rechazadas o pospuestas. Este README documenta cómo usar el dialecto y qué features están implementadas.
 
+## Documentación
+
+| Doc | Para qué |
+|---|---|
+| [`README.md`](./README.md) (este) | Instalación, uso rápido, sintaxis del dialecto |
+| [`LIMITATIONS.md`](./LIMITATIONS.md) | Qué se soporta, qué se rechaza por diseño, qué está pendiente |
+| [`docs/build-system.md`](./docs/build-system.md) | Cómo se compila hoy (V30.6.0+) |
+| [`docs/TUTORIAL.md`](./docs/TUTORIAL.md) | Tutorial con ejemplos ejecutables |
+| [`docs/match-syntax.md`](./docs/match-syntax.md) | Sintaxis de `match` (V30.5.1+) |
+| [`docs/vision.md`](./docs/vision.md) | Visión a largo plazo (aspiracional) |
+| [`docs/historical/`](./docs/historical/) | Docs de versiones anteriores (roadmap V0..V10, planes detallados) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | Cambios por versión |
+
 ## Uso rápido
 
-Requiere Node.js 22.6+ y, para compilar la salida, un compilador C++20.
+Requiere Node.js 22.6+, g++ 13+ con C++20, y (opcional) `libuv1-dev` /
+`libssl-dev` / `libcurl4-openssl-dev` que `npm install` detecta e instala.
 
-Para crear un proyecto nuevo con configuración, entrada, `.gitignore` y documentación:
-
-```bash
-npm start -- init mi-proyecto
-cd mi-proyecto
-node --experimental-strip-types /ruta/a/etsc/src/cli.ts --config estatic.config.ts
-./build/app
-```
-
-`init` no sobrescribe ninguno de esos archivos si el directorio ya contiene un proyecto.
-
-Compilación directa de un ejemplo:
+### Instalar el compilador (una vez)
 
 ```bash
-npm start -- examples/hello.ets -o hello.cpp
-g++ -std=c++20 -fno-exceptions -pthread -I. hello.cpp -o hello
-./hello
+git clone https://github.com/realprosl/Ts2cpp.git
+cd Ts2cpp
+npm install
+#   → Detecta distro, chequea deps, pre-compila runtime.
+#   → Ofrece 'npm link' para usar 'etsc' globalmente.
+#   → Responde 'y' al prompt si quieres 'etsc' en PATH.
 ```
 
-Ejemplo integral de clases, composición e interfaces estructurales:
+### Crear un proyecto nuevo
 
 ```bash
-npm start -- examples/complete-demo.ets -o complete-demo.cpp
-g++ -std=c++20 -fno-exceptions -pthread -I. complete-demo.cpp -o complete-demo
-./complete-demo
+etsc init ~/mi-proyecto
+cd ~/mi-proyecto
+cp /ruta/a/Ts2cpp/examples/hello.ets src/main.ts
+etsc --build          # genera build/app
+./build/app           # corre el binario
 ```
 
-No requiere instalar dependencias npm: usa el soporte nativo de TypeScript de Node. Los binarios nativos enlazan las cabeceras de `runtime/` y los objetos Tree-sitter desde `third_party/`. No se utiliza CMake.
+El `estatic.config.ts` generado NO requiere que listes `-luv`, `-lssl`,
+etc. — el CLI detecta los backends que el programa usa (mirando el AST)
+y los añade solo.
+
+### Compilar un ejemplo puntual sin proyecto
+
+```bash
+etsc examples/hello.ets -o /tmp/hello.cpp --unity
+g++ -std=c++20 -fno-exceptions -pthread -I. /tmp/hello.cpp -o /tmp/hello
+/tmp/hello
+```
+
+> **Nota:** para ejemplos que usen `readTcp`, `setTimeout`, `createTlsServer`,
+> etc. (los de V30+), este flujo directo `--unity` **requiere** que los
+> `.o` del runtime (`build/runtime_ets_libuv.o`,
+> `build/runtime_ets_net_libuv.o`) existan. Si clonaste el repo, los
+> tendrá tras `npm install`. Si no, compílalos a mano o usa el flujo
+> con `estatic.config.ts` (que automáticamente los añade). Ver
+> `docs/build-system.md` para el detalle.
+
+Para más detalles del flujo de build, ver [`docs/build-system.md`](./docs/build-system.md).
 
 ## Configuración del proyecto
 

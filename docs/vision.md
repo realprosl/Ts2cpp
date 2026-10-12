@@ -1,5 +1,16 @@
 # Visión Estatic
 
+> ℹ️ **DOCUMENTO ASPIRACIONAL.** Este documento describe la visión a
+> largo plazo del dialecto. **NO refleja el estado actual** (V30.6.0+).
+> Para saber qué features están implementadas hoy, consulta:
+>
+> - `CHANGELOG.md` (cambios por versión).
+> - `examples/` (lo que el dialecto soporta — cada `.ets` es ejecutable).
+> - `docs/build-system.md` (flujo de build actual).
+>
+> La visión puede contener objetivos que aún no se han alcanzado, o que
+> se alcanzaron de forma diferente a como aquí se describen.
+
 > **Escribir como TypeScript, conocerlo todo en compilación y pagar en ejecución como C++.**
 
 ## 1. Qué es Estatic (y qué no)

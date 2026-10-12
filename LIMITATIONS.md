@@ -51,13 +51,13 @@ Lista no exhaustiva — ver `README.md`, `examples/` y los nodos AST en
 - `if/else`, `while`, `for`, `for..in`, `for..of`, `for await..of`.
 - `break`, `continue` validados por contexto.
 - **Operador ternario** `cond ? then : else`.
-- **Match expressions** — V23 introduce la forma TS-compatible
-  `match(value, [when(pat, cb), otherwise(cb)])` (compilada a IIFE con
-  if/else chain). La forma V2 destructurada `match (r) { case { kind: ... }:
-  ...; case _: ... }` se mantiene y es la única con enforcement de
-  exhaustividad. La forma TC39 `match (x) { when (pat) => r; }` se
-  eliminó en V23. Patrón por igualdad; sin narrowing real en `whenType`
-  (issue #95).
+- **Match expressions** — V30.5.1 unifica **una sola forma válida**: la
+  V23 `match(value, [when(pat, cb), otherwise(cb)])` o
+  `match(value, "key", [when(pat, cb)])` con discriminator. Es TS-compatible
+  (CallExpression regular, no keyword). La forma V2 destructurada
+  `match (r) { case { kind: ... }: ...; }` se **eliminó en V30.5.1** con
+  error E4410. La forma TC39 `match (x) { when (pat) => r; }` se eliminó
+  en V23.
 - `switch / case / default` sobre enums, strings y números.
 - `delete` sobre propiedades dinámicas de Map/Set.
 - `await` y `async function` (compilados a corutinas C++20).

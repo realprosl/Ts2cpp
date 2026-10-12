@@ -1,8 +1,16 @@
 # Memory Model v2
 
-> V22 introduce un modelo de memoria explícito. La semántica visible de
-> Estatic determina exactamente **copia**, **ownership** y **préstamo**,
-> sin optimizaciones ABI ocultas.
+> ⚠️ **DOCUMENTO HISTÓRICO (V22).** Este documento describe el memory
+> model introducido en V22. **No refleja el estado actual** (V30.6.0+).
+> Las reglas sobre `ref<T>`/`constRef<T>`/`ptr<T>`/`constPtr<T>`,
+> `Rc<T>` (deprecada E4404) y `out` (deprecada E4405) pueden haber
+> cambiado. Para la realidad del dialecto actual, consulta:
+>
+> - `CHANGELOG.md` entradas V22+ para ver qué se introdujo/deprecó.
+> - `examples/memory-*.ets` para ver los patrones vigentes.
+> - `docs/TUTORIAL.md` secciones 7 y siguientes.
+>
+> Última actualización del contenido: V22.
 
 ## Tabla resumen
 

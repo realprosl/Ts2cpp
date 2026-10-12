@@ -1,5 +1,28 @@
 # Reactor async V26 — Guía del backend de alto rendimiento
 
+> ⚠️ **DOCUMENTO HISTÓRICO (V26).** Este documento describe el reactor
+> async en V26. **No refleja el estado actual** (V30.6.0+).
+> Cambios principales que lo invalidan:
+>
+> - **V29.3 (PR #157)**: libuv es el único backend de red. El backend
+>   `PollEventLoop` ya no existe. Los `.o` de poll (`runtime_ets_poll.o`,
+>   `runtime_ets_net.o`) ya no se compilan ni se linkean.
+> - **V30.1 (PR #160)**: timers (`setTimeout`/`setInterval`/`cancelTimer`)
+>   son dialecto, no uso directo del runtime.
+> - **V30.4 (PR #162)**: DNS async (`resolveDns`) sobre libuv.
+> - **V30.5 (PR #165)**: TLS sobre libuv + OpenSSL.
+> - **V30.6.0 (PR #172)**: AST detection declarativa reemplaza la
+>   heurística de include-scan.
+>
+> Los PRs #128-#132 (V26) se mergearon a main, pero el sistema que
+> describen ya no es la única verdad. Para la realidad actual, consulta:
+>
+> - `CHANGELOG.md` entradas V26-V30.
+> - `docs/build-system.md` (flujo de build actual).
+> - `examples/http-server.ets`, `examples/tls-server.ets` (uso real).
+>
+> Última actualización del contenido: V26.
+
 Este documento describe el reactor async de Ts2cpp en su versión V26, que
 transfiere el EventLoop de poll(2) a libuv y aplica las optimizaciones del
 roadmap V26 (Alberto 2026-10-07).
