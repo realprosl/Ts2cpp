@@ -860,6 +860,14 @@ export class Parser {
     return { kind: "TernaryExpression", condition, thenBranch, elseBranch, span: span(condition.span.start, elseBranch.span.end) };
   }
   private arrowFunction(): Expression {
+    // V30.10: detecta `async` antes de los parentesis. Si esta presente,
+    // marca el ArrowFunctionExpression como `isAsync: true` para que el
+    // type-checker lo trate como contexto valido para `await`.
+    let isAsync = false;
+    if (this.check("async")) {
+      isAsync = true;
+      this.advance(); // consume "async"
+    }
     const open = this.consume("(", "Se esperaba '('");
     const params: Parameter[] = [];
     if (!this.check(")")) do {
@@ -876,14 +884,20 @@ export class Parser {
     this.consume("=>", "Se esperaba '=>' en la función flecha");
     if (this.match("{")) {
       const body = this.block(this.previous());
-      return { kind: "ArrowFunctionExpression", params, returnType, body, span: span(open.span.start, body.span.end) };
+      return { kind: "ArrowFunctionExpression", params, returnType, body, isAsync, span: span(open.span.start, body.span.end) };
     }
     const body = this.expression();
-    return { kind: "ArrowFunctionExpression", params, returnType, body, span: span(open.span.start, body.span.end) };
+    return { kind: "ArrowFunctionExpression", params, returnType, body, isAsync, span: span(open.span.start, body.span.end) };
   }
   private isArrowStart(): boolean {
-    if (!this.check("(")) return false;
-    let depth = 0; let index = this.current;
+    // V30.10: soporta `async (` como preludio de arrow async.
+    const offset = this.check("async") ? 1 : 0;
+    if (!this.check("(") && offset === 0) return false;
+    if (offset === 1 && !this.check("(")) {
+      // El primer token es "async"; el segundo deberia ser "(".
+      if (this.tokens[this.current + 1]?.kind !== "(") return false;
+    } else if (!this.check("(")) return false;
+    let depth = 0; let index = this.current + offset;
     for (; index < this.tokens.length; index++) {
       if (this.tokens[index].kind === "(") depth++;
       else if (this.tokens[index].kind === ")") { depth--; if (depth === 0) break; }
