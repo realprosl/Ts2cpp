@@ -46,24 +46,36 @@ export interface IncrementalBuildOptions {
  * timing a stderr; cuando verbose=false es silencioso. Los tiempos se
  * pueden consultar externamente vía `lastElapsed()`.
  */
+// V30.10: usa `cli-ui` para spinners/colores cuando stderr es TTY.
+// En modo silencioso (no-TTY, CI) cae a texto plano.
+import { phase, progressBar, info as uiInfo, warn as uiWarn, error as uiError, ok as uiOk, dim as uiDim, banner as uiBanner, useColors } from "../core/cli-ui.ts";
 class BuildProgress {
   private readonly verbose: boolean;
   private phaseStart: number;
   private readonly startTime: number;
+  private readonly colored: boolean;
   constructor(verbose: boolean) {
     this.verbose = verbose;
     this.startTime = Date.now();
     this.phaseStart = this.startTime;
+    this.colored = useColors(process.stderr);
   }
   beginPhase(name: string): void {
     if (!this.verbose) return;
     const elapsed = ((Date.now() - this.phaseStart) / 1000).toFixed(2);
-    process.stderr.write(`       ${name}... ${elapsed}s\n`);
+    const prefix = this.colored ? `\x1b[36m       \x1b[90m→\x1b[0m` : "       →";
+    const nameColored = this.colored ? `\x1b[36m${name}\x1b[0m` : name;
+    const elapsedColored = this.colored ? `\x1b[90m${elapsed}s\x1b[0m` : `${elapsed}s`;
+    process.stderr.write(`${prefix} ${nameColored}... ${elapsedColored}\n`);
     this.phaseStart = Date.now();
   }
-  log(message: string): void { if (this.verbose) process.stderr.write(`       ${message}\n`); }
-  warn(message: string): void { process.stderr.write(`warning: ${message}\n`); }
-  error(message: string): void { process.stderr.write(`error: ${message}\n`); }
+  log(message: string): void {
+    if (!this.verbose) return;
+    const indent = this.colored ? `\x1b[90m       ${message}\x1b[0m` : `       ${message}`;
+    process.stderr.write(`${indent}\n`);
+  }
+  warn(message: string): void { uiWarn(`build: ${message}`); }
+  error(message: string): void { uiError(`build: ${message}`); }
   totalElapsed(): number { return Date.now() - this.startTime; }
 }
 
