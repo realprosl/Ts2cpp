@@ -182,6 +182,11 @@ fi
 
 echo "==> Pre-compilando runtime a .o cacheados en ${BUILD_DIR}/..."
 
+# V30.9.1: crear el directorio de cache si no existe. En instalaciones
+# limpias (npm install desde cero), build/ puede no existir, y g++
+# falla con "No existe el archivo o el directorio" al hacer -o.
+mkdir -p "${BUILD_DIR}"
+
 # Compilar cada .cpp que exista.
 RUNTIME_SRC=(
   "runtime_ets_libuv.cpp"
