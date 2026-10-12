@@ -230,7 +230,7 @@ const SET_METHODS: Record<string, { params: (typeArgs: TypeName[]) => TypeName[]
 // para que la llamada C++ se materialice con los tipos correctos. Esto
 // habilita las cadenas `arr.filter(p).map(f).reduce(init, op)` que V7.1
 // fusionará en un único bucle.
-const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn" | "value")[]; returnType: (typeArgs: TypeName[]) => TypeName; userTypeArgument?: number }> = {
+const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn" | "value")[]; returnType: (typeArgs: TypeName[]) => TypeName; userTypeArgument?: number; variadic?: boolean }> = {
   filter: { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `${T}[]` },
   map:    { arity: 1, paramKinds: ["fn"], returnType: () => "void[]", userTypeArgument: 0 },
   reduce: { arity: 2, paramKinds: ["value", "fn"], returnType: () => "void", userTypeArgument: 0 },
@@ -255,6 +255,10 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   sort:    { arity: 1, paramKinds: ["fn"], returnType: ([T]) => `${T}[]` },
   // `flatMap` aplica una función que devuelve arrays y los concatena (1 nivel).
   flatMap: { arity: 1, paramKinds: ["fn"], returnType: () => "void[]", userTypeArgument: 0 },
+  // `concat` une este array con N arrays adicionales y devuelve un nuevo array.
+  // Acepta aridad variable (1..N argumentos). El tipo de retorno es el
+  // mismo tipo de elemento que el receptor.
+  concat:  { arity: 1, paramKinds: ["value"], returnType: ([T]) => `${T}[]`, variadic: true },
   // `includes` busca por igualdad.
   includes: { arity: 1, paramKinds: ["value"], returnType: () => "boolean" },
 };
@@ -2923,7 +2927,7 @@ export class TypeChecker {
             result = "void[]";
             break;
           }
-          if (node.args.length !== method.arity) this.report(node, `Array.${node.method} espera ${method.arity} argumento(s), recibió ${node.args.length}`);
+          if (!method.variadic && node.args.length !== method.arity) this.report(node, `Array.${node.method} espera ${method.arity} argumento(s), recibió ${node.args.length}`);
           const T = arrayElement(objectType);
           if (node.method === "filter") {
             const expected = functionType([T], "boolean");
@@ -3013,6 +3017,17 @@ export class TypeChecker {
           if (node.method === "slice") {
             if (node.args[0]) this.require(this.expression(node.args[0], scope), "number", node.args[0]);
             if (node.args[1]) this.require(this.expression(node.args[1], scope), "number", node.args[1]);
+            result = objectType;
+            break;
+          }
+          // V30.8: `concat(b, c, d, ...)` — variadico. Cada argumento debe
+          // ser del mismo tipo array `T[]` que el receptor. Devuelve `T[]`.
+          if (node.method === "concat") {
+            const arrExpected = objectType;
+            for (const arg of node.args) {
+              if (arg.kind === "ArrowFunctionExpression") arg.singleUseSite = { kind: "MemberCallExpression", argumentIndex: node.args.indexOf(arg) };
+              this.require(this.expression(arg, scope), arrExpected, arg);
+            }
             result = objectType;
             break;
           }

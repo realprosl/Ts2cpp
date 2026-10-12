@@ -494,7 +494,7 @@ export class CppGenerator {
   // tiempo de compilación si quedan sin instanciar, pero los headers
   // crecen y el include explícito documenta la dependencia).
   private usesCollections(program: Program): boolean {
-    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "includes", "push"]);
+    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "concat", "includes", "push"]);
     const visit = (node: unknown): boolean => {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
@@ -2729,6 +2729,13 @@ export class CppGenerator {
             const U = typeArguments[0];
             if (!U) return `${objStr}.flatMap(${argStrs[0]})`;
             return `ets_flat_map_vec<${cppType(T)}, ${cppType(U)}>(${objStr}, ${argStrs[0]})`;
+          }
+          if (method === "concat") {
+            // V30.8: `arr.concat(b, c, d, ...)` une 1..N arrays.
+            // Devuelve un nuevo vector. El helper runtime es variadico
+            // y acepta std::initializer_list<std::vector<T>>. El
+            // codegen emite la lista a partir de los args del call.
+            return `ets_concat_vec<${cppType(T)}>({${objStr}${argStrs.length ? ", " + argStrs.join(", ") : ""}})`;
           }
           if (method === "includes") {
             return `ets_includes_vec<${cppType(T)}>(${objStr}, ${argStrs[0]})`;
