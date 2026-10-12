@@ -7,6 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { computeModuleId, assertUniqueIdentities } from "../../src/modules/module-identity.ts";
 
 const BASE = "/home/user/proj";
@@ -63,4 +66,39 @@ test("module-identity: el initName tiene la forma ets_init_*", () => {
 test("module-identity: el pathHash es SHA-256 truncado a 8 hex", () => {
   const id = computeModuleId(`${BASE}/src/main.ts`, BASE);
   assert.match(id.pathHash, /^[0-9a-f]{8}$/);
+});
+
+test("module-identity (P-02): rutas equivalentes producen el mismo id", () => {
+  // V30.6.2 P-02: rutas que apuntan al mismo archivo deben tener
+  // el mismo id. Antes del fix, "./src/a.ts", "src/a.ts" y la
+  // ruta absoluta daban 3 ids distintos.
+  // Usamos un archivo que existe (realpath funciona):
+  const dir = mkdtempSync(join(tmpdir(), "mod-ident-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "src/a.ts"), "export const x = 1;");
+  const a = computeModuleId("./src/a.ts", dir);
+  const b = computeModuleId("src/a.ts", dir);
+  const c = computeModuleId(join(dir, "src/a.ts"), dir);
+  rmSync(dir, { recursive: true });
+  assert.equal(a.id, b.id, "./src/a.ts y src/a.ts deben coincidir");
+  assert.equal(b.id, c.id, "src/a.ts y la absoluta deben coincidir");
+  assert.equal(a.relativePath, "src/a.ts");
+});
+
+test("module-identity (P-02): symlinks se resuelven a la misma identidad", () => {
+  // Dos symlinks al mismo archivo deben dar el mismo id.
+  const dir = mkdtempSync(join(tmpdir(), "mod-ident-sym-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "src/orig.ts"), "export const x = 1;");
+  try {
+    symlinkSync(join(dir, "src/orig.ts"), join(dir, "src/link.ts"));
+  } catch {
+    // Algunos sistemas no permiten symlinks; skip.
+    rmSync(dir, { recursive: true });
+    return;
+  }
+  const a = computeModuleId(join(dir, "src/orig.ts"), dir);
+  const b = computeModuleId(join(dir, "src/link.ts"), dir);
+  rmSync(dir, { recursive: true });
+  assert.equal(a.id, b.id, "orig y link deben tener el mismo id");
 });
