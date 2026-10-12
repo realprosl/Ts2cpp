@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <initializer_list>
 #include <utility>
 #include <vector>
 
@@ -131,13 +132,30 @@ inline std::vector<T> ets_slice_vec(const std::vector<T>& src, int start, int en
 
 // V14: `ets_sort_vec<T>(src, cmp)` — ordena `src` in-place con `cmp(a, b)`
 // y devuelve el mismo vector. El dialecto emite esto para `arr.sort(cmp)`.
+//
 // Importante: el comparator debe implementar **strict weak ordering**.
-// Comparadores como `(a, b) => a - b` son incorrectos para `double` porque
-// la resta puede dar ±0.0 para valores iguales (rompe transitividad). El
-// dialecto convierte el lambda a un comparator seguro automáticamente.
+// Comparadores como `(a, b) => a - b` son **incorrectos** para `double`
+// porque la resta puede dar ±0.0 para valores iguales (rompe transitividad
+// y el comportamiento de `std::sort` es indefinido en ese caso). Para
+// hacerlo seguro, el runtime envuelve el comparator devuelto por el
+// usuario en un adaptador que:
+//   - si el comparator ya devuelve bool, lo usa tal cual (caso ideal);
+//   - si devuelve un número, lo convierte a `r < 0` (orden por signo).
+// Esto es seguro para enteros, floats y doubles: para dobles iguales
+// `r == 0`, lo que da `false < 0 == false`, equivalente a `!(b < a)`,
+// manteniendo strict weak ordering (a == b → !(a < b) && !(b < a)).
 template <typename T, typename Cmp>
 inline std::vector<T>& ets_sort_vec(std::vector<T>& src, Cmp&& cmp) {
-    std::sort(src.begin(), src.end(), std::forward<Cmp>(cmp));
+    using R = std::invoke_result_t<Cmp, const T&, const T&>;
+    if constexpr (std::is_same_v<R, bool>) {
+        std::sort(src.begin(), src.end(), std::forward<Cmp>(cmp));
+    } else {
+        // Adaptador: cualquier R convertible a bool (típicamente number)
+        // se evalúa como `r < 0` (orden ascendente por signo de la resta).
+        std::sort(src.begin(), src.end(), [c = std::forward<Cmp>(cmp)](const T& a, const T& b) -> bool {
+            return c(a, b) < 0;
+        });
+    }
     return src;
 }
 
@@ -159,4 +177,21 @@ template <typename T>
 inline bool ets_includes_vec(const std::vector<T>& src, const T& value) {
     for (const auto& item : src) if (item == value) return true;
     return false;
+}
+
+// V30.8: `ets_concat_vec<T>({a, b, c, ...})` — une N arrays en uno nuevo.
+// Variadico: acepta std::initializer_list<std::vector<T>> para no tener
+// que enumerar N overloads. Devuelve un nuevo vector por valor (1 malloc
+// del buffer resultante). Mismo criterio que `slice` y `map` mientras el
+// dialecto siga modelando arrays por valor.
+template <typename T>
+inline std::vector<T> ets_concat_vec(std::initializer_list<std::vector<T>> arrays) {
+    std::vector<T> out;
+    std::size_t total = 0;
+    for (const auto& a : arrays) total += a.size();
+    out.reserve(total);
+    for (const auto& a : arrays) {
+        for (const auto& v : a) out.push_back(v);
+    }
+    return out;
 }
