@@ -68,7 +68,16 @@ elif [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
 fi
 
 case "${DISTRO}:${DISTRO_LIKE}" in
-  debian:*|ubuntu:*|*:debian)
+  # V30.9.1: derivadas de Ubuntu (Linux Mint, Pop!_OS, elementary OS,
+  # KDE neon, Zorin OS, etc.) se tratan como debian porque comparten
+  # apt + los mismos nombres de paquetes (libuv1-dev, libcurl4-openssl-dev,
+  # libssl-dev). Antes solo `ID=ubuntu` o `ID=debian` matcheaban, lo que
+  # dejaba a Linux Mint y Pop!_OS en el bucket `unknown`.
+  #
+  # El patron `*:ubuntu|*:*ubuntu*` cubre tanto `ID=ubuntu` como
+  # `ID_LIKE="ubuntu debian"` (Pop!_OS, elementary) — la parte `*:*ubuntu*`
+  # matchea cualquier `DISTRO_LIKE` que contenga "ubuntu" como substring.
+  debian:*|ubuntu:*|linuxmint:*|pop:*|elementary:*|neon:*|zorinos:*|*:debian|*:ubuntu*)
     DISTRO="debian"
     PKG_MANAGER="apt"
     PKG_INSTALL_CMD="sudo apt-get install -y"
