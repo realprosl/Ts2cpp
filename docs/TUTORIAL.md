@@ -4,14 +4,43 @@
 permite escribir código con la sintaxis familiar de TypeScript y obtener
 binarios nativos con control total sobre memoria y rendimiento.
 
-Cada ejemplo de este tutorial es **ejecutable**. Copia el código a un
-archivo `.ets` y compílalo con:
+Cada ejemplo de este tutorial es **ejecutable**. Hay dos formas de
+compilarlos:
+
+**A) Con `estatic.config.ts` (recomendado, todas las secciones):**
 
 ```bash
-node src/cli.ts mi-archivo.ets -o /tmp/salida.cpp
-g++ -O2 -std=c++20 -I. /tmp/salida.cpp -o /tmp/binario
+cd /ruta/a/Ts2cpp
+etsc init ~/mi-proyecto
+cd ~/mi-proyecto
+cp /ruta/a/Ts2cpp/examples/<ejemplo>.ets src/main.ts
+etsc --build
+./build/app
+```
+
+**B) Directo (solo ejemplos que NO usen libuv/curl/tls, es decir,
+secciones 1-15, y los de V28+ que sean solo C++ sin red):**
+
+```bash
+cd /ruta/a/Ts2cpp
+node --experimental-strip-types src/cli.ts \
+    examples/<ejemplo>.ets -o /tmp/salida.cpp --unity
+g++ -O2 -std=c++20 -fno-exceptions -pthread -I. /tmp/salida.cpp -o /tmp/binario
 /tmp/binario
 ```
+
+Para el flujo B, los ejemplos que usen `readTcp`, `setTimeout`,
+`createTlsServer`, `http.get`, etc. (secciones 16-19) **requieren que
+`build/runtime_ets_libuv.o` y `build/runtime_ets_net_libuv.o` existan**
+(los genera `scripts/postinstall.sh` automáticamente tras `npm install`).
+Si faltan, añádelos al comando g++:
+
+```bash
+g++ ... /tmp/salida.cpp build/runtime_ets_libuv.o \
+                       build/runtime_ets_net_libuv.o -luv -o /tmp/binario
+```
+
+Para el detalle del flujo de build, ver [`docs/build-system.md`](./build-system.md).
 
 ## Tabla de contenidos
 
@@ -373,27 +402,46 @@ print(add(2, 3));
 
 ### estatic.config.ts
 
+Configuración mínima recomendada para un proyecto:
+
 ```ts
 // estatic.config.ts
+export default {
+  entry: "src/main.ts",
+  moduleRoots: ["src"],
+  aliases: {},
+  output: { cpp: "build/app.cpp", binary: "build/app" },
+  compiler: {
+    enabled: true,
+    command: "g++",
+    flags: ["-std=c++20", "-O2", "-pthread", "-fno-exceptions"],
+    linkFlags: [],
+  },
+  incremental: {
+    enabled: true,
+    cacheDirectory: "build/.estatic/cache",
+    generatedDirectory: "build/.estatic/generated",
+  },
+};
+```
+
+No hace falta añadir `-luv`, `-lssl`, etc. — el CLI detecta los
+backends que el programa usa mirando el AST (V30.6.0) y los añade solo.
+
+Si quieres la firma tipada (TypeScript autocompleta los campos), importa
+`EstaticConfig` desde el repo Ts2cpp:
+
+```ts
 import type { EstaticConfig } from "ts2cpp/src/config/project-config.ts";
 
-export default {
-  entry: "./main.ets",
-  output: {
-    cpp: "build/out.cpp",
-    binary: "build/out",
-  },
-  compiler: {
-    command: "g++",
-    flags: ["-O2", "-std=c++20"],
-    linkFlags: ["-lm"],
-  },
-} satisfies EstaticConfig;
+export default { /* ... */ } satisfies EstaticConfig;
 ```
 
 Compilar:
 ```bash
-node src/cli.ts --build
+etsc --build
+# o, con el cli en desarrollo:
+node --experimental-strip-types ../Ts2cpp/src/cli.ts --config estatic.config.ts --build
 ```
 
 ---

@@ -1,34 +1,35 @@
-# Memory Model v2
+# Memory Model (V30.6.0) — Estado actual verificado contra el type-checker
 
-> ⚠️ **DOCUMENTO HISTÓRICO (V22).** Este documento describe el memory
-> model introducido en V22. **No refleja el estado actual** (V30.6.0+).
-> Las reglas sobre `ref<T>`/`constRef<T>`/`ptr<T>`/`constPtr<T>`,
-> `Rc<T>` (deprecada E4404) y `out` (deprecada E4405) pueden haber
-> cambiado. Para la realidad del dialecto actual, consulta:
->
-> - `CHANGELOG.md` entradas V22+ para ver qué se introdujo/deprecó.
-> - `examples/memory-*.ets` para ver los patrones vigentes.
-> - `docs/TUTORIAL.md` secciones 7 y siguientes.
->
-> Última actualización del contenido: V22.
+> ℹ️ **Versión verificada:** V30.6.0. Cada regla de este doc está respaldada
+> por una búsqueda en `src/semantic/type-checker.ts` (commit a la fecha
+> de este PR). Si encuentras una discrepancia, el código gana — abre
+> un PR para actualizar este doc.
 
-## Tabla resumen
+Este documento describe el modelo de memoria del dialecto Estatic:
+qué significa cada tipo relacionado con ownership/préstamo, qué
+operaciones están permitidas, y qué errores reporta el type-checker.
 
-| Quiero…                              | Tipo        | C++                              |
-|--------------------------------------|-------------|----------------------------------|
-| Una copia independiente              | `T`         | `T`                              |
-| Modificar temporalmente otro objeto  | `ref<T>`    | `T&`                             |
-| Leer temporalmente sin copiar        | `constRef<T>` | `const T&`                     |
-| Poseer dinámicamente un objeto       | `ptr<T>`    | `std::unique_ptr<T>`             |
-| Poseer pero exponerlo readonly       | `constPtr<T>` | `std::unique_ptr<const T>`    |
+## Resumen
 
-## Reglas
+| Quiero… | Tipo | C++ | Storage | Notas |
+|---|---|---|---|---|
+| Una copia independiente | `T` | `T` (valor) | sí (field, retorno, arg) | Default |
+| Préstamo mutable | `ref<T>` | `T&` | **NO** (E4203) | Solo parámetros |
+| Préstamo inmutable | `constRef<T>` | `const T&` | **NO** (E4203) | Solo parámetros |
+| Ownership exclusivo | `ptr<T>` | `std::unique_ptr<T>` | sí | V22, preferido |
+| Ownership readonly | `constPtr<T>` | `std::unique_ptr<const T>` | sí | V22 |
+| Préstamo mutable (legacy) | `Mut<T>`, `MutRef<T>` | `T&` | sí (deprecated pre-V22) | Sin E deprecation, evitar |
+| Smart ptr shared (deprecated) | `Rc<T>` | (warning E4404) | sí | Migrar a `ptr<T>` |
+| Smart ptr shared (legacy) | `Unq<T>` | `std::unique_ptr<T>` | sí | Equivalente a `ptr<T>`, evitar |
+| Shared con cycle break | `weak<T>` | **NO IMPLEMENTADO** | — | Mencionado en E4404 pero no existe aún |
+
+## Reglas (verificadas contra `src/semantic/type-checker.ts`)
 
 ### 1. `T` significa copia
 
-Este es el cambio semántico principal. **Antes de V22**, el dialecto
-convertía automáticamente parámetros no triviales a `const T&`. Eso era
-una optimización ABI oculta. **V22 la elimina**.
+El dialecto **no aplica lowering implícito** a `const T&`. Pasar `T` copia.
+Esto es V22; antes de V22 el compilador optimizaba a `const T&` y esa
+optimización se eliminó para que la semántica sea explícita.
 
 ```ets
 function foo(value: User): void {
@@ -36,138 +37,93 @@ function foo(value: User): void {
 }
 let user: User = new User("original");
 foo(user);
-print(user.name);  // "original" — la copia no afectó al caller
+print(user.name);  // "original" — la copia no afecta al caller
 ```
 
-### 2. `ref<T>` es un préstamo mutable
+### 2. `ref<T>` y `constRef<T>` son SOLO préstamos (no owners)
 
-`ref<T>` modela una referencia C++ mutable (`T&`). El caller mantiene el
-ownership; el callee puede mutar el valor durante la llamada.
+`ref<T>` modela una referencia C++ mutable (`T&`). `constRef<T>` modela
+`const T&`. **No se pueden almacenar**:
 
 ```ets
-function increment(counter: ref<Counter>): void {
-    counter.value = counter.value + 1;
+class Holder {
+    data: ref<Data> = ...;  // E4203: borrowed references cannot be stored
 }
 ```
 
-**No incrementa** reference count, no participa en ownership. **No puede
-ser null**.
-
-### 3. `constRef<T>` es un préstamo readonly
-
-`constRef<T>` modela `const T&`. El caller mantiene el ownership; el
-callee solo lee.
+**No se pueden usar como type arguments**:
 
 ```ets
-function inspect(user: constRef<User>): void {
-    print(user.name);
-}
+let arr: Array<ref<Data>> = [];  // E4205
 ```
 
-### 4. `ptr<T>` es ownership exclusivo mutable
-
-`ptr<T>` se traduce a `std::unique_ptr<T>`. Es **move-only**, **owning**,
-**nullable** (después de move).
+**No se pueden devolver** (todavía):
 
 ```ets
-function make(): ptr<Counter> {
-    return new Counter(42);
-}
+function get(): ref<Data> { ... }  // E42xx: borrowed references cannot be returned
 ```
 
-El destructor del objeto se llama automáticamente cuando el último owner
-sale del scope (RAII). `ptr<T>` no se copia; se transfiere vía `move()`.
+La razón: el type-checker no implementa lifetime analysis. Los préstamos
+son válidos solo dentro del scope de la llamada donde se reciben.
 
-### 5. `constPtr<T>` es ownership exclusivo readonly
+### 3. `ptr<T>` y `constPtr<T>` son ownership explícito (V22)
 
-`constPtr<T>` se traduce a `std::unique_ptr<const T>`. El callee puede
-leer el valor pero no mutarlo.
+`ptr<T>` se compila a `std::unique_ptr<T>`. Es la forma preferida para
+ownership dinámico. El type-checker hace `make_unique<T>(...)` implícito
+cuando el destino es `ptr<T>`.
 
 ```ets
-function inspect(c: constPtr<Counter>): number {
-    return c.value;  // OK
-    // c.value = 1;  // ERROR
+class Holder {
+    data: ptr<Data> = new Data();  // ownership exclusivo
 }
+let h: Holder = new Holder();
+let d: ptr<Data> = h.data;       // move out
 ```
 
-## Matriz de conversión V1
+`constPtr<T>` es `std::unique_ptr<const T>` — posees el objeto pero no
+puedes mutarlo a través de este puntero.
 
-| Desde ↓ / hacia → | T        | ptr<T>      | constPtr<T> | ref<T>      | constRef<T>  |
-|-------------------|----------|-------------|-------------|-------------|--------------|
-| `T`               | copy     | ❌          | ❌          | **borrow**  | **borrow**   |
-| `ptr<T>`          | ❌       | move        | move        | borrow      | borrow       |
-| `constPtr<T>`     | ❌       | ❌          | move        | ❌          | borrow       |
-| `ref<T>`          | copy*    | ❌          | ❌          | borrow      | borrow       |
-| `constRef<T>`     | copy*    | ❌          | ❌          | ❌          | borrow       |
+### 4. `Rc<T>` está deprecado (E4404)
 
-\* solo si `T` es copy-constructible.
-
-**Nunca se permite** `borrow → owner`: un préstamo no puede adquirir
-ownership.
-
-## Borrado de APIs legacy
-
-V22 elimina las siguientes APIs. El type-checker emite diagnósticos
-E4400-E4406:
-
-| Legacy       | Reemplazo V22                | Diagnóstico |
-|--------------|------------------------------|-------------|
-| `mut`        | `ref<T>`                     | E4400       |
-| `Mut<T>`     | `ptr<T>` o `ref<T>`          | E4401       |
-| `MutRef<T>`  | `ref<T>`                     | E4402       |
-| `Unq<T>`     | `ptr<T>`                     | E4403       |
-| `Rc<T>`      | `ptr<T>` (warning)           | E4404       |
-| `out T`      | `Result<T>` (soft, warning)  | E4405       |
-| `class ptr`  | (reservado)                  | E4406       |
-
-## Estado actual de V22 (sub-PRs entregados)
-
-| Sub-PR | Estado | Resumen |
-|--------|--------|---------|
-| **PR#1 — Tipos** | ✅ entregado (v0.27.0) | `ptr<T>`, `constPtr<T>`, `ref<T>`, `constRef<T>` + matriz de conversión |
-| **PR#2 — Value semantics** | ✅ entregado | Coerción `T` → `ptr<T>` cuando el destino se declara `ptr<T>` y el initializer es `new T(...)`. El codegen emite `std::make_unique<T>(...)` automáticamente |
-| **PR#3 — Borrows (V1)** | 🟡 parcial | Implementadas: `no fields ref<T>` (E4203), `no retornos ref<T>` (E42xx), `no borrows en async` (E4204), `no borrows como argumentos genéricos` (E4205). Pendiente: aliasing mutable (ref + ref) — ver PR#6 |
-| **PR#4 — make_unique** | ✅ entregado | Emisión automática en declaraciones `let x: ptr<T> = new T(...)` y `const x: ptr<T> = new T(...)` |
-| **PR#5 — Moves** | ✅ entregado | `move(x)` se reconoce y emite `std::move(x)`. El checker marca la variable como `moved`/`maybe-moved` y rechaza usos posteriores con E4102/E4103. Join correcto entre ramas de `if/else` (preserva `Available` o degrada a `maybe-moved`) |
-| **PR#6 — Borrow conflicts** | ❌ pendiente | Aliasing mutable (`ref + ref`, `ref + constRef`) no se detecta aún |
-
-## Diagnósticos implementados
-
-| Código | Significado |
-|--------|-------------|
-| **E4102** | Uso de una variable `ptr<T>` después de haber sido movida (`move(x)`) |
-| **E4103** | Uso de una variable `ptr<T>` después de `move()` cuando puede estar movida (rama `if/else`) |
-| **E4203** | `ref<T>` / `constRef<T>` almacenado en un campo de clase — los préstamos no pueden sobrevivir al owner |
-| **E4204** | `ref<T>` / `constRef<T>` como parámetro en una función `async` — podrían colgar durante una suspensión |
-| **E4205** | `ref<T>` / `constRef<T>` como argumento de tipo en un genérico (`Array<ref<T>>` no tiene sentido) |
-| **E42xx** | `ref<T>` / `constRef<T>` como tipo de retorno — requiere análisis de lifetimes, no soportado aún |
-| **E4400–E4406** | APIs legacy rechazadas (`mut`, `Mut<T>`, `MutRef<T>`, `Unq<T>`, `Rc<T>`, `out`) |
-
-## Lo que V22 **no** soporta todavía
-
-Ver `LIMITATIONS.md` §"Memory Model v2 — pendiente" para la lista
-completa. Resumen del trabajo restante:
-
-- **PR#6 — Borrow conflicts**: aliasing mutable (`ref + ref`, `ref +
-  constRef`) no se detecta aún.
-- **PR#7 — Async/closures/generics**: las restricciones V1 (no capturas
-  escaping de `ref<T>`, no copy de move-only en generics) no se enforce.
-- **`Rc<T>`** (shared ownership): rediseñado con `weak<T>` en PR futuro.
-- **Lifetime parameters** (`<'a>`): no soportados.
-- **Non-lexical lifetimes**: solo se implementará el modelo léxico
-  básico (el préstamo termina al salir del bloque).
-
-## Cómo migrar
-
-Ver `CHANGELOG.md` § v0.27.0 para la guía de migración mecánica.
-Resumen:
-
-```diff
-- function foo(mut x: User): void {}
-+ function foo(x: ref<User>): void {}
-
-// MutRef<T> → ref<T>
-// Mut<T>   → ref<T> o ptr<T> (depende del caso)
-// Unq<T>   → ptr<T>
-// Rc<T>    → ptr<T> (warning)
+```ets
+let r: Rc<User> = new User();  // WARNING: E4404: 'Rc<T>' is deprecated.
+                                //          Use 'ptr<T>' for unique ownership or
+                                //          'weak<T>' for shared ownership.
 ```
+
+El mensaje sugiere `weak<T>` para shared ownership, pero **`weak<T>` aún
+no está implementado** (no aparece en el type-checker). La migración
+real es a `ptr<T>`.
+
+### 5. `Unq<T>`, `Mut<T>`, `MutRef<T>` son legacy pre-V22
+
+Aceptados por el type-checker (línea ~1360) sin error de deprecation,
+pero semánticamente equivalentes a `ptr<T>`, `ref<T>`, `constRef<T>`.
+**Evitar en código nuevo**.
+
+## Errores específicos del modelo de memoria
+
+| Código | Significado | Cuándo |
+|---|---|---|
+| E42xx | `ref<T>`/`constRef<T>` en posición de retorno | Type-checker |
+| E4203 | `ref<T>`/`constRef<T>` en class field | Type-checker |
+| E4205 | `ref<T>`/`constRef<T>` como type argument | Type-checker |
+| E4404 | `Rc<T>` deprecado | Type-checker (warning) |
+
+## Lo que NO se ha hecho (trabajo futuro)
+
+- **Lifetime analysis**: permitiría devolver `ref<T>` y almacenarlo en
+  fields. No implementado. (Issue abierta desde V22.)
+- **`weak<T>` real**: mencionado en E4404 pero no implementado.
+- **Borrow checker V22 PR#6**: pendiente (Alberto 2026-10-07,
+  sesiones dedicadas).
+
+## Verificación
+
+```bash
+# Para verificar cualquier regla de este doc:
+grep -n "ref\\|constRef\\|ptr\\|constPtr\\|Rc\\|Unq\\|Mut\\|weak" \
+  src/semantic/type-checker.ts
+```
+
+Si la regla cambió, este doc debe actualizarse.
