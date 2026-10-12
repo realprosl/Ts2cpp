@@ -1,9 +1,8 @@
 // ets_multi_loop.hpp — pool de LibuvEventLoop ejecutandose en paralelo.
 //
 // V26: Alberto 2026-10-07 -> "multicore N loops" del V26 roadmap.
-// Utilidad opcional (header-only) para escalar el reactor async a
-// multiples cores.
-//
+// Utilidad opcional (header-only) para escalar el event loop a
+// multiples cores. Cada loop sigue siendo libuv puro desde V29.3.
 // Uso:
 //
 //   #include "runtime/ets_event_loop_libuv_api.hpp"

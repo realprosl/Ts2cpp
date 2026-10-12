@@ -276,7 +276,9 @@ class Counter {
   current(): number { return this.value; }
 }
 
-function increment(mut counter: Counter): void {
+// V22: `mut` se reemplazó por `ref&lt;T&gt;` (T&amp;). Ver examples/mut-demo.ets
+// para la versión expandida. Aquí usamos la misma forma compacta.
+function increment(counter: ref&lt;Counter&gt;): void {
   counter.value = counter.value + 1;
 }
 
@@ -431,21 +433,26 @@ show(user);
   </header>
   <details>
     <summary>Ver código fuente</summary>
-    <pre class="source" aria-label="Código fuente">class Counter {
+    <pre class="source" aria-label="Código fuente">// mutable-borrows.ets — V22: `ref&lt;T&gt;` permite mutar el valor del caller.
+// Antes de V22, este ejemplo usaba `mut counter: Counter`.
+
+class Counter {
   value: number;
+  constructor(v: number) { this.value = v; }
 }
 
-function inspect(counter: Counter): number {
+function inspect(counter: constRef&lt;Counter&gt;): number {
   return counter.value;
 }
 
-function increment(mut counter: Counter): void {
+function increment(counter: ref&lt;Counter&gt;): void {
+  // ref&lt;Counter&gt; es T&amp;: el callee muta el valor del caller.
   counter.value = counter.value + 1;
 }
 
 let counter: Counter = new Counter(41);
 increment(counter);
-print(inspect(counter));
+print(numberToString(inspect(counter)));
 </pre>
   </details>
   <details open>
@@ -1421,38 +1428,44 @@ key=alpha
   </header>
   <details>
     <summary>Ver código fuente</summary>
-    <pre class="source" aria-label="Código fuente">// match-demo.ets — Fase 1.10: match expressions (TC39 stage 2).
+    <pre class="source" aria-label="Código fuente">// match-demo.ets — V23: match intrinsics con sintaxis compatible con TypeScript.
 //
-// `match (subject) { when (pattern) =&gt; result; ... }` desazucara a una
-// cadena de comparaciones `(subject == pattern ? result : ...)` con
-// short-circuit. Cada arm se evalúa en orden; el primero que matchea
-// determina el resultado. El último arm puede ser un wildcard `_` que
-// siempre matchea (default).
+// `match(value, [when(pattern, callback), ...])` desazucara a un
+// if/else chain (IIFE) que se compila a codigo C++ nativo, sin pasar
+// por una llamada a funcion. Cada arm se evalua en orden; el primero
+// que matchea determina el resultado. El ultimo arm puede ser un
+// `otherwise(callback)` que actua como default.
 //
-// Limitaciones actuales:
-// - Los patterns son expresiones (literales, identifiers). No hay
-//   pattern destructuring, rangos, ni type guards.
-// - El operador `==` se usa para comparar; en runtime depende de
-//   operator== del tipo (no funciona con strings si no se define).
+// Diferencias con la forma TC39 (V1.10, eliminada en V23):
+// - Los callbacks son arrow functions con tipo explicito: `(v: T): R =&gt; expr`.
+//   El dialecto requiere anotacion de tipo en lambdas (no hay inferencia
+//   contextual como en TypeScript).
+// - Los patterns son expresiones que se comparan con `==` (literales,
+//   identifiers). No hay pattern destructuring ni rangos.
+// - Para type dispatching, usa `whenType&lt;T&gt;(callback)`. En V23.1 NO
+//   narrowa el subject (issue #95): el callback se invoca sin
+//   argumentos. Para narrowing real, usa la forma V2 destructurada.
+//
+// Ver `docs/match-syntax.md` para la especificacion completa.
 
 function classify(x: number): string {
-  return match (x) {
-    when (0) =&gt; &quot;zero&quot;;
-    when (1) =&gt; &quot;one&quot;;
-    when (2) =&gt; &quot;two&quot;;
-    when (3) =&gt; &quot;three&quot;;
-    when (_) =&gt; &quot;many&quot;;
-  };
+  return match(x, [
+    when(0, (v: number): string =&gt; &quot;zero&quot;),
+    when(1, (v: number): string =&gt; &quot;one&quot;),
+    when(2, (v: number): string =&gt; &quot;two&quot;),
+    when(3, (v: number): string =&gt; &quot;three&quot;),
+    otherwise((): string =&gt; &quot;many&quot;),
+  ]);
 }
 
 function sign(n: number): string {
-  return match (n) {
-    when (0) =&gt; &quot;zero&quot;;
-    when (_) =&gt; match (n) {
-      when (1) =&gt; &quot;one&quot;;
-      when (_) =&gt; &quot;many&quot;;
-    };
-  };
+  return match(n, [
+    when(0, (v: number): string =&gt; &quot;zero&quot;),
+    otherwise((): string =&gt; match(n, [
+      when(1, (v: number): string =&gt; &quot;one&quot;),
+      otherwise((): string =&gt; &quot;many&quot;),
+    ])),
+  ]);
 }
 
 print(classify(0));   // zero
