@@ -320,11 +320,17 @@ export class TypeChecker {
   // mutable (no readonly) porque IfStatement hace snapshots y los restaura
   // para implementar el join de estados entre ramas.
   private moved = new Map<string, "moved" | "maybe-moved">();
-  // V22 PR#134: stack de borrows activos por scope. Cada entrada es un
-  // Map<nombre-de-la-fuente, modo> ("mut" para ref<T>, "shared" para
-  // constRef<T>). push/pop en cada BlockStatement. Las declaraciones
-  // `ref(x)` y `constRef(x)` consultan y actualizan el stack.
-  private borrowStack: Map<string, "mut" | "shared">[] = [new Map()];
+  // V22 PR#134 + V30.7 NLL: stack de borrows activos por scope. La clave
+  // es el NOMBRE DEL BORROW (e.g. `a` en `const a: ref<User> = ref(u)`),
+  // no la fuente. Esto permite actualizar el `lastUseLine` de la fuente
+  // cuando se lee el borrow (no la fuente). NLL (Non-Lexical Lifetimes):
+  // un borrow termina en su ultimo uso, no al final del scope.
+  private borrowStack: Map<string, { mode: "mut" | "shared"; lastUseLine: number; declared: number; sourceName: string }>[] = [new Map()];
+  // V30.7 NLL: registro de TODOS los borrows vistos durante el check
+  // (incluidos los que ya hicieron pop del scope). Se usa en
+  // resolveBorrowConflicts para detectar solapamientos con
+  // informacion completa de usos futuros.
+  private borrowLog: Array<{ mode: "mut" | "shared"; lastUseLine: number; declared: number; sourceName: string; borrowName: string }> = [];
   private currentReturn: TypeName | undefined;
   private currentAsync: boolean | undefined;
   private inConstructor = false;
@@ -623,7 +629,50 @@ export class TypeChecker {
     for (const statement of program.statements) if (statement.kind === "ClassDeclaration") this.validateClass(statement, global);
     for (const statement of program.statements) if (unwrap(statement).kind === "FunctionDeclaration") this.declareFunction(unwrap(statement) as FunctionDeclaration, global);
     for (const statement of program.statements) this.statement(statement, global);
+    // V30.7 NLL (Non-Lexical Lifetimes) — segunda pasada para resolver
+    // borrows con información completa de usos futuros.
+    //
+    // Por que doble pasada: durante la primera pasada, cuando
+    // declaramos `const b = ref(u)` despues de `const a = ref(u); print(a.name)`,
+    // no sabemos todavia que `a` se va a usar despues. Sin esa
+    // información, declaramos `b` como "OK" (porque `a.lastUse=2 < 3`).
+    //
+    // Aqui hacemos un recorrido del AST anotando en cada
+    // VariableDeclaration (que sea un borrow) los usos futuros de su
+    // nombre, y luego revisamos los conflictos.
+    this.resolveBorrowConflicts();
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
+  }
+
+  /**
+   * V30.7 NLL: para cada declaracion de borrow del programa, recalcula
+   * su `lastUseLine` con todos los IdentifierExpression del scope
+   * visibles, y luego verifica conflictos entre borrows sobre la misma
+   * fuente. Si dos borrows `a` y `b` con la misma fuente tienen
+   * `lastUseLine` superpuestos y al menos uno es `mut`, emite E4206/E4207.
+   */
+  private resolveBorrowConflicts(): void {
+    // Recorremos borrowLog (todos los borrows vistos durante el check)
+    // y, para cada par con la misma sourceName, comprobamos solapamiento.
+    for (let i = 0; i < this.borrowLog.length; i++) {
+      for (let j = i + 1; j < this.borrowLog.length; j++) {
+        const a = this.borrowLog[i];
+        const b = this.borrowLog[j];
+        if (a.sourceName !== b.sourceName) continue;
+        const first = a.declared <= b.declared ? a : b;
+        const second = a.declared <= b.declared ? b : a;
+        const overlap = first.lastUseLine >= second.declared;
+        if (!overlap) continue;
+        const mut = first.mode === "mut" || second.mode === "mut";
+        if (!mut) continue;
+        const code = first.mode === "mut" && second.mode === "mut" ? "E4206" : "E4207";
+        const sourceName = first.sourceName;
+        const msg = code === "E4206"
+          ? `E4206: mutable borrow conflict. '${sourceName}' is borrowed as 'ref<T>' at line ${first.declared} and again as 'ref<T>' at line ${second.declared}; the two borrows overlap in their lifetimes. Use 'constRef(${sourceName})' if shared access is enough.`
+          : `E4207: mutable/shared borrow conflict. '${sourceName}' is borrowed ${first.mode === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} at line ${first.declared} and ${second.mode === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} at line ${second.declared}; the two borrows overlap in their lifetimes.`;
+        this.report({ span: { start: { line: second.declared, column: 1, offset: 0 }, end: { line: second.declared, column: 1, offset: 0 } } } as any, msg);
+      }
+    }
   }
 
   typeOf(expression: Expression): TypeName | undefined {
@@ -1470,23 +1519,44 @@ export class TypeChecker {
             && node.initializer.args.length === 1
             && node.initializer.args[0].kind === "IdentifierExpression") {
           const sourceName = node.initializer.args[0].name;
+          const borrowName = node.name;  // e.g. "a" en `const a: ref<User> = ref(u)`
           const newMode: "mut" | "shared" = node.initializer.callee === "ref" ? "mut" : "shared";
-          // Buscar borrows activos en el scope actual sobre la misma fuente.
+          const declaredLine = node.span.start.line;
+          // V30.7 NLL: la clave del borrowStack es el NOMBRE DEL BORROW
+          // (e.g. "a"), no la fuente. Asi, cuando se lee "a" despues,
+          // sabemos a que fuente ("u") actualizar su lastUseLine.
+          //
+          // Para detectar conflictos con OTROS borrows sobre la MISMA
+          // fuente, tenemos que escanear todos los borrows del scope y
+          // ver si alguno tiene `sourceName === sourceName` y sigue vivo
+          // (lastUseLine >= declaredLine).
           const currentScope = this.borrowStack[this.borrowStack.length - 1];
-          const existing = currentScope.get(sourceName);
-          if (existing !== undefined) {
-            if (existing === "mut" || newMode === "mut") {
-              // Cualquier combinacion que incluya un "mut" es conflicto.
-              // E4206: mut+mut. E4207: mut+shared (cualquier orden).
-              const code = existing === "mut" && newMode === "mut" ? "E4206" : "E4207";
-              const msg = existing === "mut" && newMode === "mut"
+          let conflictingSource: { mode: "mut" | "shared"; lastUseLine: number } | undefined;
+          for (const [, entry] of currentScope) {
+            if (entry.sourceName === sourceName && entry.lastUseLine >= declaredLine) {
+              conflictingSource = entry;
+              break;
+            }
+          }
+          if (conflictingSource) {
+            const existingIsMut = conflictingSource.mode === "mut";
+            const newIsMut = newMode === "mut";
+            const isConflict = existingIsMut || newIsMut;
+            if (isConflict) {
+              const code = existingIsMut && newIsMut ? "E4206" : "E4207";
+              const msg = existingIsMut && newIsMut
                 ? `E4206: mutable borrow conflict. '${sourceName}' is already borrowed as 'ref<T>' in this scope; cannot borrow again as 'ref<T>' (would create two mutable references). Use 'constRef(${sourceName})' if shared access is enough.`
-                : `E4207: mutable/shared borrow conflict. '${sourceName}' is already borrowed ${existing === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} in this scope; cannot borrow ${newMode === "mut" ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} because it would violate Rust-like aliasing rules.`;
+                : `E4207: mutable/shared borrow conflict. '${sourceName}' is already borrowed ${existingIsMut ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} in this scope; cannot borrow ${newIsMut ? "as 'ref<T>' (mutable)" : "as 'constRef<T>' (shared)"} because it would violate Rust-like aliasing rules.`;
               this.report(node.initializer, msg);
             }
           }
-          // Registrar este borrow en el scope actual.
-          currentScope.set(sourceName, newMode);
+          // Registrar este borrow. Clave = nombre del borrow (no la fuente).
+          // lastUseLine = declared (ultimo uso conocido; se actualizara al
+          // leerse el borrow).
+          const entry = { mode: newMode, lastUseLine: declaredLine, declared: declaredLine, sourceName };
+          currentScope.set(borrowName, entry);
+          // V30.7 NLL: tambien en borrowLog para resolver conflictos al final.
+          this.borrowLog.push({ ...entry, borrowName });
         }
         // V6: si es `const` y el initializer es un literal puro, anotamos el
         // valor para que el codegen pueda emitir `constexpr` y propagar el
@@ -2021,6 +2091,22 @@ export class TypeChecker {
         break;
       }
       case "IdentifierExpression": {
+        // V30.7 NLL: si este identifier es el NOMBRE DE UN BORROW
+        // (e.g. `a` en `const a: ref<User> = ref(u)`), actualizamos su
+        // `lastUseLine` en todos los scopes del borrowStack donde
+        // aparezca. Esto permite que un nuevo borrow declarado en una
+        // linea posterior sepa que `a` ya termino (y por tanto la fuente
+        // `u` ya no esta borrowed).
+        for (const scope of this.borrowStack) {
+          const entry = scope.get(node.name);
+          if (entry) entry.lastUseLine = node.span.start.line;
+        }
+        // Tambien actualizar en borrowLog (para resolveBorrowConflicts).
+        for (const entry of this.borrowLog) {
+          if (entry.borrowName === node.name && entry.lastUseLine < node.span.start.line) {
+            entry.lastUseLine = node.span.start.line;
+          }
+        }
         // Los enums se referencian por nombre (`Color.Green`); permitimos el identificador
         // desnudo como valor y devolvemos el nombre del enum como tipo de la expresión.
         // Comprobamos esto ANTES del scope porque `Color` está registrado como
