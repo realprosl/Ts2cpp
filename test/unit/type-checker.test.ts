@@ -1490,3 +1490,87 @@ test("V30.10: arrow sincrona sigue rechazando await (no se rompe la semantica)",
     }
   `, "await solo es válido");
 });
+
+test("V30.10: funcion nombrada puede pasarse como argumento (callbacks estilo express)", () => {
+  // Antes esto fallaba con "'greet' es un símbolo de tipo o función, no un
+  // valor". Ahora una funcion nombrada con 1 overload sin generics se
+  // puede pasar como callback (decae a puntero-a-funcion en C++).
+  const { checker } = check(`
+    async function greet(n: number): Promise<string> {
+      return "hello " + numberToString(n);
+    }
+    async function callIt(f: (x: number) => Promise<string>, v: number): Promise<string> {
+      return await f(v);
+    }
+    async function main(): Promise<void> {
+      const r: string = await callIt(greet, 42);
+      print(r);
+    }
+  `);
+  assert.ok(checker, "funcion nombrada debe poder pasarse como argumento: " + JSON.stringify(checker));
+});
+
+test("V30.10: funcion nombrada con generics NO puede pasarse como argumento", () => {
+  // Funciones con type parameters o multiples overloads siguen rechazadas
+  // (no podemos inferir el tipo concreto en tiempo de check).
+  expectError(`
+    function identity<T>(x: T): T { return x; }
+    function callIt(f: (x: number) => number, v: number): number {
+      return f(v);
+    }
+    function main(): void {
+      callIt(identity, 42);
+    }
+  `, "función con genéricos");
+});
+
+test("V30.10: nombre de tipo (no función) sigue rechazándose", () => {
+  // Los tipos (clases, interfaces) NO deben poder usarse como valor.
+  // El cambio solo afecta a kind === "function".
+  expectError(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function callIt(f: () => User, v: number): User {
+      return f();
+    }
+    function main(): void {
+      callIt(User, 42);
+    }
+  `, "símbolo de tipo o función");
+});
+
+test("V30.10.1: const local en body de arrow NO se marca como captura", () => {
+  // V30.10.1: el type-checker debe distinguir entre capturas del scope
+  // exterior y declaraciones locales. Antes, una arrow con un `const`
+  // local lo marcaba como capturado, y el codegen emitia `[nombre]`
+  // para una variable que en realidad se declaraba DENTRO del lambda.
+  // El resultado: g++ daba "'nombre' was not declared in this scope".
+  const { checker } = check(`
+    function f(cb: (x: number) => string): string {
+      return cb(42);
+    }
+    function main(): string {
+      return f((n: number): string => {
+        const label: string = "value=";
+        const x: number = n * 2;
+        return label + numberToString(x);
+      });
+    }
+  `);
+  assert.ok(checker, "arrow con const locales debe type-checkear: " + JSON.stringify(checker));
+});
+
+test("V30.10.1: capture real del scope exterior SIGUE funcionando", () => {
+  // El fix de V30.10.1 no debe romper las capturas reales: una arrow
+  // que referencia una variable del scope exterior debe seguir
+  // capturandola.
+  const { checker } = check(`
+    function main(): void {
+      const prefix: string = "value=";
+      const f: (n: number) => string = (n: number): string => {
+        return prefix + numberToString(n);
+      };
+      print(f(42));
+    }
+  `);
+  assert.ok(checker, "captura real del scope exterior debe seguir type-checkeando");
+});

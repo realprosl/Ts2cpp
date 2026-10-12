@@ -2049,11 +2049,46 @@ export class TypeChecker {
         // cuerpo y anotamos los `IdentifierExpression` que NO estén en el
         // scope local. Esto habilita al codegen a saber qué variables
         // externas toca el lambda (útil para captura explícita en C++).
+        //
+        // V30.10.1: el `local` scope solo contiene los parametros; las
+        // `const`/`let` declaradas dentro del body NO se anaden a `local`
+        // (se anaden al scope del block, que el codegen emite inline).
+        // Antes eso causaba que `collectCaptured` las marcara como
+        // capturadas del scope exterior y el codegen emitiera una captura
+        // lambda `[nombre]` para una variable que en realidad se declara
+        // dentro del lambda -> "nombre was not declared in this scope".
+        // Recolectamos los nombres declarados localmente en el body
+        // (const/let/function) y los excluimos de la lista de capturas.
+        const localDeclarations = new Set<string>();
+        const collectLocalDeclarations = (target: import("../ast/nodes.ts").Expression | import("../ast/nodes.ts").Statement): void => {
+          if (!target || typeof target !== "object") return;
+          const t = target as { kind?: string; name?: string; declarations?: unknown[]; declaration?: unknown; params?: unknown[] };
+          if (t.kind === "VariableDeclaration" && typeof t.name === "string") localDeclarations.add(t.name);
+          if (t.kind === "VariableDeclaration" && Array.isArray(t.declarations)) {
+            for (const d of t.declarations) {
+              if (d && typeof d === "object" && typeof (d as { name?: string }).name === "string") localDeclarations.add((d as { name: string }).name);
+            }
+          }
+          if (t.kind === "FunctionDeclaration" && typeof t.name === "string") localDeclarations.add(t.name);
+          for (const key of Object.keys(t)) {
+            const child = (t as Record<string, unknown>)[key];
+            if (Array.isArray(child)) { for (const item of child) if (item && typeof item === "object") collectLocalDeclarations(item as import("../ast/nodes.ts").Expression); }
+            else if (child && typeof child === "object") collectLocalDeclarations(child as import("../ast/nodes.ts").Expression);
+          }
+        };
+        collectLocalDeclarations(node.body);
         const captured = new Set<string>();
         const collectCaptured = (target: import("../ast/nodes.ts").Expression | import("../ast/nodes.ts").Statement): void => {
           if (!target || typeof target !== "object") return;
           const t = target as { kind?: string; name?: string; object?: unknown; left?: unknown; right?: unknown; body?: unknown; operand?: unknown; args?: unknown[]; statements?: unknown[]; initializer?: unknown; elements?: unknown[]; params?: unknown[]; members?: unknown[]; cases?: unknown[]; fields?: unknown[]; methods?: unknown[]; condition?: unknown; thenBranch?: unknown; elseBranch?: unknown; subject?: unknown; arms?: unknown[]; expression?: unknown; target?: unknown; value?: unknown; iterable?: unknown; binding?: unknown; declarations?: unknown[]; declaration?: unknown };
-          if (t.kind === "IdentifierExpression" && typeof t.name === "string" && !local.resolveLocal(t.name) && !node.params.some(p => p.name === t.name)) captured.add(t.name);
+          // V30.10.1: no marcar como capturado algo que:
+          //   - es un param del propio lambda,
+          //   - se declara localmente en el body (const/let/function),
+          //   - o ya esta en el local scope (caso normal de params).
+          if (t.kind === "IdentifierExpression" && typeof t.name === "string"
+              && !local.resolveLocal(t.name)
+              && !localDeclarations.has(t.name)
+              && !node.params.some(p => p.name === t.name)) captured.add(t.name);
           for (const key of Object.keys(t)) {
             const child = (t as Record<string, unknown>)[key];
             if (Array.isArray(child)) { for (const item of child) if (item && typeof item === "object") collectCaptured(item as import("../ast/nodes.ts").Expression); }
@@ -2137,6 +2172,27 @@ export class TypeChecker {
         // el type-checker reclame "Path" donde se espera "string".
         const symbol = scope.resolve(node.name);
         if (symbol) {
+          // V30.10: aceptar tambien `function` como valor. Las funciones
+          // nombradas decaen a puntero-a-funcion en C++ y se pueden pasar
+          // como argumento a un template <typename F0>. Antes se rechazaban
+          // con "es un símbolo de tipo o función, no un valor", lo que
+          // rompía el patrón `app.get("/ruta", handler)` estilo express.
+          if (symbol.kind === "function") {
+            // Construir el function type a partir del (unico) overload.
+            // Solo soportamos el caso simple: 1 overload, sin type params
+            // sin resolver. Funciones genericas o con overloads daran
+            // el mensaje de "no se puede usar" para no perder precision.
+            if (symbol.overloads.length === 1
+                && symbol.overloads[0].typeParameters.length === 0
+                && symbol.overloads[0].variadicTypeParameters.length === 0) {
+              const ov = symbol.overloads[0];
+              const paramTypes = ov.params.map(p => p.type);
+              result = functionType(paramTypes, ov.returnType);
+            } else {
+              this.report(node, `'${node.name}' es una función con genéricos o overloads; pásala como arrow (x: T) => ... para evitar la resolución de tipos`);
+            }
+            break;
+          }
           if (symbol.kind !== "variable") this.report(node, `'${node.name}' es un símbolo de tipo o función, no un valor`);
           else {
             // V22 (Memory Model v2): si la variable fue movida con move(x),

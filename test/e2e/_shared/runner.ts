@@ -199,14 +199,22 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     const usesCurl = cppText.includes("runtime/ets_http_curl_client.hpp");
     // V30.5: TLS server-side (ets_tls.hpp) requiere OpenSSL.
     const usesTls = cppText.includes("runtime/ets_tls.hpp");
+    // V30.10.1: el backend httplib (incluido por `http.createServer()`)
+    // usa try/throw en httplib.h. Con -fno-exceptions del runner por
+    // defecto, falla con "exception handling disabled". Detectamos
+    // httplib en el codegen y desactivamos -fno-exceptions para esta
+    // build. Lo mismo que ya hacemos con Drogon.
+    const usesHttplib = cppText.includes("runtime/ets_http_httplib.hpp");
     const drogonLibs = [
       "-ldrogon", "-ltrantor", "-ljsoncpp",
       "-lssl", "-lcrypto", "-lresolv",
     ];
-    // Drogon usa try/catch en HttpBinder.h; -fno-exceptions del runner
-    // por defecto choca con eso. Cuando el backend es Drogon, lo
-    // desactivamos para esta build.
-    const noExceptions = usesDrogon ? [] : ["-fno-exceptions"];
+    // Drogon y httplib usan try/catch. -fno-exceptions del runner
+    // por defecto choca con ambos. Cuando el backend es Drogon O
+    // httplib, lo desactivamos para esta build.
+    const exceptionFlags: string[] = [];
+    if (!usesDrogon && !usesHttplib) exceptionFlags.push("-fno-exceptions");
+    if (usesHttplib || usesDrogon) exceptionFlags.push("-fexceptions");
     const drogonArgs = usesDrogon
       ? ["-I", "/usr/include/jsoncpp", ...drogonLibs]
       : [];
@@ -217,7 +225,7 @@ async function processE2E(bucket: Bucket, name: string, skipNetwork: boolean): P
     // ademas de las drogonLibs si el backend es Drogon + TLS.
     const tlsArgs = usesTls && !usesDrogon ? ["-lssl", "-lcrypto"] : [];
 
-    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...noExceptions, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, ...tlsArgs, ...libuvArgs, "-o", binPath], { cwd: workerScratch });
+    const child = spawn("g++", ["-std=c++20", "-O2", "-pthread", ...exceptionFlags, "-I", REPO_ROOT, cppPath, ...extraCpps, "-lstdc++fs", ...drogonArgs, ...curlArgs, ...tlsArgs, ...libuvArgs, "-o", binPath], { cwd: workerScratch });
     let stdout = ""; let stderr = "";
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });

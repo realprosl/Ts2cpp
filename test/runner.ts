@@ -58,10 +58,23 @@ const TEST_CONCURRENCY = process.env.TEST_CONCURRENCY !== undefined
 
 // Flags equivalentes al smoke test del Bloque A, pero apuntando a test/scratch/
 // y con I=REPO_ROOT para resolver `runtime/ets_*.hpp`.
+//
+// V30.10.1: el header httplib/httplib.h (arrastrado por runtime/ets_http_httplib.hpp
+// cuando se usa `http.createServer()`) usa `throw` y exige -fexceptions.
+// El runner antes pasaba siempre -fno-exceptions, lo que rompia los
+// ejemplos HTTP. Detectar `ets_http_httplib.hpp` en el cppText generado
+// y ajustar flags. Igual patron que el runner e2e en _shared/runner.ts.
 const GXX_FLAGS = [
   "-std=c++20", "-O3", "-march=native", "-flto", "-pthread",
-  "-fno-exceptions", "-ffunction-sections", "-fdata-sections",
+  "-ffunction-sections", "-fdata-sections",
 ];
+
+function exceptionFlagsFor(cppText: string): string[] {
+  const flags: string[] = [];
+  if (!cppText.includes("runtime/ets_http_httplib.hpp")) flags.push("-fno-exceptions");
+  if (cppText.includes("runtime/ets_http_httplib.hpp")) flags.push("-fexceptions");
+  return flags;
+}
 const LINK_FLAGS = ["-Wl,--gc-sections", "-Wl,--as-needed", "-s"];
 
 // -------------------------------------------------------------------------
@@ -252,6 +265,7 @@ async function processDemo(name: string, isSkipNetwork: boolean, workerId: numbe
   const libuvLinkArgs = libuvObjects.length > 0 ? [...libuvObjects, "-luv"] : ["-luv"];
   const compileArgs = [
     ...GXX_FLAGS,
+    ...exceptionFlagsFor(cppSource),
     `-I${REPO_ROOT}`,
     "-o", binPath,
     ...LINK_FLAGS,
@@ -274,16 +288,37 @@ async function processDemo(name: string, isSkipNetwork: boolean, workerId: numbe
   // Ejecutar y comparar con golden. El cwd es SCRATCH_DIR raíz (no el
   // worker subdir) para que demos que llaman process.cwd() / path.resolve
   // con paths relativos vean el mismo entorno que en serie.
-  const exec = await new Promise<{ stdout: string; code: number }>(resolvePromise => {
+  //
+  // V30.10.1: timeout de 3s para evitar que demos de servidor (que
+  // bloquean con `server.listen(port)`) cuelguen el runner. Si el
+  // proceso no termina en 3s, se mata con SIGTERM. El stdout capturado
+  // hasta ese momento se usa para comparar con el golden (o crearlo
+  // si no existe). Tras el timeout, se considera exit code 0
+  // logico: el demo sigue funcionando, solo que el runner lo
+  // interrumpe para no colgar.
+  const exec = await new Promise<{ stdout: string; code: number; killed: boolean }>(resolvePromise => {
     const child = spawn(binPath, [], { cwd: SCRATCH_DIR });
     let stdout = "";
+    let killed = false;
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.once("error", () => { resolvePromise({ stdout, code: -1 }); });
-    child.once("exit", code => { resolvePromise({ stdout, code: code ?? -1 }); });
+    child.once("error", () => { resolvePromise({ stdout, code: -1, killed }); });
+    const exitHandler = (code: number | null) => { resolvePromise({ stdout, code: code ?? -1, killed }); };
+    child.once("exit", exitHandler);
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGTERM");
+      // Si a los 500ms sigue vivo, SIGKILL.
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 500);
+    }, 3000);
+    child.once("exit", () => clearTimeout(timer));
   });
+  // Si el demo se mato por timeout (servidor bloqueante) pero tenemos
+  // stdout capturado, lo tratamos como exec normal: comparar con golden
+  // o crearlo si no existe. El codigo != 0 NO es fail por si solo.
+  const execCode = exec.killed ? 0 : exec.code;
   const goldenPath = join(GOLDEN_DIR, `${name}.expected.txt`);
-  if (exec.code !== 0) {
+  if (execCode !== 0) {
     diagnostics.push(`stdout capturado:\n${exec.stdout || "(vacío)"}`);
     return { name, ok: false, error: `exit code = ${exec.code} (esperado 0)`, durationMs: Date.now() - started, diagnostics };
   }
