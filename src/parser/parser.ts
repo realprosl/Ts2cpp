@@ -623,7 +623,23 @@ export class Parser {
   private ifStatement(keyword: Token): Statement {
     this.consume("(", "Se esperaba '('"); const condition = this.expression(); this.consume(")", "Se esperaba ')'");
     const thenBranch = this.statement();
-    const elseBranch = this.match("else") ? this.statement() : undefined;
+    // V30.9 (fix PR #2 del backlog): el `else` debe pegarse al `if` aunque haya
+    // saltos de linea entre `}` del then y `else`. Antes, `match("else")` se
+    // ejecutaba INMEDIATAMENTE despues de `statement()`, pero el block externo
+    // o el `consumeStatementTerminator` interno del then-branch ya habia
+    // consumido los newlines, dejando al `ifStatement` con el cursor en el
+    // token POST-newline. Eso hacia que el `block()` externo iterase de
+    // nuevo, viera `else`, y lo intentase parsear como statement (falla).
+    //
+    // Fix: despues del then-branch, saltamos newlines (la ASI los trata
+    // como whitespace, NO como terminator en presencia de un `else`).
+    // Luego miramos directamente si hay `else`.
+    let elseBranch: Statement | undefined;
+    if (this.check("newline")) this.skipNewlines();
+    if (this.check("else")) {
+      this.advance(); // consume "else"
+      elseBranch = this.statement();
+    }
     return { kind: "IfStatement", condition, thenBranch, elseBranch, span: span(keyword.span.start, (elseBranch ?? thenBranch).span.end) };
   }
 
