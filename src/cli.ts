@@ -11,6 +11,7 @@ import { loadConfig } from "./config/project-config.ts";
 import { buildIncremental } from "./build/incremental-builder.ts";
 import { BuildLogger } from "./core/build-logger.ts";
 import { initializeProject } from "./project/init-project.ts";
+import * as ui from "./core/cli-ui.ts";
 
 function usage(): never {
   console.error("Uso:\n  etsc init [directorio]\n  etsc [entrada.ts|entrada.ets] [-o salida.cpp] [--config estatic.config.ts] [--build] [--unity]");
@@ -69,9 +70,23 @@ const verbose = args.includes("--verbose") || args.includes("-v");
 const logger = incrementalBuild ? undefined : await BuildLogger.create(config);
 try {
   if (incrementalBuild) {
+    // V30.10: spinner global durante el build (cuando stderr es TTY).
+    // En CI / pipes (no TTY) cae a un unico mensaje "Compilando..."
+    // y luego al resumen final.
+    const buildSpinner = ui.spinner({ message: "Compilando proyecto..." });
     const result = await buildIncremental(config, compilerRoot, { verbose });
-    console.log(`Build incremental (${result.cacheResult}): ${result.compiled.length} módulo(s) compilado(s), ${result.reused.length} reutilizado(s)${result.linked ? ", re-enlazado" : ""}, ${result.durationMs}ms`);
-    if (!verbose) for (const module of result.compiled) console.log(`  Compilado módulo ${module}`);
+    const cacheColor = result.cacheResult === "hit"
+      ? (ui.useColors(process.stderr) ? "\x1b[32mhit\x1b[0m" : "hit")
+      : (ui.useColors(process.stderr) ? "\x1b[33m" + result.cacheResult + "\x1b[0m" : result.cacheResult);
+    buildSpinner.stop("ok",
+      `Build incremental (${cacheColor}): ${result.compiled.length} módulo(s) compilado(s), ${result.reused.length} reutilizado(s)${result.linked ? ", re-enlazado" : ""}, ${result.durationMs}ms`
+    );
+    if (!verbose) for (const module of result.compiled) {
+      const c = ui.useColors(process.stderr);
+      const prefix = c ? "\x1b[90m  ✓\x1b[0m" : "  ✓";
+      const mod = c ? `\x1b[36m${module}\x1b[0m` : module;
+      console.log(`${prefix} ${mod}`);
+    }
     process.exit(0);
   }
   // V15: si el usuario pasa `--multi`, escribimos header + un `.cpp` por módulo.
