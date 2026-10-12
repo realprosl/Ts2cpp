@@ -1417,3 +1417,76 @@ test("V30.7 NLL: comportamiento actual sigue valido (overlap completo) -> E4206"
     }
   `, "E4206");
 });
+
+test("V30.10: arrow async marca isAsync=true en el AST", () => {
+  // El parser debe marcar como isAsync=true una arrow precedida de `async`.
+  const tokens = new Lexer(`let f = async (n: number): Promise<string> => "ok";`).tokenize();
+  const ast = new Parser(tokens).parseProgram();
+  function findArrow(e: any): any {
+    if (!e) return undefined;
+    if (e.kind === "ArrowFunctionExpression") return e;
+    for (const k of Object.keys(e)) {
+      const v = e[k];
+      if (Array.isArray(v)) { for (const x of v) { const r = findArrow(x); if (r) return r; } }
+      else if (v && typeof v === "object" && v.kind) { const r = findArrow(v); if (r) return r; }
+    }
+    return undefined;
+  }
+  const stmt = ast.statements[0];
+  const arrow = findArrow(stmt);
+  assert.ok(arrow, "debe haber un ArrowFunctionExpression");
+  assert.equal(arrow.isAsync, true, "isAsync debe ser true para `async (n: number) =>`");
+});
+
+test("V30.10: arrow async permite await en su cuerpo", () => {
+  // await debe ser valido dentro de una arrow async. Antes daba error
+  // "await solo es valido dentro de una función async o en el nivel superior".
+  // Si check() no lanza, no hay diagnosticos (es el camino feliz).
+  const { checker } = check(`
+    async function slow(n: number): Promise<string> {
+      return "value: " + numberToString(n);
+    }
+    async function callIt(f: (x: number) => Promise<string>, v: number): Promise<string> {
+      return await f(v);
+    }
+    function main(): void {
+      callIt(async (n: number): Promise<string> => {
+        return await slow(n);
+      }, 42);
+    }
+  `);
+  assert.ok(checker, "await debe ser valido dentro de una arrow async");
+});
+
+test("V30.10: arrow async acepta return de T (no Promise<T>) en returnType=Promise<T>", () => {
+  // El currentReturn dentro de una arrow async con returnType=Promise<T>
+  // es T, no Promise<T>. Asi, return 21 en (n): Promise<number> => ... acepta
+  // un number sin envolver. Igual que las async functions nombradas.
+  const { checker } = check(`
+    async function callIt(f: (x: number) => Promise<string>, v: number): Promise<string> {
+      return await f(v);
+    }
+    function main(): void {
+      callIt(async (n: number): Promise<string> => {
+        return "literal-string";
+      }, 42);
+    }
+  `);
+  assert.ok(checker, "return de un literal en arrow async con returnType=Promise<T> debe aceptar T");
+});
+
+test("V30.10: arrow sincrona sigue rechazando await (no se rompe la semantica)", () => {
+  // Una arrow sin `async` NO debe permitir await (debe mantener la
+  // semantica sincrona que tenia antes).
+  expectError(`
+    async function slow(n: number): Promise<string> { return ""; }
+    function callIt(f: (x: number) => string, v: number): string {
+      return f(v);
+    }
+    function main(): void {
+      callIt((n: number): string => {
+        return await slow(n);
+      }, 42);
+    }
+  `, "await solo es válido");
+});

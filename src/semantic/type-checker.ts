@@ -2039,7 +2039,10 @@ export class TypeChecker {
         });
         const declaredResult = node.returnType ?? expectedResult;
         let resultType: TypeName;
-        const previousAsync = this.currentAsync; this.currentAsync = false;
+        // V30.10: si la arrow function es `async`, el body es un contexto
+        // async valido (await permitido). Si no, forzamos currentAsync=false
+        // (como antes) para mantener la semantica sincrona.
+        const previousAsync = this.currentAsync; this.currentAsync = node.isAsync === true;
         const previousClosure = this.currentClosure; this.currentClosure = { node, parentScope: scope };
         node.mutatesCapturedState = false;
         // V10: detectar nombres capturados del scope padre. Recorremos el
@@ -2081,7 +2084,14 @@ export class TypeChecker {
         }
         if (node.body.kind === "BlockStatement") {
           if (!declaredResult) this.report(node, "Una función flecha con bloque necesita tipo de retorno");
-          const previous = this.currentReturn; this.currentReturn = declaredResult ?? "void";
+          // V30.10: si la arrow es `async` y el returnType es `Promise<T>`,
+          // el currentReturn del body es T (no Promise<T>), igual que en
+          // FunctionDeclaration async. Asi, `return 21` en `(n): Promise<number> => ...`
+          // acepta un `number` sin necesidad de envolver.
+          const effectiveReturn = (node.isAsync === true && declaredResult && isPromiseType(declaredResult))
+            ? promiseResult(declaredResult)
+            : declaredResult;
+          const previous = this.currentReturn; this.currentReturn = effectiveReturn ?? "void";
           this.statement(node.body, local); this.currentReturn = previous;
           resultType = declaredResult ?? "void";
         } else {
