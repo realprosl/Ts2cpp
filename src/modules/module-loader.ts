@@ -1,25 +1,44 @@
 import { readFile, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname, extname, resolve, basename } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { parse, analyze } from "../compiler.ts";
 import { CppGenerator } from "../codegen/cpp-generator.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { validateModuleVisibility } from "./module-visibility.ts";
 import { detectRuntimeBackends, type RuntimeBackends } from "./runtime-backends.ts";
+import { computeModuleId, assertUniqueIdentities, type ModuleIdentity } from "./module-identity.ts";
 import type { Program, Statement } from "../ast/nodes.ts";
 
 // V22-gap-#1: soporta `import type { Foo } from "..."` (forma TS).
 // También soporta `import { Foo } from "..."` (forma estándar).
 // El flag `type` se ignora a nivel módulo: el dialecto emite los tipos
 // en runtime igualmente, así que el comportamiento es idéntico.
-const IMPORT_LINE = /^(\s*)import\s+(?:type\s+)?(?:\{([^}]*)\}\s+from\s+)?["']([^"']+)["']\s*;\s*$/;
+//
+// V30.6.1: ampliado H-05 del informe de revision. Soporta ahora:
+//   - `import { Foo, Bar } from "x";`
+//   - `import { Foo as Bar } from "x";`
+//   - `import type { Foo } from "x";`
+//   - `import * as Foo from "x";`
+//   - `import Foo from "x";` (default)
+//   - `import "x";` (side-effect)
+//   - `import ... from "x";` con comentarios `// foo` al final
+//   - `export { Foo } from "x";` (re-export, tratado como import)
+// NO soporta (ver LIMITATIONS.md):
+//   - imports multilínea (`import {\n  Foo\n} from "x";`) — el parser
+//     del dialecto tampoco los soporta. Si los necesitas, ponelos en
+//     una sola línea.
+const IMPORT_LINE = /^\s*import\s+(?:type\s+)?(?:(\*\s+as\s+([A-Za-z_][A-Za-z0-9_]*))|([A-Za-z_][A-Za-z0-9_]*)|(?:\{([^}]*)\}))?\s*(?:from\s+)?["']([^"']+)["']\s*;?\s*(?:\/\/.*)?$/;
+const EXPORT_FROM_LINE = /^\s*export\s+(?:type\s+)?(?:\{([^}]*)\}\s+from|\*\s+from|\*\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s+from)\s+["']([^"']+)["']\s*;?\s*(?:\/\/.*)?$/;
 
 /** V15: nombre de init estable basado en el nombre del archivo. Si el
  * módulo cambia su contenido, el init mantiene el mismo nombre — así
- * `main.cpp` no se invalida cada vez que una dependencia cambia. */
-function stableInitName(moduleFile: string): string {
-  const base = basename(moduleFile).replace(/\.(ets|ts)$/, "").replace(/[^A-Za-z0-9_]/g, "_");
-  return `ets_init_${base}`;
+ * `main.cpp` no se invalida cada vez que una dependencia cambia.
+ *
+ * V30.6.1: delegado a `computeModuleId` (H-02 del informe de revision).
+ * Antes, dos `index.ts` en carpetas distintas colisionaban en
+ * `ets_init_index`. Ahora la ruta completa + hash garantiza unicidad. */
+function stableInitName(moduleFile: string, baseDirectory: string): string {
+  return computeModuleId(moduleFile, baseDirectory).initName;
 }
 
 export interface ModuleCompilationResult {
@@ -34,11 +53,11 @@ export interface ModuleCompilationResult {
    * Detectado mirando el AST, no escaneando includes del cpp (mas fiable). */
   runtimeBackends: RuntimeBackends;
 }
-export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string>; minimal?: boolean }
+export interface ModuleLoaderOptions { moduleRoots?: string[]; aliases?: Record<string, string>; minimal?: boolean; /** V30.6.1: raíz para derivar la identidad estable de módulo (H-01/H-02). */ baseDirectory?: string }
 
 export interface ModuleImport { names: string[]; dependency: string; line: number }
 export interface LoadedModule { file: string; source: string; dependencies: string[]; imports: ModuleImport[]; hash: string }
-export interface ModuleGraph { entry: string; modules: LoadedModule[] }
+export interface ModuleGraph { entry: string; modules: LoadedModule[]; baseDirectory: string }
 
 async function resolveSourceFile(requested: string): Promise<string | undefined> {
   const candidates = extname(requested) ? [requested] : [`${requested}.ts`, `${requested}.ets`];
@@ -53,6 +72,9 @@ export async function loadModuleGraph(entry: string, options: ModuleLoaderOption
   const ordered: LoadedModule[] = [];
   const visited = new Set<string>();
   const visiting: string[] = [];
+  // V30.6.1: baseDirectory se usa para derivar la identidad estable de
+  // modulo (computeModuleId). Si no se pasa, usamos dirname(entry).
+  const baseDirectory = options.baseDirectory ?? dirname(entry);
 
   const visit = async (requested: string): Promise<string> => {
     const file = await resolveSourceFile(requested);
@@ -68,9 +90,26 @@ export async function loadModuleGraph(entry: string, options: ModuleLoaderOption
     let lineNumber = 0;
     for (const line of source.split(/\r?\n/)) {
       lineNumber++;
-      const match = line.match(IMPORT_LINE);
-      if (!match) { stripped.push(line); continue; }
-      const specifier = match[3];
+      // V30.6.1: intentar primero la regex de import normal, luego la
+      // de export-from. Si ninguna matchea, la línea se preserva tal cual.
+      let specifier: string | undefined;
+      let importedNames: string[] = [];
+      const importMatch = line.match(IMPORT_LINE);
+      const exportMatch = !importMatch ? line.match(EXPORT_FROM_LINE) : null;
+      if (importMatch) {
+        // Grupos: 1=namespace, 2=namespaceName, 3=default, 4=names, 5=specifier
+        specifier = importMatch[5];
+        if (importMatch[4]) importedNames = importMatch[4].split(",").map(name => name.trim().split(/\s+as\s+/)[0]).filter(Boolean);
+        else if (importMatch[2]) importedNames = [importMatch[2]]; // * as Foo
+        else if (importMatch[3]) importedNames = [importMatch[3]]; // default
+        else importedNames = []; // side-effect import
+      } else if (exportMatch) {
+        // Grupos: 1=names, 2=namespace, 3=specifier
+        specifier = exportMatch[3];
+        if (exportMatch[1]) importedNames = exportMatch[1].split(",").map(name => name.trim().split(/\s+as\s+/)[0]).filter(Boolean);
+        else if (exportMatch[2]) importedNames = [exportMatch[2]];
+      }
+      if (!specifier) { stripped.push(line); continue; }
       let dependency: string | undefined;
       if (specifier.startsWith(".")) dependency = resolve(dirname(file), specifier);
       else {
@@ -86,11 +125,10 @@ export async function loadModuleGraph(entry: string, options: ModuleLoaderOption
       }
       if (!dependency) throw new Error(`No se puede resolver el import '${specifier}' desde ${file}`);
       const resolvedDependency = await visit(dependency);
-      const names = match[2] ? match[2].split(",").map(name => name.trim()).filter(Boolean) : [];
-      const invalidName = names.find(name => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+      const invalidName = importedNames.find(name => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
       if (invalidName) throw new Error(`Import no válido '${invalidName}' en ${file}:${lineNumber}`);
       dependencies.push(resolvedDependency);
-      imports.push({ names, dependency: resolvedDependency, line: lineNumber });
+      imports.push({ names: importedNames, dependency: resolvedDependency, line: lineNumber });
       stripped.push("");
     }
     const strippedSource = stripped.join("\n");
@@ -106,12 +144,13 @@ export async function loadModuleGraph(entry: string, options: ModuleLoaderOption
   };
 
   const resolvedEntry = await visit(resolve(entry));
-  return { entry: resolvedEntry, modules: ordered };
+  return { entry: resolvedEntry, modules: ordered, baseDirectory };
 }
 
 export async function compileFile(entry: string, options: ModuleLoaderOptions = {}): Promise<ModuleCompilationResult> {
   const graph = await loadModuleGraph(entry, options);
   const ordered = graph.modules;
+  const baseDirectory = graph.baseDirectory;
   const visibilityPrograms = ordered.map(module => {
     try { return { module, ast: parse(module.source) }; }
     catch (error) {
@@ -149,7 +188,7 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
     generator.minimal = options.minimal ?? false;
     generator.prepareModules(ast);
     const headerName = "estatic_common.hpp";
-    const moduleInitializers = ordered.map(module => stableInitName(module.file));
+    const moduleInitializers = ordered.map(module => stableInitName(module.file, baseDirectory));
     const header = generator.generateHeader(ast, moduleInitializers);
     // V15: en vez de parsear cada módulo por separado (lo que produce ASTs
   // distintos que el type-checker no reconoce), filtramos el AST combinado
@@ -165,7 +204,7 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
     const moduleAst: Program = { kind: "Program", statements: moduleStatementsFromCombined, span: { start: ast.span.start, end: ast.span.end } };
     return {
       name: module.file,
-      cpp: generator.generateModule(moduleAst, ast, headerName, stableInitName(module.file), index === ordered.length - 1 ? moduleInitializers : undefined),
+      cpp: generator.generateModule(moduleAst, ast, headerName, stableInitName(module.file, baseDirectory), index === ordered.length - 1 ? moduleInitializers : undefined),
     };
   });
     return { ast, header, modules, moduleNames: ordered.map(m => m.file), linkFlags: generator.linkFlags, externalHeaders: generator.externalHeaders, runtimeBackends: detectRuntimeBackends(ast) };
