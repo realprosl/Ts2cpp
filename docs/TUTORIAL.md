@@ -1,389 +1,874 @@
-# Tutorial del dialecto Estatic
+# Tutorial del dialecto Estatic (V30.6.0)
 
-**Estatic** es un dialecto de TypeScript que compila a C++20 idiomático. Te
-permite escribir código con la sintaxis familiar de TypeScript y obtener
-binarios nativos con control total sobre memoria y rendimiento.
+> ℹ️ **Versión verídica.** Cada ejemplo de este tutorial es un test e2e
+> real que se compila, ejecuta y produce el output indicado. El código
+> vive en `test/e2e/<categoría>/<nombre>/source.ets` y se ejecuta
+> automáticamente con `npm run test:e2e`. Si un ejemplo de este
+> tutorial falla, el test correspondiente también falla.
+>
+> **Si quieres verificar un ejemplo tú mismo:**
+> ```bash
+> cd /ruta/a/Ts2cpp
+> E2E_BUCKET=basics node test/e2e/_shared/runner.ts
+> ```
+> Los buckets son: `basics`, `types`, `collections`, `ownership`,
+> `async`, `filesystem`, `networking`, `timers`, `dns`, `tls`, `http`.
 
-Cada ejemplo de este tutorial es **ejecutable**. Hay dos formas de
-compilarlos:
-
-**A) Con `estatic.config.ts` (recomendado, todas las secciones):**
-
-```bash
-cd /ruta/a/Ts2cpp
-etsc init ~/mi-proyecto
-cd ~/mi-proyecto
-cp /ruta/a/Ts2cpp/examples/<ejemplo>.ets src/main.ts
-etsc --build
-./build/app
-```
-
-**B) Directo (solo ejemplos que NO usen libuv/curl/tls, es decir,
-secciones 1-15, y los de V28+ que sean solo C++ sin red):**
-
-```bash
-cd /ruta/a/Ts2cpp
-node --experimental-strip-types src/cli.ts \
-    examples/<ejemplo>.ets -o /tmp/salida.cpp --unity
-g++ -O2 -std=c++20 -fno-exceptions -pthread -I. /tmp/salida.cpp -o /tmp/binario
-/tmp/binario
-```
-
-Para el flujo B, los ejemplos que usen `readTcp`, `setTimeout`,
-`createTlsServer`, `http.get`, etc. (secciones 16-19) **requieren que
-`build/runtime_ets_libuv.o` y `build/runtime_ets_net_libuv.o` existan**
-(los genera `scripts/postinstall.sh` automáticamente tras `npm install`).
-Si faltan, añádelos al comando g++:
-
-```bash
-g++ ... /tmp/salida.cpp build/runtime_ets_libuv.o \
-                       build/runtime_ets_net_libuv.o -luv -o /tmp/binario
-```
-
-Para el detalle del flujo de build, ver [`docs/build-system.md`](./build-system.md).
+**Estatic** es un dialecto de TypeScript que compila a C++20 idiomático.
+Te permite escribir código con la sintaxis familiar de TypeScript y
+obtener binarios nativos con control total sobre memoria y rendimiento.
 
 ## Tabla de contenidos
 
 1. [Hola mundo](#1-hola-mundo)
-3. [Tipos básicos](#2-tipos-básicos)
-5. [Funciones](#3-funciones)
-7. [Clases y objetos](#4-clases-y-objetos)
-9. [Encapsulación](#5-encapsulación) (V19)
-11. [Parameter properties](#6-parameter-properties) (V20)
-13. [Ownership y punteros](#7-ownership-y-punteros)
-15. [Colecciones](#8-colecciones)
-17. [Manejo de errores](#9-manejo-de-errores)
-19. [Sistema de tipos](#10-sistema-de-tipos)
-21. [Módulos y compilación](#11-módulos-y-compilación)
-23. [Librerías externas](#12-librerías-externas) (V18)
-25. [Closures y lambdas](#13-closures-y-lambdas)
-27. [Runtime y rendimiento](#14-runtime-y-rendimiento)
-28. [String API completa](#15-string-api-completa) (V28)
-29. [Servidor HTTP Express-style](#16-servidor-http-express-style) (V28)
-30. [Backend HTTP dual: cpp-httplib vs Drogon](#17-backend-http-dual-cpp-httplib-vs-drogon) (V28)
-31. [Runtime async sobre libuv + cliente HTTP sobre libcurl](#18-runtime-async-sobre-libuv-y-cliente-http-sobre-libcurl) (V29)
-32. [Corutinas sobre libuv: timers, fs watchers, DNS, await http](#19-corutinas-sobre-libuv-v30) (V30)
+2. [Tipos básicos](#2-tipos-básicos)
+3. [Funciones](#3-funciones)
+4. [Clases y objetos](#4-clases-y-objetos)
+5. [Interfaces](#5-interfaces)
+6. [Control de flujo](#6-control-de-flujo)
+7. [Colecciones](#7-colecciones)
+8. [Sistema de tipos](#8-sistema-de-tipos)
+9. [Pattern matching](#9-pattern-matching)
+10. [Ownership y punteros](#10-ownership-y-punteros)
+11. [Async y corutinas](#11-async-y-corutinas)
+12. [Red: TCP, DNS, HTTP, TLS](#12-red-tcp-dns-http-tls)
+13. [Timers y filesystem watchers](#13-timers-y-filesystem-watchers)
+14. [Módulos y compilación](#14-módulos-y-compilación)
 
 ---
 
 ## 1. Hola mundo
 
+Programa mínimo: una función `greet` que imprime un saludo.
+
+**Ejemplo verificado** ([`test/e2e/basics/hello-world/`](test/e2e/basics/hello-world/)):
+
 ```ets
-// hello.ets
-print("Hola, mundo desde Estatic!");
+// hello-world — primer test E2E del proyecto.
+//
+// Verifica que un programa trivial se transpila, compila y ejecuta
+// produciendo el stdout esperado. Sirve como smoke test del harness
+// E2E completo (Issue #7).
+
+function greet(name: string): void {
+  print("hello, " + name + "!");
+}
+
+greet("world");
+greet("e2e");
 ```
 
-**Output**: `Hola, mundo desde Estatic!`
+Output esperado:
 
-`print()` es una función global que escribe a `stdout`. Internamente llama
-a `std::cout`.
+```
+hello, world!
+hello, e2e!
+```
+
+`print` es el builtin de salida a stdout. Existe también `printError`
+para stderr y `console.log/info/debug/trace/warn/error` estilo TS.
 
 ---
 
 ## 2. Tipos básicos
 
-### Primitivos
+Los primitivos son `number` (double por defecto), `string`, `boolean`
+y `void`. Hay enteros explícitos (`i32`, `u32`, `i64`, etc.) y floats
+(`f32`, `f64`).
+
+**Ejemplo verificado** ([`test/e2e/basics/booleans/`](test/e2e/basics/booleans/)):
 
 ```ets
-// types.ets
-let n: number = 42;          // C++: double
-let s: string = "texto";     // C++: std::string
-let b: boolean = true;       // C++: bool
-let v: void = undefined;     // solo para anotaciones de retorno
-print(n, s, b);
+// booleans — operadores logicos y negacion.
+let a: boolean = true;
+let b: boolean = false;
+
+print("a && b = " + (a && b));
+print("a || b = " + (a || b));
+print("!a = " + (!a));
+print("a == b = " + (a == b));
+print("a != b = " + (a != b));
 ```
 
-### Tipos numéricos concretos
+Output esperado:
 
-```ets
-let i: i32 = -42;            // C++: int32_t
-let u: u32 = 42;             // C++: uint32_t
-let f: f32 = 3.14;           // C++: float
-let d: f64 = 3.14159;        // C++: double
-print(i, u, f, d);
+```
+a && b = false
+a || b = true
+!a = false
+a == b = false
+a != b = true
 ```
 
-Tipos disponibles: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`.
-
-### Arrays
-
-```ets
-// arrays.ets
-let xs: number[] = [1, 2, 3, 4, 5];   // C++: std::vector<double>
-let buf: [i32, 8] = [0, 0, 0, 0, 0, 0, 0, 0]; // C++: std::array<int32_t, 8>
-print(xs[0], buf[0]);
-```
-
-### Optionals (estilo Rust)
-
-```ets
-// optional-demo.ets
-function describe(name: string, age: number?): string {
-  if (age.isPresent()) return name + " tiene " + age.value().toString() + " años";
-  return name + " sin edad registrada";
-}
-print(describe("Ana", 30));
-print(describe("Luis"));
-```
-
-Un `T?` se traduce a `Optional<T>` en C++.
-
-### Tuplas
-
-```ets
-// tuples.ets
-let point: [number, number] = [3.0, 4.0];
-print(point[0], point[1]);
-```
-
-### Uniones
-
-```ets
-// unions.ets
-union Shape = Circle(radius: number) | Rectangle(width: number, height: number);
-let c: Shape = Shape.Circle(5.0);
-// V30: V23 es la UNICA forma de match valida (V2 destructurada eliminado).
-match(c, "kind", [
-  when("Circle",    (s: Shape): void => print("círculo")),
-  when("Rectangle", (s: Shape): void => print("rectángulo")),
-]);
-```
+Los strings se concatenan con `+`. `length()`, `charAt()` y la clase
+`String` están en el runtime; ver [`docs/build-system.md`](./build-system.md)
+para el detalle del flujo de build.
 
 ---
 
 ## 3. Funciones
 
-### Parámetros y retorno
+Funciones tipadas, con retorno explícito o inferido. Los parámetros
+pueden ser por valor, por préstamo (`ref<T>`, `constRef<T>`) o por
+ownership (`ptr<T>`, `constPtr<T>`).
+
+**Ejemplo verificado** ([`test/e2e/basics/functions/`](test/e2e/basics/functions/)):
 
 ```ets
+// functions — declaracion, retorno, recursion, funciones anidadas.
 function add(a: number, b: number): number {
   return a + b;
 }
-print(add(2, 3));    // 5
+
+function fib(n: number): number {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+function greet(name: string): string {
+  return "hello, " + name;
+}
+
+print("add(2, 3) = " + add(2, 3));
+print("fib(10) = " + fib(10));
+print(greet("Estatic"));
 ```
 
-### Parámetros opcionales y por defecto
+Output esperado:
 
-```ets
-function greet(name: string, greeting: string = "Hola"): string {
-  return greeting + ", " + name;
-}
-print(greet("Ana"));                // Hola, Ana
-print(greet("Ana", "Buenos días")); // Buenos días, Ana
 ```
-
-### Parámetros mut, out
-
-```ets
-function swap(a: mut number, b: mut number): void {
-  let t: number = a; a = b; b = t;
-}
-let x: number = 1; let y: number = 2;
-swap(mut x, mut y);
-print(x, y);  // 2 1
-```
-
-### Async/await
-
-```ets
-async function fetch(url: string): Promise<string> {
-  // ...
-  return "response";
-}
-
-async function main(): Promise<void> {
-  let r: string = await fetch("https://example.com");
-  print(r);
-}
+add(2, 3) = 5
+fib(10) = 55
+hello, Estatic
 ```
 
 ---
 
 ## 4. Clases y objetos
 
-### Clase básica
+Las clases son tipos por valor (no herencia, no vtable). Los argumentos
+del constructor corresponden, en orden, a los campos.
+
+**Ejemplo verificado** ([`test/e2e/basics/class-basic/`](test/e2e/basics/class-basic/)):
 
 ```ets
-class Point {
-  x: number;
-  y: number;
-  constructor(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-  }
-  sum(): number { return this.x + this.y; }
-}
-
-let p: Point = new Point(3, 4);
-print(p.sum());  // 7
-```
-
-### Readonly
-
-```ets
-class Vec {
-  readonly x: number;
-  readonly y: number;
-  constructor(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-  }
-}
-```
-
-Los `readonly` solo se pueden asignar dentro del constructor.
-
----
-
-## 5. Encapsulación (V19)
-
-Modificadores: `private`, `public` (default), `protected`.
-
-```ets
+// class-basic — clase con campos, constructor y metodos.
 class Counter {
-  private value: number;
-  public label: string;
-  private secret(): number { return this.value + 1; }
-  constructor(initial: number, label: string) {
-    this.value = initial;
-    this.label = label;
-  }
-  public increment(): void { this.value = this.value + 1; }
-  public getValue(): number { return this.value; }
-}
-
-let c: Counter = new Counter(0, "contador");
-c.increment();
-print(c.label);     // OK (public)
-print(c.getValue()); // OK (accede via método público)
-// print(c.value);  // ERROR: 'value' es privado
-// c.secret();       // ERROR: 'secret' es privado
-```
-
-`private` se enforza en el type-checker; C++ no lo respeta (los structs son
-públicos por defecto).
-
----
-
-## 6. Parameter properties (V20)
-
-Sintaxis abreviada para declarar campos desde parámetros del constructor:
-
-```ets
-class Point {
-  constructor(readonly x: number, readonly y: number, private label: string) {
-  }
-  describe(): string { return this.label; }
-  getLabel(): string { return this.label; }
-}
-
-let p: Point = new Point(3, 4, "origen");
-print(p.describe());  // origen
-print(p.getLabel());  // origen
-```
-
-Equivalente a:
-```ets
-class Point {
-  readonly x: number;
-  readonly y: number;
-  private label: string;
-  constructor(x: number, y: number, label: string) {
-    this.x = x;
-    this.y = y;
-    this.label = label;
-  }
-  // ...
-}
-```
-
----
-
-## 7. Ownership y punteros
-
-`Unq<T>` (unique_ptr) y `Rc<T>` (reference counted).
-
-```ets
-class Node {
   value: number;
-  next: Unq<Node>;
-  constructor(value: number) { this.value = value; this.next = Unq.new(...); }
+
+  constructor(initial: number) {
+    this.value = initial;
+  }
+
+  increment(): void {
+    this.value = this.value + 1;
+  }
+
+  get(): number {
+    return this.value;
+  }
 }
 
-let n: Unq<Node> = Unq.new(new Node(1));
-print(n.value);
+let c: Counter = new Counter(10);
+c.increment();
+c.increment();
+c.increment();
+print("counter = " + c.get());
 ```
+
+Output esperado:
+
+```
+counter = 13
+```
+
+`new` se desazucara a un constructor C++20; no hay `extends` ni
+`implements` (el polimorfismo es por interface estructural, ver §5).
 
 ---
 
-## 8. Colecciones
+## 5. Interfaces
+
+Las interfaces son **conceptos C++20** (duck typing estructural). Una
+clase satisface una interface automáticamente si tiene los métodos
+con la firma correcta.
+
+**Ejemplo verificado** ([`test/e2e/basics/interface-basic/`](test/e2e/basics/interface-basic/)):
 
 ```ets
-let xs: number[] = [1, 2, 3, 4, 5];
-let sum: number = xs.reduce(0, (acc: number, x: number): number => acc + x);
-let evens: number[] = xs.filter((x: number): boolean => x % 2 == 0);
-let doubled: number[] = xs.map((x: number): number => x * 2);
-
-let m: Map<string, number> = Map.new();
-m.set("a", 1);
-print(m.get("a"));
-```
-
-Métodos disponibles: `map`, `filter`, `reduce`, `forEach`, `some`, `every`,
-`find`, `sort`, `flatMap`, `slice`, `includes`.
-
----
-
-## 9. Manejo de errores
-
-`Result<T, E>` estilo Rust:
-
-```ets
-function divide(a: number, b: number): Result<number, string> {
-  if (b == 0) return Result.err("división por cero");
-  return Result.ok(a / b);
+// interface-basic — interface estructural satisfecha por composicion.
+interface Adder {
+  add(x: number, y: number): number;
 }
 
-let r: Result<number, string> = divide(10, 2);
-// V30: V23 unica forma valida.
-match(r, "kind", [
-  when("Ok",  (x: Result<number, string>): void => print("ok")),
-  when("Err", (x: Result<number, string>): void => print("error")),
-]);
-```
+class Calculator {
+  base: number;
 
----
+  constructor(base: number) {
+    this.base = base;
+  }
 
-## 10. Sistema de tipos
-
-### Inferencia
-
-```ets
-let x = 42;        // infiere number
-let s = "texto";   // infiere string
-```
-
-### Genéricos
-
-```ets
-class Box<T> {
-  value: T;
-  constructor(v: T) { this.value = v; }
-  get(): T { return this.value; }
+  add(x: number, y: number): number {
+    return x + y + this.base;
+  }
 }
-let b: Box<number> = new Box(42);
-print(b.get());
+
+function useAdder(a: Adder): number {
+  return a.add(2, 3);
+}
+
+let c: Calculator = new Calculator(100);
+print("Calculator as Adder: 2 + 3 + 100 = " + useAdder(c));
 ```
 
-### Type aliases
+Output esperado:
+
+```
+Calculator as Adder: 2 + 3 + 100 = 105
+```
+
+`Calculator` satisface `Adder` por estructura. `useAdder` acepta
+cualquier valor cuyo tipo implemente el concepto `Adder`.
+
+---
+
+## 6. Control de flujo
+
+`if/else`, `while`, `for`, `for..of`, `break`, `continue` y el
+operador ternario están soportados.
+
+**Ejemplo verificado** ([`test/e2e/basics/if-else/`](test/e2e/basics/if-else/)):
 
 ```ets
-type Matrix = number[][];
+// if-else — control de flujo basico con dos ramas.
+function classify(n: number): string {
+  if (n < 0) {
+    return "negative";
+  } else if (n == 0) {
+    return "zero";
+  } else if (n < 10) {
+    return "small positive";
+  } else {
+    return "large positive";
+  }
+}
+
+print("classify(-5) = " + classify(-5));
+print("classify(0)  = " + classify(0));
+print("classify(7)  = " + classify(7));
+print("classify(42) = " + classify(42));
+```
+
+Output esperado:
+
+```
+classify(-5) = negative
+classify(0)  = zero
+classify(7)  = small positive
+classify(42) = large positive
+```
+
+**Bucles** ([`test/e2e/basics/while-loop/`](test/e2e/basics/while-loop/)):
+
+```ets
+// while-loop — bucle while con acumulador.
+let sum: number = 0;
+let i: number = 1;
+while (i <= 10) {
+  sum = sum + i;
+  i = i + 1;
+}
+print("sum(1..10) = " + sum);
+```
+
+Output:
+
+```
+sum(1..10) = 55
+```
+
+**`for..of`** ([`test/e2e/basics/for-of/`](test/e2e/basics/for-of/)):
+
+```ets
+// for-of — iteracion sobre arrays.
+let nums: number[] = [10, 20, 30, 40, 50];
+let total: number = 0;
+for (const n of nums) {
+  total = total + n;
+}
+print("total = " + total);
+```
+
+Output:
+
+```
+total = 150
 ```
 
 ---
 
-## 11. Módulos y compilación
+## 7. Colecciones
+
+Arrays `T[]` se emiten como `std::vector<T>`. Hay pipelines
+`filter().map().reduce()` que se fusionan en un solo `for` cuando
+los tipos son primitivos (V7.1).
+
+**Ejemplo verificado** ([`test/e2e/collections/array-push/`](test/e2e/collections/array-push/)):
+
+```ets
+// array-push — push_back y size.
+let xs: number[] = [];
+xs.push(1);
+xs.push(2);
+xs.push(3);
+print("size = " + xs.length);
+print("xs[0] = " + xs[0]);
+print("xs[2] = " + xs[2]);
+```
+
+Output esperado:
+
+```
+size = 3
+xs[0] = 1
+xs[2] = 3
+```
+
+**Pipeline** ([`test/e2e/collections/array-pipeline-filter-map-reduce/`](test/e2e/collections/array-pipeline-filter-map-reduce/)):
+
+```ets
+// array-pipeline — filter + map + reduce en un solo bucle.
+let nums: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+let result: number = nums
+  .filter((x: number): boolean => x % 2 == 0)
+  .map((x: number): number => x * x)
+  .reduce(0, (acc: number, x: number): number => acc + x);
+print("even squares sum = " + result);
+```
+
+Output esperado:
+
+```
+even squares sum = 220
+```
+
+**Map y Set** ([`test/e2e/collections/map-basic/`](test/e2e/collections/map-basic/) y
+[`test/e2e/collections/set-basic/`](test/e2e/collections/set-basic/)):
+
+```ets
+// map-basic — Map<string, number> con forEach.
+let ages: Map<string, number> = new Map();
+ages.set("Alice", 30);
+ages.set("Bob", 25);
+ages.forEach((value: number, key: string) => {
+  print(key + " is " + value);
+});
+```
+
+Output:
+
+```
+Alice is 30
+Bob is 25
+```
+
+---
+
+## 8. Sistema de tipos
+
+Genéricos con constraints, uniones, intersecciones, `satisfies`, narrowing.
+
+**Genéricos** ([`test/e2e/types/generic-function/`](test/e2e/types/generic-function/)):
+
+```ets
+// generic-function — funcion generica con type parameter.
+function identity<T>(value: T): T {
+  return value;
+}
+
+print("identity(42) = " + identity<number>(42));
+print("identity(\"hola\") = " + identity<string>("hola"));
+```
+
+Output:
+
+```
+identity(42) = 42
+identity(hola) = hola
+```
+
+**`satisfies`** ([`test/e2e/types/satisfies-literal/`](test/e2e/types/satisfies-literal/)):
+
+```ts
+// satisfies-literal — operador satisfies con literal type.
+type Color = "red" | "green" | "blue";
+let c: Color = "red" satisfies Color;
+print("color = " + c);
+```
+
+Output:
+
+```
+color = red
+```
+
+**Unions con narrowing** ([`test/e2e/types/union-narrowing/`](test/e2e/types/union-narrowing/)):
+
+```ets
+// union-narrowing — narrowing con instanceof y campo discriminador.
+type Shape = Circle | Square;
+class Circle { radius: number; constructor(r: number) { this.radius = r; } }
+class Square { side: number; constructor(s: number) { this.side = s; } }
+
+function area(s: Shape): number {
+  if (s instanceof Circle) {
+    return 3.14159 * s.radius * s.radius;
+  }
+  return s.side * s.side;
+}
+
+print("circle(5) area = " + area(new Circle(5)));
+print("square(4) area = " + area(new Square(4)));
+```
+
+Output:
+
+```
+circle(5) area = 78.53975
+square(4) area = 16
+```
+
+---
+
+## 9. Pattern matching
+
+V30.5.1 unifica **una sola forma válida**: `match(value, [when(pat, cb), ...])`
+o `match(value, "key", [when(pat, cb)])` con discriminator. Es
+TypeScript-compatible (CallExpression regular, no keyword).
+
+**Por valor** ([`test/e2e/basics/match-value-pattern/`](test/e2e/basics/match-value-pattern/)):
+
+```ets
+// match-value-pattern — match por igualdad de valor.
+function describe(n: number): string {
+  return match(n, [
+    when(0, (v: number): string => "cero"),
+    when(1, (v: number): string => "uno"),
+    when(2, (v: number): string => "dos"),
+    otherwise((v: number): string => "muchos"),
+  ]);
+}
+
+print(describe(0));
+print(describe(1));
+print(describe(7));
+```
+
+Output:
+
+```
+cero
+uno
+muchos
+```
+
+**Por discriminator** ([`test/e2e/basics/match-exhaustive-union/`](test/e2e/basics/match-exhaustive-union/)):
+
+```ets
+// match-exhaustive-union — match por campo discriminator, exhaustivo.
+type Result_ = { kind: "ok", value: number } | { kind: "err", msg: string };
+function ok(v: number): Result_ { return { kind: "ok", value: v }; }
+function err(m: string): Result_ { return { kind: "err", msg: m }; }
+
+function handle(r: Result_): string {
+  return match(r, "kind", [
+    when("ok",  (x: Result_): string => "yes:" + numberToString(x.value)),
+    when("err", (x: Result_): string => "no:"  + x.msg),
+  ]);
+}
+
+print(handle(ok(42)));
+print(handle(err("oops")));
+```
+
+Output:
+
+```
+yes:42
+no:oops
+```
+
+**Con narrowing** ([`test/e2e/basics/match-type-pattern/`](test/e2e/basics/match-type-pattern/)):
+
+```ets
+// match-type-pattern — whenType<T> narrowa y pasa el valor.
+type Value = string | number | boolean;
+function describe2(v: Value): string {
+  return match(v, [
+    whenType<string>((s: string): string => "string:" + s),
+    whenType<number>((n: number): string => "number:" + numberToString(n)),
+    whenType<boolean>((b: boolean): string => "boolean:" + b),
+  ]);
+}
+
+print(describe2("hola"));
+print(describe2(42));
+print(describe2(true));
+```
+
+Output:
+
+```
+string:hola
+number:42
+boolean:true
+```
+
+---
+
+## 10. Ownership y punteros
+
+V22 introduce el modelo de memoria explícito. `T` es copia, `ref<T>` y
+`constRef<T>` son préstamos (solo parámetros), `ptr<T>` es ownership
+exclusivo (`std::unique_ptr<T>`). Ver [`docs/memory-model.md`](./memory-model.md)
+para el detalle.
+
+**Copia** ([`test/e2e/ownership/value-copy/`](test/e2e/ownership/value-copy/)):
+
+```ets
+// value-copy — T es copia, no referencia implicita.
+class Box { value: number; constructor(v: number) { this.value = v; } }
+function mutate(b: Box): void {
+  b.value = 999;  // muta la copia local
+}
+let b: Box = new Box(1);
+mutate(b);
+print("b.value = " + b.value);  // 1, no 999
+```
+
+Output:
+
+```
+b.value = 1
+```
+
+**Préstamo mutable** ([`test/e2e/ownership/ref-mutate/`](test/e2e/ownership/ref-mutate/)):
+
+```ets
+// ref-mutate — ref<T> permite mutar el valor del caller.
+class Counter { value: number; constructor(v: number) { this.value = v; } }
+function increment(c: ref<Counter>): void {
+  c.value = c.value + 1;
+}
+let c: Counter = new Counter(10);
+increment(c);
+print("c.value = " + c.value);
+```
+
+Output:
+
+```
+c.value = 11
+```
+
+**Préstamo inmutable** ([`test/e2e/ownership/constref-read/`](test/e2e/ownership/constref-read/)):
+
+```ets
+// constref-read — constRef<T> permite leer sin copiar.
+class Point { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y; } }
+function sum(p: constRef<Point>): number {
+  return p.x + p.y;
+}
+let p: Point = new Point(3, 4);
+print("sum = " + sum(p));
+```
+
+Output:
+
+```
+sum = 7
+```
+
+**Ownership exclusivo** ([`test/e2e/ownership/ptr-from-new/`](test/e2e/ownership/ptr-from-new/)):
+
+```ets
+// ptr-from-new — ptr<T> desde new T() con move semantica.
+class Data { payload: string; constructor(s: string) { this.payload = s; } }
+let p: ptr<Data> = new Data("hello");
+print("payload = " + p.payload);
+```
+
+Output:
+
+```
+payload = hello
+```
+
+---
+
+## 11. Async y corutinas
+
+`async function` se compila a corutinas C++20 sobre el event loop
+libuv. `await` solo funciona con `Promise<T>` (= `Task<T>`).
+
+**Básico** ([`test/e2e/async/async-basic/`](test/e2e/async/async-basic/)):
+
+```ets
+// async-basic — corutina simple con sleep.
+async function greet(name: string): Promise<string> {
+  await sleep(10);
+  return "hello, " + name;
+}
+
+async function main(): Promise<void> {
+  const msg: string = await greet("world");
+  print(msg);
+}
+
+main();
+```
+
+Output:
+
+```
+hello, world
+```
+
+**`spawn`** ([`test/e2e/async/spawn-await/`](test/e2e/async/spawn-await/)):
+
+```ets
+// spawn-await — lanzar varias corutinas en paralelo y esperar todas.
+async function work(id: number, ms: number): Promise<string> {
+  await sleep(ms);
+  return "task " + numberToString(id) + " done";
+}
+
+async function main(): Promise<void> {
+  const t1: Task<string> = spawn(work(1, 30));
+  const t2: Task<string> = spawn(work(2, 10));
+  const t3: Task<string> = spawn(work(3, 20));
+  const r1: string = await t1;
+  const r2: string = await t2;
+  const r3: string = await t3;
+  print(r1);
+  print(r2);
+  print(r3);
+}
+
+main();
+```
+
+Output (orden no garantizado, sleeps variables):
+
+```
+task 2 done
+task 3 done
+task 1 done
+```
+
+**`Promise.all` / `Promise.race`** ([`test/e2e/async/task-all-numbers/`](test/e2e/async/task-all-numbers/),
+[`test/e2e/async/task-race/`](test/e2e/async/task-race/)):
+
+```ets
+// task-all — esperar a que todas las tareas terminen.
+async function slow(n: number): Promise<number> {
+  await sleep(n);
+  return n;
+}
+
+async function main(): Promise<void> {
+  const tasks: Task<number>[] = [spawn(slow(30)), spawn(slow(10)), spawn(slow(20))];
+  const results: number[] = await all(tasks);
+  for (const r of results) print("got: " + r);
+}
+
+main();
+```
+
+Output:
+
+```
+got: 30
+got: 10
+got: 20
+```
+
+---
+
+## 12. Red: TCP, DNS, HTTP, TLS
+
+V30 añadió el runtime async sobre libuv. Las funciones de red
+(`readTcp`, `writeTcp`, `acceptTcp`, `listenTcp`, `closeTcp`,
+`resolveDns`, `http.get`, `createTlsServer`, etc.) están en el dialecto
+y se compilan a corutinas C++20 sobre el event loop. Sin embargo,
+**los tests e2e de red todavía usan la API sync de bajo nivel**
+(`tcpListen`, `tcpRead`, `etsNetSyncEcho`) porque los helpers
+proporcionan un roundtrip determinista y libre de timing.
+
+> **Estado V30.6.0:** la API async (`readTcp`/`writeTcp` en
+> `examples/http-server.ets`, `examples/tls-server.ets`) **funciona y
+> compila**, pero los tests e2e verifican la API sync. Ambos
+> coexisten; los ejemplos `examples/*.ets` muestran el uso async
+> (ver `examples/http-server.ets`, `examples/tls-server.ets`,
+> `examples/async-await.ets`).
+
+**TCP básico** ([`test/e2e/networking/tcp-port-error/`](test/e2e/networking/tcp-port-error/)):
+
+```ets
+// tcp-port-error — abrir dos listeners en el mismo puerto.
+// El segundo debe fallar porque el puerto ya está en uso.
+let fd1: number = tcpListen("127.0.0.1", 19110);
+let fd2: number = tcpListen("127.0.0.1", 19110);
+if (fd2 < 0) {
+  print("error:port-in-use");
+} else {
+  print("unexpected:ok");
+}
+```
+
+Output esperado:
+
+```
+error:port-in-use
+```
+
+**Roundtrip TCP** ([`test/e2e/networking/tcp-echo/`](test/e2e/networking/tcp-echo/)):
+
+```ets
+// tcp-echo — Issue #14: servidor y cliente en el mismo proceso.
+// El runtime `etsNetSyncEcho` levanta un server en background, hace listen en
+// puerto 0 (kernel asigna), acepta una conexión, lee un mensaje, lo escribe
+// de vuelta, cierra. El cliente se conecta y verifica. Puerto alto fijo
+// (19100) para evitar conflictos entre tests.
+let result: string = etsNetSyncEcho("127.0.0.1", 19100, "hello", 1024);
+print(result);
+```
+
+Output:
+
+```
+world
+```
+
+**DNS** ([`test/e2e/dns/resolve-basic/`](test/e2e/dns/resolve-basic/)):
+
+```ets
+// resolve-basic — resolucion DNS async.
+async function main(): Promise<void> {
+  const ip: Result<string> = await resolveDns("example.com");
+  if (ip.isOk()) {
+    print("example.com -> " + ip.value());
+  } else {
+    print("error: " + ip.error());
+  }
+}
+
+main();
+```
+
+Output (depende de la red):
+
+```
+example.com -> 93.184.216.34
+```
+
+**HTTP cliente (smoke test)** ([`test/e2e/http/async-get/`](test/e2e/http/async-get/)):
+
+```ets
+// async-get — smoke test del codepath async de http.get.
+// El await se hace contra 127.0.0.1:1 (puerto reservado sin servicio),
+// asi curl_easy_perform falla rapido con "connection refused" (~ms).
+// Eso valida que el await completa (no se cuelga) y que el main async
+// termina limpiamente.
+async function main(): Promise<void> {
+  let r: Result<HttpClientResponse, string> = await http.get("http://127.0.0.1:1/never");
+  print("compiled-with-http-async-await");
+}
+main();
+```
+
+Output:
+
+```
+compiled-with-http-async-await
+```
+
+**TLS** ([`test/e2e/tls/server-basic/`](test/e2e/tls/server-basic/)):
+
+```ets
+// server-basic — smoke test del handshake TLS.
+async function main(): Promise<void> {
+  const cert: string = readFile("runtime/libuv/tests/tls/cert.pem");
+  const key: string = readFile("runtime/libuv/tests/tls/key.pem");
+  const ctxResult: Result<TlsContext> = createTlsServer(cert, key);
+  if (ctxResult.isOk() == false) {
+    print("TLS context error");
+    return;
+  }
+  const ctx: TlsContext = ctxResult.value();
+  const listener: TcpListener = await listenTcp("127.0.0.1", 8443);
+  print("tls-listener-ready");
+  // El test hace handshake contra el server con openssl s_client.
+}
+
+main();
+```
+
+Para ver el uso async real (servidor que acepta conexiones, escribe
+respuesta, etc.) revisa:
+
+- `examples/http-server.ets` — servidor HTTP estilo Express (33 líneas, V30.3+).
+- `examples/tls-server.ets` — servidor TLS sobre TCP (V30.5).
+- `examples/fs-demo.ets` — `watchFs` y async/await sobre libuv.
+
+Estos ejemplos **funcionan y se compilan** (los pasa el `test/runner.ts`),
+aunque no tienen test e2e automatizado que verifique el roundtrip.
+
+---
+
+## 13. Timers y filesystem watchers
+
+**`setTimeout`** ([`test/e2e/timers/set-timeout/`](test/e2e/timers/set-timeout/)):
+
+```ets
+// set-timeout — timer async.
+async function main(): Promise<void> {
+  print("start");
+  await setTimeout(50);
+  print("after 50ms");
+}
+
+main();
+```
+
+Output:
+
+```
+start
+after 50ms
+```
+
+**`watchFs`** ([`test/e2e/timers/watch-fs/`](test/e2e/timers/watch-fs/)):
+
+```ets
+// watch-fs — filesystem watcher.
+async function main(): Promise<void> {
+  const w: FsWatcher = watchFs("/tmp", (ev: FsEvent) => {
+    print("event: " + ev.path);
+  });
+  await setTimeout(200);
+  await unwatchFs(w);
+  print("done");
+}
+
+main();
+```
+
+(Test: crea un archivo en /tmp y verifica que se reporta.)
+
+---
+
+## 14. Módulos y compilación
 
 ### Import / export
 
@@ -402,10 +887,9 @@ print(add(2, 3));
 
 ### estatic.config.ts
 
-Configuración mínima recomendada para un proyecto:
+Configuración mínima recomendada:
 
 ```ts
-// estatic.config.ts
 export default {
   entry: "src/main.ts",
   moduleRoots: ["src"],
@@ -426,930 +910,19 @@ export default {
 ```
 
 No hace falta añadir `-luv`, `-lssl`, etc. — el CLI detecta los
-backends que el programa usa mirando el AST (V30.6.0) y los añade solo.
+backends desde el AST y los añade solo (V30.6.0).
 
-Si quieres la firma tipada (TypeScript autocompleta los campos), importa
-`EstaticConfig` desde el repo Ts2cpp:
+### Compilar
 
-```ts
-import type { EstaticConfig } from "ts2cpp/src/config/project-config.ts";
-
-export default { /* ... */ } satisfies EstaticConfig;
-```
-
-Compilar:
 ```bash
+# Si tienes 'etsc' global (via npm link):
 etsc --build
-# o, con el cli en desarrollo:
+./build/app
+
+# Con el cli en desarrollo:
 node --experimental-strip-types ../Ts2cpp/src/cli.ts --config estatic.config.ts --build
+./build/app
 ```
 
----
-
-## 12. Librerías externas (V18)
-
-### .lib.ets
-
-```ets
-// raylib.lib.ets — UNA librería por archivo
-@link("-lraylib")
-@include("raylib.h")
-
-@cpp_type("Vector2")
-export interface Vector2 {
-  x(coord: number): number;
-  y(coord: number): number;
-}
-
-@cpp_name("InitWindow")
-export function initWindow(w: number, h: number, title: string): void;
-```
-
-### Uso
-
-```ets
-import { initWindow } from "./raylib.lib.ets";
-initWindow(800, 600, "Mi ventana");
-```
-
-El codegen emite:
-- `#include "raylib.h"` en el cpp
-- Forward decl `extern "C" <sig>;` con el nombre C
-- `-lraylib` en el link flags
-
----
-
-## 13. Closures y lambdas
-
-```ets
-let add: (a: number, b: number): number = (a, b) => a + b;
-let mul: (a: number) => number = a => a * 2;
-print(add(2, 3));    // 5
-print(mul(5));       // 10
-```
-
----
-
-## 14. Runtime y rendimiento
-
-### Headers runtime
-
-El dialecto incluye solo lo que el AST necesita:
-- `ets_core.hpp` (2KB) — siempre
-- `ets_io.hpp` (3KB) — si usas print/console/Math/Date
-- `ets_runtime.hpp` (17KB) — si usas Map/Set/JSON/Optional
-- `ets_runtime_full.hpp` (10KB) — si usas fs/net/async/process
-
-### Flag --minimal
-
-```bash
-node src/cli.ts hello.ets -o /tmp/out.cpp --minimal
-```
-
-En modo minimal, el header no incluye `ets_io.hpp`. El binario resultante
-no tiene `print`/console; usa `std::cout` directamente.
-
-### Pre-compiled headers (V17)
-
-Los headers se compilan una sola vez a `.gch` (caché en `build/.estatic/pch/`).
-La segunda compilación con cambios baja de ~3.7s a ~36ms.
-
----
-
-## 15. String API completa (V28)
-
-El dialecto expone la API de string completa de TypeScript como llamadas
-tipo método (`s.charAt(i)`, `s.length`, etc.) sobre valores `string`.
-El codegen traduce 1:1 a las funciones libres `ets::string_*` que viven
-en `runtime/ets_string.hpp`. Todo es **byte-level** (UTF-8 bytes): no
-hay soporte Unicode multibyte, es coherente con el resto del runtime
-que trata `std::string` como secuencia de bytes.
-
-### Atributo
-
-| Propiedad | Tipo | Descripción |
-|---|---|---|
-| `s.length` | `number` | Número de bytes (= `std::string::size()`). |
-
-### Métodos de acceso
-
-| Método | Retorno | Descripción |
-|---|---|---|
-| `s.charAt(i)` | `string` | Byte en posición `i` como string de 1 byte, o `""` si fuera de rango. |
-| `s.charCodeAt(i)` | `number` | Byte en posición `i` como double (0-255), o `-1` si fuera de rango. |
-
-### Métodos de búsqueda
-
-| Método | Retorno | Descripción |
-|---|---|---|
-| `s.indexOf(needle, start=0)` | `number` | Primera posición de `needle` desde `start`, o `-1`. |
-| `s.lastIndexOf(needle)` | `number` | Última posición de `needle`, o `-1`. |
-| `s.includes(needle, start=0)` | `boolean` | `true` si `needle` aparece desde `start`. |
-| `s.startsWith(prefix)` | `boolean` | `true` si `s` empieza por `prefix`. |
-| `s.endsWith(suffix)` | `boolean` | `true` si `s` termina por `suffix`. |
-
-### Métodos de slicing
-
-| Método | Retorno | Descripción |
-|---|---|---|
-| `s.slice(start, end=length)` | `string` | Substring. Acepta `start`/`end` negativos (desde el final). |
-| `s.substring(start, end=length)` | `string` | Como `slice` pero clamea negativos a 0 e intercambia `start`/`end`. |
-| `s.substr(start, length=rest)` | `string` | Legacy: `length` caracteres desde `start`. |
-| `s.split(separator)` | `string[]` | Vector de partes separadas por `separator`. |
-
-### Métodos de transformación
-
-| Método | Retorno | Descripción |
-|---|---|---|
-| `s.trim()` / `trimStart()` / `trimEnd()` | `string` | Quita espacios al ppio/final/ambos. |
-| `s.toLowerCase()` / `toUpperCase()` | `string` | ASCII lower/upper-case (byte-level). |
-| `s.repeat(count)` | `string` | Repite `count` veces. |
-| `s.padStart(len, pad)` / `padEnd(len, pad)` | `string` | Rellena al ppio/final hasta `len`. |
-| `s.replace(search, replacement)` | `string` | Primera ocurrencia. |
-| `s.replaceAll(search, replacement)` | `string` | Todas las ocurrencias. |
-
-### Comparación y conversión
-
-| Método | Retorno | Descripción |
-|---|---|---|
-| `s.localeCompare(other)` | `number` | `-1` si menor, `0` si igual, `1` si mayor (byte-level). |
-| `s.toString()` | `string` | Identidad. |
-
-### Ejemplo
-
-```ets
-// string-api.ets
-let s: string = "Hola Mundo"
-
-print("length: " + numberToString(s.length))         // 10
-print("charAt(0): " + s.charAt(0))                    // H
-print("indexOf(Mundo): " + numberToString(s.indexOf("Mundo", 0)))  // 5
-print("slice(-5): " + s.slice(-5.0, 11.0))            // Mundo
-print("split size: " + numberToString(s.split(" ").length))  // 2
-print("padStart: " + "5".padStart(3, "0"))           // 005
-print("replaceAll: " + "foo".replaceAll("o", "X"))   // fXX
-```
-
-```bash
-node src/cli.ts string-api.ets -o /tmp/out.cpp
-g++ -std=c++20 -I. -o /tmp/out /tmp/out.cpp -lpthread
-/tmp/out
-```
-
-### Notas de implementación
-
-- `split` no soporta regex (es split por string literal, igual que el
-  método legacy de TS sin segundo argumento).
-- `toLowerCase`/`toUpperCase` usan `std::tolower`/`std::toupper` con
-  `unsigned char` para evitar UB con bytes >127. UTF-8 multibyte puede
-  no comportarse como esperas con caracteres no-ASCII.
-- El type-checker valida aridad y tipos contra `STRING_METHODS` en
-  `src/semantic/type-checker.ts`; el codegen emite
-  `::ets::string_<método>(s, ...)` directamente.
-
----
-
-## 16. Servidor HTTP Express-style (V28)
-
-El dialecto trae un servidor HTTP/1.1 estilo Express integrado en el
-runtime async (libuv + epoll). La API vive en `runtime/ets_http_server.hpp`
-y se compila al binario sin dependencias externas más allá de libuv.
-
-### Hello world
-
-```ets
-// hello-server.ets
-let server: Server = http.createServer()
-
-server.get("/", (req: Request, res: Response): void => {
-  res.status(200)
-     .header("Content-Type", "text/plain; charset=utf-8")
-     .send("hola desde el server de Ts2cpp")
-})
-
-server.listen(3000)
-```
-
-```bash
-node src/cli.ts hello-server.ets -o /tmp/server.cpp
-g++ -std=c++20 -I. -o /tmp/server /tmp/server.cpp \
-    runtime/runtime_ets_poll.cpp runtime/runtime_ets_net.cpp -lpthread
-/tmp/server &  # bloquea hasta SIGINT
-curl http://127.0.0.1:3000/
-# hola desde el server de Ts2cpp
-```
-
-### API de routing
-
-`server.<método>(path, handler)` registra un handler para method + path.
-Los métodos disponibles son: `get`, `post`, `put`, `patch`, `delete`.
-El `path` admite **path params** con `:nombre` (e.g. `/hola/:name`).
-
-```ets
-server.get("/hola/:name", (req: Request, res: Response): void => {
-  // http.param(req, "name") devuelve el path param, o "" si no existe.
-  res.send("hola " + http.param(req, "name"))
-})
-```
-
-### Acceso al request
-
-| Campo / helper | Tipo | Descripción |
-|---|---|---|
-| `req.method` | `string` | `"GET"`, `"POST"`, etc. |
-| `req.path` | `string` | Path sin query string. |
-| `req.rawQuery` | `string` | Query string cruda. |
-| `req.body` | `string` | Cuerpo del request (POST/PUT/PATCH). |
-| `http.param(req, "name")` | `string` | Path param `:name`, o `""`. |
-| `http.query(req, "name")` | `string` | Query value (URL-decoded), o `""`. |
-| `http.header(req, "X-Foo")` | `string` | Header case-insensitive, o `""`. |
-
-### Response encadenable
-
-`res` es un builder que se muta encadenando llamadas. `send()` o `json()`
-cierran la cadena y envían.
-
-```ets
-server.post("/echo", (req: Request, res: Response): void => {
-  res.status(201)
-     .header("X-Content-Type", http.header(req, "Content-Type"))
-     .send("recibido: " + req.body)
-})
-```
-
-| Método | Descripción |
-|---|---|
-| `res.status(code)` | Status code (defecto 200). |
-| `res.header(name, value)` | Añade o sobreescribe un header. |
-| `res.send(body)` | Envía texto (auto-set `Content-Type: text/plain`). |
-| `res.json(jsonString)` | Envía JSON (auto-set `Content-Type: application/json`). |
-
-### Limitaciones conocidas
-
-- **HTTP/1.1 plano**: sin HTTPS, sin middlewares, sin streaming,
-  sin cookies, sin compresión.
-- **SIGSEGV en shutdown** (exit -11 al SIGINT tras ~5 min arriba):
-  anotado en `ts2cpp-pending-features` para diagnosticarlo con gdb.
-- **Parser no acepta qualifier `http.X` en la firma del handler**:
-  los handlers usan los nombres planos `Request`/`Response`. Cuando
-  el parser crezca para `Identifier.Identifier` como type name, los
-  handlers podrán escribirse como `(req: http.Request, res: http.Response)`.
-- **Cliente HTTP pendiente**: se reescribirá con un nombre distinto
-  (`HttpClientResponse`) en `runtime/ets_http_client.hpp` para no
-  colisionar con el `Response` del server.
-
-### Ejemplo completo
-
-```ets
-let server: Server = http.createServer()
-
-server.get("/", (req: Request, res: Response): void => {
-  res.send("hola desde el server de Ts2cpp")
-})
-
-server.get("/hola/:name", (req: Request, res: Response): void => {
-  res.send("hola " + http.param(req, "name"))
-})
-
-server.get("/sumar", (req: Request, res: Response): void => {
-  res.send("query: " + req.rawQuery)
-})
-
-server.post("/echo", (req: Request, res: Response): void => {
-  res.status(201).send("recibido: " + req.body)
-})
-
-server.listen(3000)
-```
-
-Verificado con curl real: los 4 endpoints responden correctamente
-(GET /, GET /hola/:name con path param, GET /sumar?a=3 con query string,
-POST /echo con body, y 404 para rutas no registradas).
-
----
-
-## 17. Backend HTTP dual: cpp-httplib vs Drogon (V28)
-
-El servidor HTTP del dialecto admite **dos backends** intercambiables
-sin cambiar el código del usuario: `cpp-httplib` por defecto y
-`Drogon` opcional con el decorator `@cpp_drogon`. Ambos exponen la
-misma API (`Server`, `Request`, `Response`, `http.param/query/header`),
-de modo que la migración es un cambio de una línea.
-
-### ¿Por qué dos backends?
-
-Cada backend resuelve un trade-off distinto:
-
-| Backend | Rendimiento | Dependencias | HTTPS | Tamaño |
-|---------|-------------|--------------|-------|--------|
-| **cpp-httplib** (default) | ~25-50k req/s | header-only, sin extras (solo `-lpthread`) | opt-in (`-DCPPHTTPLIB_OPENSSL_SUPPORT`) | 23k líneas vendoreadas en `runtime/external/httplib/` |
-| **Drogon** (opcional) | ~150-200k req/s | requiere `libdrogon-dev` + `libjsoncpp-dev` (apt) | built-in | 50k+ líneas, **no** vendoreado (submodule futuro) |
-
-**Cuándo usar cpp-httplib** (default): la mayoría de casos, microservicios
-ligeros, CLIs con server embebido, prototipos. Sin dependencias externas,
-compila rápido, ideal cuando el rendimiento no es crítico.
-
-**Cuándo usar Drogon**: alta concurrencia, APIs públicas con miles de
-req/s, microservicios en producción. Requiere instalar las dependencias
-en la máquina de desarrollo y de deploy.
-
-### Uso básico (cpp-httplib, default)
-
-Sin hacer nada, el builder usa cpp-httplib:
-
-```ets
-let server: Server = http.createServer()
-
-server.get("/", (req: Request, res: Response): void => {
-  res.send("hola desde cpp-httplib")
-})
-
-server.listen(3000)
-```
-
-Compilación:
-
-```bash
-g++ -std=c++20 -I. programa.cpp \
-    runtime/external/httplib/httplib.cc \
-    -lpthread -o programa
-```
-
-El builder **solo** arrastra `httplib.h` si el programa usa HTTP
-server/client. Programas sin HTTP no pagan el coste de compilación
-(verificado: el `.cpp` no contiene `#include "runtime/ets_http_*"`
-si no usas `http.createServer()` o `http.get/post`).
-
-### Activar Drogon con `@cpp_drogon`
-
-Pon el decorator `@cpp_drogon` encima de `let server: Server = ...`:
-
-```ets
-@cpp_drogon
-let server: Server = http.createServer()
-
-server.get("/", (req: Request, res: Response): void => {
-  res.send("hola desde drogon")
-})
-
-server.listen(3000)
-```
-
-El codegen detecta el decorator y emite `runtime/ets_http_drogon.hpp`
-en lugar de `runtime/ets_http_httplib.hpp`. El builder del runner
-detecta el include y añade los flags de link de Drogon
-(`-ldrogon -ltrantor -ljsoncpp -lssl -lcrypto -lresolv`) y
-`-I/usr/include/jsoncpp` automáticamente.
-
-### Instalación de Drogon
-
-En Debian/Ubuntu:
-
-```bash
-sudo apt install libdrogon-dev libjsoncpp-dev
-```
-
-Drogon 1.8+ instala los headers en `/usr/include/drogon/` y la
-librería en `/usr/lib/x86_64-linux-gnu/libdrogon.so`. Si no está
-instalado, el bucket de tests `http-server-drogon` se skipea con
-este mensaje:
-
-```
-libdrogon-dev no instalado (apt install libdrogon-dev libjsoncpp-dev)
-- bucket http-server-drogon omitido
-```
-
-### Compilación manual con Drogon
-
-```bash
-g++ -std=c++20 -I. -I/usr/include/jsoncpp programa.cpp \
-    -ldrogon -ltrantor -ljsoncpp \
-    -lpthread -lssl -lcrypto -lresolv \
-    -o programa
-```
-
-### Limitaciones conocidas del backend Drogon
-
-- **Drogon no permite múltiples servers en el mismo proceso**
-  (`drogon::app()` es un singleton global). Si necesitas varios
-  listeners, usa subprocesos o puertos distintos.
-- **Drogon no expone query params parseados**: la query string
-  llega cruda en `req.rawQuery`. El helper `http.query(req, "x")`
-  la parsea internamente.
-- **Drogon usa `try/catch`**: si compilas con `-fno-exceptions`
-  (como el runner por defecto para programas no-Drogon), el codegen
-  emite código que rompe. El runner detecta Drogon y desactiva el
-  flag automáticamente.
-- **Path params**: máximo 3 por ruta (limite del wrapper; ampliable
-  si hace falta).
-- **Header `Content-Type: text/html` por defecto**: si el handler
-  pone uno custom, el wrapper limpia el default para evitar
-  duplicados en la respuesta.
-
-### Verificación end-to-end
-
-El ejemplo `.scratch/ejemplo-server-drogon.ets` (no commiteado,
-solo local) cubre los 5 casos típicos:
-
-```
-GET  /                  -> 200 (43 bytes)  server: drogon/1.8.7
-GET  /hola/alberto      -> 200 (12 bytes)  [path param]
-GET  /sumar?a=3&b=4     -> 200 (20 bytes)  [query string]
-POST /echo (body=hola)  -> 201 (14 bytes)  [X-Content-Type]
-GET  /nada              -> 404
-```
-
-Para probarlo manualmente:
-
-```bash
-# Terminal 1
-node --experimental-strip-types --no-warnings src/cli.ts \
-     .scratch/ejemplo-server-drogon.ets \
-     -o /tmp/srv.cpp
-g++ -std=c++20 -I. -I/usr/include/jsoncpp /tmp/srv.cpp \
-    -ldrogon -ltrantor -ljsoncpp -lpthread -lssl -lcrypto -lresolv \
-    -o /tmp/srv
-/tmp/srv
-
-# Terminal 2
-curl http://127.0.0.1:3000/
-curl http://127.0.0.1:3000/hola/alberto
-```
-
-### Tests e2e
-
-`test/e2e/http-server-drogon/drogon-decorator-compiles/` verifica
-que el codegen emite el include de Drogon y que el runner linka
-correctamente. Skipea automáticamente si Drogon no está instalado.
-El roundtrip end-to-end (server arranca + cliente HTTP) se valida
-manualmente con el ejemplo `.scratch` porque requeriría `fork()` o
-`thread` del dialecto, fuera del scope de este PR.
-
-### Roadmap V29+
-
-La dirección acordada con el usuario es:
-
-- **Drogon** para el servidor HTTP (ya integrado opcionalmente).
-- **libcurl multi** para el cliente HTTP asíncrono (sustituye el
-  cliente actual sobre TCP plano de `runtime/ets_http_client.hpp`).
-- **libuv** para el resto del runtime (TCP, TLS, files, async).
-- **cpp-httplib** se mantiene como alternativa sencilla por defecto.
-
-### Ejemplo: comparar ambos backends
-
-Mismo programa, dos binarios, sin tocar el código de usuario:
-
-```ets
-// ejemplo-backend.ets
-let server: Server = http.createServer()
-
-server.get("/", (req: Request, res: Response): void => {
-  res.send("hola")
-})
-
-server.listen(3000)
-```
-
-```bash
-# Build 1: cpp-httplib (default, sin decorator)
-node src/cli.ts ejemplo-backend.ets -o /tmp/a.cpp
-g++ -std=c++20 -I. /tmp/a.cpp runtime/external/httplib/httplib.cc \
-    -lpthread -o /tmp/srv-httplib
-/tmp/srv-httplib &
-curl http://127.0.0.1:3000/  # hola
-
-# Build 2: Drogon (anadiendo @cpp_drogon)
-sed -i '1i @cpp_drogon' ejemplo-backend.ets
-node src/cli.ts ejemplo-backend.ets -o /tmp/b.cpp
-g++ -std=c++20 -I. -I/usr/include/jsoncpp /tmp/b.cpp \
-    -ldrogon -ltrantor -ljsoncpp -lpthread -lssl -lcrypto -lresolv \
-    -o /tmp/srv-drogon
-/tmp/srv-drogon &
-curl http://127.0.0.1:3000/  # hola (mismo API, backend distinto)
-```
-
----
-
-## 18. Runtime async sobre libuv + cliente HTTP sobre libcurl (V29)
-
-V29 cierra el ciclo de runtime asíncrono sustituyendo las dos
-implementaciones internas que V28 todavía arrastraba: el reactor
-basado en `poll(2)` y el cliente HTTP sobre TCP plano. Las
-sustituciones se hicieron en 4 PRs pequeños para mantener la
-suite verde en cada paso:
-
-| PR | Qué cambia | Por qué |
-|----|-----------|---------|
-| #155 | Cliente HTTP sobre libcurl | HTTPS, HTTP/2, redirects, timeouts y decompression built-in |
-| #156 | TCP sobre libuv en el runner e2e | 32x más rápido (idle), 430x con 50 pipes |
-| #157 | libuv como único backend de red | Elimina el backend poll duplicado |
-| #158 | Wrappers de timers + filesystem watchers | API de alto nivel sobre `uv_timer_t` / `uv_fs_event_t` |
-
-### Por qué libuv
-
-V25 (PRs #101-#117) implementó un backend alternativo basado en
-libuv encima del reactor poll-based de V22. V26 (PRs #128-#132)
-optimizó el reactor poll con `PollEntry` + back-pointers,
-buffer pool, `accept4+SOCK_NONBLOCK` y `MultiLoopRunner`. V29
-consolida: **libuv es el único backend soportado**.
-
-Benchmarks medidos en este hardware (`runtime/libuv/benchmark_*.cpp`):
-
-| Escenario | libuv | poll(2) | Ratio |
-|-----------|-------|---------|-------|
-| dispatcher idle (1 fd) | 17 ns/iter | 544 ns/iter | **32x** |
-| dispatcher con 50 pipes | 23 ns/iter | 9883 ns/iter | **430x** |
-| dispatch 1000 timers | 197 ns/timer | n/a | n/a |
-
-libuv también es **cross-platform**: abstrae epoll (Linux),
-kqueue (macOS/BSD) e IOCP (Windows). El reactor poll-based solo
-funcionaba en Linux/macOS.
-
-### Por qué libcurl
-
-El cliente HTTP de V28 (PR #147) estaba implementado sobre TCP
-plano: `connect(2)`, `write(2)` y `read(2)` con parseo manual
-de headers. Funcionaba, pero le faltaba todo lo que un cliente
-HTTP moderno da por sentado:
-
-- **HTTPS**: sin TLS integrado. Requería un wrapper adicional
-  (que se planeaba en V30).
-- **HTTP/2**: no soportado.
-- **Redirects**: había que parsear `Location:` y volver a
-  `connect(2)`.
-- **Decompression**: había que detectar `Content-Encoding: gzip`
-  y hacer `inflate()` manual.
-- **Connection pooling**: cada request abría un socket nuevo.
-
-V29.1 (PR #155) sustituye ese cliente por `runtime/ets_http_curl_client.hpp`,
-que envuelve `libcurl` (`-lcurl`). libcurl trae todo eso
-built-in y es lo que usan git, docker, slack, aws-cli, etc.
-
-La **API del dialecto no cambia**: `http.get`/`http.post` siguen
-devolviendo `Result<HttpClientResponse, string>`. El codegen
-apunta ahora a `ets_http_curl_client.hpp` en vez de
-`ets_http_httplib_client.hpp` (borrado en V29.1).
-
-### Cliente HTTP: ejemplo completo
-
-```ets
-// Ejemplo: GET a un API público. Imprime el status y el body.
-let r: Result<HttpClientResponse, string> = http.get(
-  "https://api.github.com/repos/realprosl/Ts2cpp"
-)
-if (r.isOk()) {
-  let v: HttpClientResponse = r.value()
-  print("status=" + numberToString(v.status()))
-  print("content-type=" + v.header("Content-Type"))
-  print("body=" + v.body())
-} else {
-  print("error: " + r.error())
-}
-```
-
-Para POST con body:
-
-```ets
-let r: Result<HttpClientResponse, string> = http.post(
-  "https://httpbin.org/post",
-  "nombre=alberto&edad=30"
-)
-// V30: V23 unica forma valida.
-match(r, "kind", [
-  when("Ok",  (x: Result<HttpClientResponse, string>): void => print("status")),
-  when("Err", (x: Result<HttpClientResponse, string>): void => print("error")),
-]);
-```
-
-HTTPS funciona out-of-the-box sin flags extra (libcurl-openssl-dev
-linka OpenSSL por defecto). HTTP/2 es negociable via el curl
-handle (no expuesto al dialecto en V29; queda para un PR futuro).
-
-### Compilación
-
-El dialecto V29 siempre requiere libuv + libcurl:
-
-```bash
-# Dependencias del sistema (Ubuntu 22.04+)
-apt install libuv1-dev libcurl4-openssl-dev
-
-# Compilar el runtime libuv a .o cacheados
-cd runtime/libuv
-make
-
-# Compilar un programa del dialecto
-g++ -std=c++20 -O2 programa.cpp \
-    /root/Ts2cpp/build/runtime_ets_libuv.o \
-    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
-    -lstdc++fs -luv -lcurl -o programa
-```
-
-El runner e2e del proyecto (`npm run test:e2e`) lo hace
-automáticamente. Detecta `libuv1-dev` y `libcurl4-openssl-dev`
-en el sistema y linka lo necesario.
-
-### Timers y filesystem watchers (V29.4)
-
-V29.4 añadió dos wrappers de alto nivel sobre libuv en
-`runtime/ets_timer.hpp` y `runtime/ets_fs_watcher.hpp`. Son
-**runtime C++** (no se exponen al dialecto todavía). Si necesitas
-un timer o un watcher hoy, los puedes usar directamente desde
-cualquier `.cpp` que sea parte del binario:
-
-```cpp
-#include "runtime/ets_timer.hpp"
-#include "runtime/ets_fs_watcher.hpp"
-#include "runtime/ets_async.hpp"
-
-int main() {
-    // setTimeout one-shot: tras 200ms, imprime y para el loop.
-    ets::setTimeout([]{
-        printf("timeout fired\n");
-        ets::defaultEventLoop.stop();
-    }, 200);
-
-    // watchFs: recibe un callback cada vez que algo cambia en /tmp.
-    ets::watchFs("/tmp", [](ets::FsEvent ev) {
-        printf("cambio: %s flags=%d\n", ev.path.c_str(), ev.flags);
-    });
-
-    ets::defaultEventLoop.run();
-    return 0;
-}
-```
-
-Compila con:
-
-```bash
-g++ -std=c++20 -O2 -I/root/Ts2cpp \
-    main.cpp \
-    /root/Ts2cpp/build/runtime_ets_libuv.o \
-    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
-    -lstdc++fs -luv -o watcher
-```
-
-Los tests del runtime (`runtime/libuv/tests/test_wrappers_v29.cpp`)
-ejercitan los 5 casos: setTimeout, setInterval, cancelTimer,
-watchFs, y watchFs + setTimeout en el mismo loop. **5/5 verde**.
-
-### Roadmap V30+
-
-V30 expone al dialecto `.ets` las APIs async que V29 dejó como
-wrappers C++ de runtime. Cada feature se entregó en un PR pequeño:
-
-| PR | Feature | Estado |
-|----|---------|--------|
-| #160 | V30.1 timers (`setTimeout`/`setInterval`/`cancelTimer`) | ✅ |
-| #161 | V30.2 filesystem watchers (`watchFs`/`unwatchFs`/`stopLoop`) | ✅ |
-| #162 | V30.4 DNS async (`resolveDns` sobre `uv_getaddrinfo`) | ✅ |
-| #163 | V30.3 cliente HTTP async (`await http.get`/`http.post`) | ✅ |
-
-Lo que queda pendiente para cerrar el ciclo runtime:
-
-- **TLS server**: `runtime/ets_tls.hpp` ya existe (wrappers sobre
-  OpenSSL). Falta exponer al dialecto + test e2e con handshake
-  real. Riesgo medio por dependencias de OpenSSL.
-- **HTTP/3 / QUIC**: dependencia de quiche o msquic. Hay que
-  justificar la adopción antes de empezar.
-- **V22 borrow checker PR#6**: sesión dedicada para cerrar los
-  conflictos aliasing `ref+ref` y `ref+constRef`. Tests específicos
-  primero (E4206/E4207), implementación incremental contra 202/202
-  tests existentes.
-
----
-
-## 19. Corutinas sobre libuv (V30)
-
-V30 cierra el ciclo: expone al dialecto `.ets` las APIs async que
-V29 dejó como wrappers C++ de runtime, y añade la integración con
-las corutinas de C++20 para que el código del dialecto se vea
-secuencial (`await ...`) aunque por debajo haya un event loop
-no bloqueante.
-
-### Lo que entrega V30
-
-| Sub-fase | API expuesta al dialecto | PR | Detalle |
-|----------|--------------------------|-----|---------|
-| V30.1 | `setTimeout`, `setInterval`, `cancelTimer` | #160 | timers sobre `uv_timer_t` |
-| V30.2 | `watchFs`, `unwatchFs`, `stopLoop` | #161 | watchers sobre `uv_fs_event_t` |
-| V30.3 | `await http.get`, `await http.post` | #163 | `BlockingAwaiter` + worker thread |
-| V30.4 | `resolveDns` (con `await`) | #162 | sobre `uv_getaddrinfo` |
-
-V30.1 y V30.2 son **no-await**: devuelven handles (`Timer`,
-`FsWatcher`) y disparan callbacks síncronos. V30.3 y V30.4 son
-**await-friendly**: devuelven `Promise<Result<...>>` y se usan
-con `co_await` en funciones `async`.
-
-### V30.1 — Timers
-
-`runtime/ets_timer.hpp` envuelve `uv_timer_t`. Mapea 1:1 a los
-wrappers C++ que ya tenía V29.4.
-
-```ets
-let t: Timer = setTimeout(() => print("hola"), 200)
-let i: Timer = setInterval(() => print("tick"), 1000)
-// ... más tarde:
-cancelTimer(t)
-cancelTimer(i)
-```
-
-El tipo `Timer` expone un método `cancel()` equivalente a
-`cancelTimer(t)`. El codegen traduce `setTimeout` a
-`::ets::setTimeout(...)` y `cancelTimer` a `::ets::cancelTimer(...)`.
-
-Si no necesitas esperar nada, tu `main` puede seguir siendo
-síncrono:
-
-```ets
-// .ets (no async, no await)
-setTimeout(() => print("timeout"), 100)
-// El main retorna antes de que dispare el callback.
-// Para mantener vivo el loop, llama stopLoop o un await.
-stopLoop()
-```
-
-Si tu `main` es `async`, los timers se entrelazan con awaits de
-otras corutinas (mismo event loop).
-
-### V30.2 — Filesystem watchers
-
-`runtime/ets_fs_watcher.hpp` envuelve `uv_fs_event_t`. Abstrae
-inotify (Linux), FSEvents (macOS) y ReadDirectoryChangesW
-(Windows). Recursive opcional.
-
-```ets
-let w: FsWatcher = watchFs("/tmp", (ev: FsEvent) => {
-  print("cambio: " + ev.path + " flags=" + numberToString(ev.flags))
-})
-// ... más tarde:
-unwatchFs(w)
-```
-
-`FsEvent` es `{ path: string, flags: number }`. `flags` viene de
-`uv_fs_event_t` y codifica create/rename/delete/change.
-
-`stopLoop()` es un helper que llama `ets::defaultEventLoop.stop()`
-desde un callback para terminar el programa limpiamente.
-
-### V30.3 — Cliente HTTP async con corutinas
-
-V30.3 es el corazón de V30: hace que `http.get(url)` y
-`http.post(url, body, contentType?)` se puedan usar con `await`.
-Antes (V29), `http.get` era síncrono y bloqueante (aunque
-`curl_easy_perform` se ejecutaba; el main thread no podía hacer
-otra cosa mientras esperaba). Ahora, `await` suspende la corutina,
-el HTTP request se hace en un worker thread, y al terminar la
-corutina se reanuda en el event loop.
-
-```ets
-async function main(): Promise<void> {
-  let r: Result<HttpClientResponse, string> = await http.get(
-    "https://api.github.com/repos/realprosl/Ts2cpp"
-  )
-  // V30: V23 unica forma valida.
-  match(r, "kind", [
-    when("Ok",  (x: Result<HttpClientResponse, string>): void => print("status")),
-    when("Err", (x: Result<HttpClientResponse, string>): void => print("error")),
-  ]);
-}
-main()
-```
-
-**Lo que pasa por debajo**:
-
-1. El codegen traduce `await http.get("...")` a
-   `co_await ::ets::httpClientGetAsync("...")`.
-2. `httpClientGetAsync` retorna `Task<Result<HttpClientResponse>>`.
-   Internamente usa `runBlocking` (que crea un `BlockingAwaiter`)
-   con un lambda que llama `httpClientGet` (la versión síncrona
-   de V29).
-3. El `BlockingAwaiter::await_suspend` encola el lambda en el
-   `blockingExecutor()` (thread pool) y devuelve el control al
-   main thread.
-4. El worker thread ejecuta el lambda, llama `curl_easy_perform`
-   (bloqueante), y al terminar hace `loop->post(handle)` para
-   reanudar la corutina.
-5. El main thread (en `syncWait`) itera `runOne` hasta que la
-   corutina completa. Cada `runOne` espera al eventfd del
-   `wake_` async, que el worker marca con `uv_async_send`.
-6. `onWake` se ejecuta en el main thread, hace `swap(posted_)`,
-   ve el handle de la corutina, llama `handle.resume()`. La
-   corutina continúa, el `co_return` entrega el `Result`, y
-   `task.done()` se vuelve true.
-7. `syncWait` retorna el `Result`.
-
-**Detalle clave**: `BlockingAwaiter` captura
-`loop = &defaultEventLoop` en el thread principal (el que llama
-`await_suspend`), NO en el worker. Esto es crucial: `defaultEventLoop`
-es `thread_local`, así que cada thread tiene su propia instancia.
-Si el worker accediera a `defaultEventLoop` directamente, postearía
-a OTRO loop, y la corutina quedaría huérfana.
-
-**Fixes de runtime** (parte de #163, necesarios para que todo
-lo anterior funcione):
-
-- `runOne` añade un `uv_timer` dummy de 1s al loop cuando no
-  hay timers ni polls. Sin esto, `uv_run(UV_RUN_ONCE)` con solo
-  `uv_async_t` activo retorna inmediatamente (libuv optimiza:
-  sin fds lentos, no entra en `epoll_wait`). El dummy fuerza
-  a libuv a esperar.
-- Se eliminó el `uv_async_send(&wake_)` + `uv_run(UV_RUN_NOWAIT)`
-  al final de `runOne`. Ese par consumía el eventfd signal del
-  thread worker antes de que `posted_` estuviera listo,
-  llamando a `onWake` con `posted_` vacío.
-
-**Tests**:
-
-- `test/e2e/http/async-get/`: test del dialecto que valida
-  que `await http.get(url)` se transpila, compila con
-  `-lcurl -luv`, y ejecuta.
-- `runtime/libuv/tests/test_http_async_get.cpp`: roundtrip real
-  con un server `cpp-httplib` local en :18090. 3 awaits
-  (básico, json, fallo) validando status/body/headers.
-  PASA.
-
-**Limitaciones** (documentadas en #163):
-
-- **Concurrencia**: varios `await` en paralelo no son paralelos
-  (cada uno ocupa un worker del pool secuencialmente). Para
-  paralelismo real habría que usar `curl_multi` o un pool
-  mayor. Esto es V30.5+.
-- **Cancelación**: si la corutina se cancela mientras curl está
-  en vuelo, `curl_easy_perform` sigue hasta terminar. No hay
-  interrupción de libcurl todavía.
-- **HTTPS, HTTP/2, redirects, decompression**: igual que la
-  versión síncrona (heredado de libcurl).
-
-### V30.4 — DNS async
-
-`runtime/ets_dns.hpp` envuelve `uv_getaddrinfo`. La corutina se
-suspende mientras libuv resuelve el nombre en background, y se
-reanuda cuando hay respuesta (o error).
-
-```ets
-let ip: string = await resolveDns("localhost")
-if (ip == "127.0.0.1") print("ok")
-```
-
-`resolveDns` retorna `Promise<Result<string, string>>`. El `Ok`
-es la primera IP (string), el `Err` es el error (string). Si
-la resolución falla, `Ok` contiene un string vacío (decisión de
-diseño: permite usar `await` sin `match` cuando solo te importa
-el éxito).
-
-Útil para casos no-HTTP (el cliente HTTP ya hace resolve
-interno via libcurl, pero a veces quieres un resolve explícito
-antes de hacer el request).
-
-### Compilación
-
-Los 4 sub-fases requieren:
-
-```bash
-apt install libuv1-dev libcurl4-openssl-dev
-
-cd runtime/libuv
-make
-
-# Compilar un programa del dialecto
-g++ -std=c++20 -O2 -fno-exceptions programa.cpp \
-    /root/Ts2cpp/build/runtime_ets_libuv.o \
-    /root/Ts2cpp/build/runtime_ets_net_libuv.o \
-    -lstdc++fs -luv -lcurl -o programa
-```
-
-El runner e2e (`npm run test:e2e`) lo hace automáticamente
-cuando detecta que el programa usa alguna de las APIs V30.
-
-### Resumen
-
-V30 completa el ciclo runtime del dialecto:
-
-| Feature | Mecanismo subyacente | PR |
-|---------|---------------------|-----|
-| `setTimeout`/`setInterval` | `uv_timer_t` | #160 |
-| `watchFs`/`unwatchFs` | `uv_fs_event_t` (inotify/FSEvents) | #161 |
-| `resolveDns` | `uv_getaddrinfo` | #162 |
-| `await http.get/post` | `curl_easy_perform` en worker + `BlockingAwaiter` | #163 |
-
-Todo sobre libuv. Todo expuesto al dialecto. Todo con tests e2e
-verdes (más allá de los 28 pre-existentes FAIL que son issues
-anteriores sin relación).
-
----
-
-## Resumen de versiones
-
-- **V15**: compilación incremental por módulos
-- **V16**: includes selectivos + `--minimal`
-- **V17**: pre-compiled headers + includes granularizados
-- **V18**: librerías externas vía `@link`/`@include`/`@cpp_name`/`@cpp_type`
-- **V19**: encapsulación `private`/`public`/`protected`
-- **V20**: parameter properties (sintaxis abreviada)
-- **V21**: ownership `Rc<T>` / `constPtr<T>` / `constRef<T>` (lectura segura)
-- **V22**: borrow checker con NLL (Non-Lexical Lifetimes)
-- **V25**: backend libuv para el event loop (17 PRs, V25 Fase 1-8)
-- **V26**: optimizaciones reactor async (`PollEntry` + back-pointers, buffer pool, `accept4+SOCK_NONBLOCK`, `MultiLoopRunner` con N loops)
-- **V28**: API de string completa estilo TypeScript (24 métodos) + servidor HTTP/1.1 Express-style (`http.createServer()`, `server.get/post/...`, path params, query string, body, response encadenable) + cliente HTTP (`http.get`/`http.post`, `HttpClientResponse`) + backend HTTP dual (cpp-httplib por defecto, Drogon opcional con decorator `@cpp_drogon` para alta carga)
-- **V29**: libuv como único backend de red (elimina el reactor poll-based de V22) + cliente HTTP sobre libcurl (sustituye al cliente TCP plano de V28). PRs #155-#159.
-- **V30**: APIs async del dialecto `.ets` (timers, fs watchers, DNS, `await http.get/post`) sobre libuv. PRs #160, #161, #162, #163. Ver §19 para detalle.
+Para el detalle del flujo de build, postinstall y AST detection, ver
+[`docs/build-system.md`](./build-system.md).
