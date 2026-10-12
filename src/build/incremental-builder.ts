@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import type { ResolvedConfig } from "../config/project-config.ts";
 import { compileFile, loadModuleGraph } from "../modules/module-loader.ts";
+import { computeModuleId, assertUniqueIdentities } from "../modules/module-identity.ts";
 
 declare const process: { stderr: { write: (data: string) => void }; env: Record<string, string | undefined>; stdout: { write: (data: string) => void } };
 declare const Buffer: { byteLength: (data: string) => number };
+declare const setTimeout: (callback: () => void, ms: number) => unknown;
+declare const clearTimeout: (handle: unknown) => void;
 
 /**
  * Resultado del pipeline incremental.
@@ -80,19 +83,64 @@ function globalDigest(config: ResolvedConfig, runtimeDigest: string): string {
 }
 
 /**
- * Huella ligera del runtime: SHA-256 + longitud de cada cabecera de runtime.
- * Si cambia runtime/, el digest cambia y la caché se invalida.
+ * Huella ligera del runtime: SHA-256 + longitud de cada cabecera y
+ * .cpp del runtime. Si cambia runtime/, el digest cambia y la caché
+ * se invalida.
+ *
+ * V30.6.1 (H-04): antes solo enumeraba 10 cabeceras hardcodeadas
+ * (ets_runtime.hpp, ets_async.hpp, ...). Faltan 27 cabeceras reales
+ * (ets_core.hpp, ets_buffer_pool.hpp, ets_dns.hpp, ets_http_curl_async.hpp,
+ * ets_runtime_full.hpp, ets_event_loop.hpp, ets_event_loop_iface.hpp,
+ * ets_event_loop_libuv.hpp, ets_net_libuv.hpp, ets_net_libuv_api.hpp,
+ * ets_net_sync.hpp, ets_optional.hpp, ets_string.hpp, ets_timer.hpp,
+ * ets_unq.hpp, ets_rc.hpp, ets_collections.hpp, ets_io.hpp,
+ * ets_http_client.hpp, ets_http_curl_client.hpp, ets_http_drogon.hpp,
+ * ets_http_httplib.hpp, ets_io_uring.hpp, ets_io_uring_async.hpp,
+ * ets_buffer_pool.hpp, ets_fs_watcher.hpp, ets_http_server.hpp,
+ * ets_process.hpp, ets_ast.hpp, ets_syntax.hpp, ets_runtime_minimal.hpp,
+ * ets_file.hpp, ets_event_loop_libuv_api.hpp, ets_multi_loop.hpp, ...).
+ * Un cambio en una no enumerada podia dejar objetos compilados contra
+ * codigo anterior.
+ *
+ * Ahora: iteramos todos los `*.hpp` y `*.cpp` del directorio runtime/
+ * en orden estable, mas el ejecutable del compilador y los flags (que
+ * ya entran via `digest` en buildIncremental). El orden estable es
+ * alfabetico por nombre de archivo para que la huella sea
+ * determinista entre ejecuciones.
  */
 async function digestRuntime(compilerRoot: string): Promise<string> {
   const hash = createHash("sha256");
-  const headers = [
-    "ets_runtime.hpp", "ets_async.hpp", "ets_file.hpp", "ets_net.hpp",
-    "ets_tls.hpp", "ets_io_uring.hpp", "ets_syntax.hpp", "ets_process.hpp",
-    "ets_string.hpp", "ets_ast.hpp",
-  ];
-  for (const name of headers) {
+  const runtimeDir = join(compilerRoot, "runtime");
+  let entries: string[];
+  try {
+    const all = await readdir(runtimeDir);
+    entries = all.filter(f => f.endsWith(".hpp") || f.endsWith(".h") || f.endsWith(".cpp")).sort();
+  } catch {
+    entries = [];
+  }
+  if (entries.length === 0) {
+    // Fallback al comportamiento previo si la lectura falla, para no
+    // tirar el build en maquinas sin permisos (mejor un digest debil
+    // que un crash). El assertUniqueIdentities en module-identity.ts
+    // no depende de este digest.
+    const legacy = [
+      "ets_runtime.hpp", "ets_async.hpp", "ets_file.hpp", "ets_net.hpp",
+      "ets_tls.hpp", "ets_io_uring.hpp", "ets_syntax.hpp", "ets_process.hpp",
+      "ets_string.hpp", "ets_ast.hpp",
+    ];
+    for (const name of legacy) {
+      try {
+        const content = await readFile(join(runtimeDir, name), "utf8");
+        hash.update(name + ":" + content.length + ":" + createHash("sha256").update(content).digest("hex") + "\x00");
+      } catch {
+        hash.update(name + ":missing\x00");
+      }
+    }
+    return hash.digest("hex").slice(0, 16);
+  }
+  for (const name of entries) {
     try {
-      const content = await readFile(join(compilerRoot, "runtime", name), "utf8");
+      const content = await readFile(join(runtimeDir, name), "utf8");
       hash.update(name + ":" + content.length + ":" + createHash("sha256").update(content).digest("hex") + "\x00");
     } catch {
       hash.update(name + ":missing\x00");
@@ -104,20 +152,45 @@ async function digestRuntime(compilerRoot: string): Promise<string> {
 /**
  * Compila (o enlaza) con el comando nativo. Captura stderr/stdout para
  * incluirlos en el error si algo falla.
+ *
+ * V30.6.1 (H-07): cap de 1 MiB en stdout y stderr cada uno (los ultimos
+ * 1 MiB; lo anterior se descarta para evitar OOM si el compilador
+ * emite diagnosticos masivos). Anade timeout por defecto de 5 minutos
+ * para evitar que un build se cuelgue indefinidamente.
  */
-function runNative(command: string, args: string[]): Promise<void> {
+const RUN_NATIVE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+const RUN_NATIVE_OUTPUT_CAP = 1024 * 1024; // 1 MiB
+function runNative(command: string, args: string[], options: { timeoutMs?: number } = {}): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? RUN_NATIVE_TIMEOUT_MS;
   return new Promise((fulfill, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let stdoutDropped = 0;
+    let stderrDropped = 0;
+    const trimTo = (current: string, dropped: number, chunk: string): { kept: string; dropped: number } => {
+      const combined = current + chunk;
+      if (combined.length <= RUN_NATIVE_OUTPUT_CAP) return { kept: combined, dropped };
+      // Mantener los ultimos RUN_NATIVE_OUTPUT_CAP bytes.
+      const sliced = combined.slice(combined.length - RUN_NATIVE_OUTPUT_CAP);
+      return { kept: sliced, dropped: dropped + (combined.length - RUN_NATIVE_OUTPUT_CAP) };
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`${command} excedio el timeout de ${timeoutMs}ms y fue terminado`));
+    }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", chunk => { stdout += chunk; });
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    child.once("error", reject);
+    child.stdout.on("data", (chunk: string) => { const r = trimTo(stdout, stdoutDropped, chunk); stdout = r.kept; stdoutDropped = r.dropped; });
+    child.stderr.on("data", (chunk: string) => { const r = trimTo(stderr, stderrDropped, chunk); stderr = r.kept; stderrDropped = r.dropped; });
+    child.once("error", (error: Error) => { clearTimeout(timer); reject(error); });
     child.once("exit", code => {
+      clearTimeout(timer);
       if (code === 0) fulfill();
-      else reject(new Error(`${command} salió con código ${code}\n${stderr || stdout}`));
+      else {
+        const dropped = (n: number) => n > 0 ? ` (+${n.toLocaleString()} bytes descartados por cap de ${RUN_NATIVE_OUTPUT_CAP.toLocaleString()})` : "";
+        reject(new Error(`${command} salió con código ${code}\n${stderr || stdout}${dropped(stdoutDropped + stderrDropped)}`));
+      }
     });
   });
 }
@@ -165,6 +238,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   const graph = await loadModuleGraph(config.entry, {
     moduleRoots: config.moduleRoots,
     aliases: config.aliases,
+    baseDirectory: config.baseDirectory,
   });
   if (options.verbose) progress.log(`${graph.modules.length} módulo(s) cargado(s)`);
 
@@ -242,16 +316,30 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   // coincide, podemos reutilizar TODOS los .o sin recompilar nada. En otro
   // caso, seguimos al pipeline principal que compara por-módulo.
   if (!globalDigestChanged && previousManifest === programFingerprint) {
-    if (options.verbose) progress.log(`Cache hit: huella del programa coincide, todos los .o reutilizados`);
-    return {
-      compiled: [],
-      reused: graph.modules.map(m => m.file),
-      linked: false,
-      binary: binaryPath,
-      header: headerPath,
-      durationMs: progress.totalElapsed(),
-      cacheResult: "hit",
-    };
+    // V30.6.1 (H-03): antes de devolver cache hit, verificar que el
+    // binario y los .o de los modulos todavia existen en disco. Si se
+    // borro el binario (o un .o) conservando el manifest, la compilacion
+    // se declaraba exitosa sin generar ejecutable. Ahora regeneramos.
+    const binaryStillExists = await fileExists(binaryPath);
+    let allObjectsPresent = true;
+    for (const module of graph.modules) {
+      const identity = computeModuleId(module.file, config.baseDirectory);
+      const objPath = join(cacheDir, `${identity.moduleBase}.o`);
+      if (!(await fileExists(objPath))) { allObjectsPresent = false; break; }
+    }
+    if (binaryStillExists && allObjectsPresent) {
+      if (options.verbose) progress.log(`Cache hit: huella del programa coincide, todos los .o reutilizados`);
+      return {
+        compiled: [],
+        reused: graph.modules.map(m => m.file),
+        linked: false,
+        binary: binaryPath,
+        header: headerPath,
+        durationMs: progress.totalElapsed(),
+        cacheResult: "hit",
+      };
+    }
+    if (options.verbose) progress.warn(`Cache hit pero artefactos ausentes (binary=${binaryStillExists}, objects=${allObjectsPresent}); regenerando`);
   }
 
   // Diagnóstico claro cuando la caché falla por una razón concreta.
@@ -267,6 +355,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   const result = await compileFile(config.entry, {
     moduleRoots: config.moduleRoots,
     aliases: config.aliases,
+    baseDirectory: config.baseDirectory,
   });
   await mkdir(dirname(cppPath), { recursive: true });
   // V15: escribimos el header común + un `.cpp` por módulo (modo multi).
@@ -276,8 +365,16 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   // Cacheamos un .o por módulo. La ruta del cache depende SOLO del hash del
   // módulo (.cpp generado), no del digest global. Si runtime/flags cambian,
   // invalidamos TODOS los caches abajo (`globalDigestChanged`).
+  // V30.6.1 (H-01): nombre estable derivado de la ruta completa + hash,
+  // no del basename. Antes `src/users/index.ts` y `src/admin/index.ts`
+  // colisionaban en `index.cpp/index.o/index.manifest`.
+  const moduleIdentities = result.modules.map(m => computeModuleId(m.name, config.baseDirectory));
+  assertUniqueIdentities(moduleIdentities);
+  const moduleIdByName = new Map(moduleIdentities.map(id => [id.file, id]));
   for (const module of result.modules) {
-    const moduleBase = basename(module.name).replace(/\.(ets|ts)$/, "");
+    const identity = moduleIdByName.get(module.name);
+    if (!identity) throw new Error(`Identidad no encontrada para ${module.name}`);
+    const moduleBase = identity.moduleBase;
     const moduleCppPath = join(dirname(cppPath), `${moduleBase}.cpp`);
     const moduleObjectPath = join(cacheDir, `${moduleBase}.o`);
     const moduleManifestPath = join(cacheDir, `${moduleBase}.manifest`);
@@ -319,8 +416,9 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   let linked = false;
   const binaryExists = await fileExists(binaryPath);
   const allObjects = result.modules.map(module => {
-    const moduleBase = basename(module.name).replace(/\.(ets|ts)$/, "");
-    return join(cacheDir, `${moduleBase}.o`);
+    const identity = moduleIdByName.get(module.name);
+    if (!identity) throw new Error(`Identidad no encontrada para ${module.name} (link)`);
+    return join(cacheDir, `${identity.moduleBase}.o`);
   });
   if (!binaryExists || linkFlagsChanged || compiled.length > 0) {
     progress.beginPhase(`Enlazando binario (${config.compiler.command})`);
