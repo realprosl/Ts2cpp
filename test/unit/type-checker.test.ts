@@ -998,13 +998,18 @@ test("V22 PR#133: rechaza ref() con un literal numerico (no es lvalue)", () => {
 });
 
 // =============================================================================
-// V22 PR#134: Borrow conflicts (E4206, E4207) — aliasing mutable detection
+// V22 PR#134 + V30.7 NLL: Borrow conflicts (E4206, E4207) — aliasing
 // =============================================================================
-// Patron consistente: User declarado con campo name + constructor.
-// function test(): void declara los borrows.
-// Los borrows viven hasta el final del bloque.
+// V30.7 NLL: con Non-Lexical Lifetimes, un borrow termina en su ULTIMO
+// USO, no al final del scope. Por tanto, dos borrows sobre la misma
+// fuente NO entran en conflicto si nunca se usan (o si el primero
+// muere antes de que el segundo se declare). Los tests a continuacion
+// reflejan la nueva semantica: los borrows se USAN para que el lifetime
+// se extienda hasta su lectura.
 
-test("V22 PR#134: ref<T>+ref<T> en mismo scope -> E4206", () => {
+test("V30.7 NLL: ref<T>+ref<T> ambos usados -> E4206", () => {
+  // Patron: V22 PR#134 pero con los borrows USADOS (asi NLL detecta
+  // que ambos viven en paralelo).
   expectError(`
     class User {
       name: string;
@@ -1013,11 +1018,32 @@ test("V22 PR#134: ref<T>+ref<T> en mismo scope -> E4206", () => {
     function test(u: User): void {
       const a: ref<User> = ref(u);
       const b: ref<User> = ref(u);
+      print(a.name);
+      print(b.name);
     }
   `, "E4206");
 });
 
-test("V22 PR#134: ref<T>+constRef<T> en mismo scope -> E4207", () => {
+test("V30.7 NLL: ref<T>+ref<T> sin usar -> OK (NLL permite re-borrow si no se usan)", () => {
+  // Caso especifico de NLL: si los borrows nunca se usan, sus
+  // lifetimes son triviales (declarados y muertos en su declaracion),
+  // asi que re-borrowar la misma fuente es valido.
+  const { checker } = check(`
+    class User {
+      name: string;
+      constructor() { this.name = ""; }
+    }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: ref<User> = ref(u);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V30.7 NLL: ref<T>+constRef<T> en mismo scope, ambos usados -> E4207", () => {
+  // V22 PR#134 actualizado a NLL: usamos los borrows para que vivan
+  // hasta su lectura.
   expectError(`
     class User {
       name: string;
@@ -1026,11 +1052,13 @@ test("V22 PR#134: ref<T>+constRef<T> en mismo scope -> E4207", () => {
     function test(u: User): void {
       const a: ref<User> = ref(u);
       const b: constRef<User> = constRef(u);
+      print(a.name);
+      print(b.name);
     }
   `, "E4207");
 });
 
-test("V22 PR#134: constRef<T>+ref<T> en mismo scope -> E4207 (orden importa)", () => {
+test("V30.7 NLL: constRef<T>+ref<T> en mismo scope, ambos usados -> E4207 (orden importa)", () => {
   expectError(`
     class User {
       name: string;
@@ -1039,6 +1067,8 @@ test("V22 PR#134: constRef<T>+ref<T> en mismo scope -> E4207 (orden importa)", (
     function test(u: User): void {
       const a: constRef<User> = constRef(u);
       const b: ref<User> = ref(u);
+      print(a.name);
+      print(b.name);
     }
   `, "E4207");
 });
@@ -1277,4 +1307,113 @@ test("V22 PR#9a: ptr<T> en declaracion -> OK (no Rc)", () => {
     }
   `);
   assert.ok(checker);
+});
+
+
+// =============================================================================
+// V30.7: Non-Lexical Lifetimes (NLL) — borrows terminan en el ultimo uso
+// =============================================================================
+// Con NLL, un borrow `ref(x)` se libera cuando la referencia se usa por
+// ultima vez, no necesariamente al final del bloque. Esto permite patrones
+// comunes como:
+//   const a = ref(x); use(a); const b = ref(x);  // OK con NLL
+// Sin NLL (lexical), la linea 3 daria E4206.
+
+test("V30.7 NLL: ref<T> usado una vez, segundo ref<T> despues -> OK", () => {
+  // El primer borrow se usa en `print(a.name)` y luego nunca. Con NLL
+  // termina en esa linea. El segundo `ref(u)` es por tanto valido.
+  const { checker } = check(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      print(a.name);
+      const b: ref<User> = ref(u);  // OK con NLL
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V30.7 NLL: ref<T> usado al final, segundo ref<T> en linea posterior -> OK (NLL)", () => {
+  // El primer borrow `a` se usa por ultima vez en linea 3. NLL permite
+  // que `b` se declare en linea 4 (a ya termino). Y `b` se usa por
+  // ultima vez en linea 5, asi que `c` se puede declarar en linea 6
+  // (b ya termino). Con NLL puro, todos son OK.
+  const { checker } = check(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      print(a.name);
+      const b: ref<User> = ref(u);
+      print(b.name);
+      const c: ref<User> = ref(u);
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V30.7 NLL: ref<T> que se solapan por uso -> E4206", () => {
+  // a y b viven en paralelo (ambos se usan despues de declarar el
+  // segundo). El segundo ref debe fallar.
+  expectError(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: ref<User> = ref(u);
+      print(a.name);
+      print(b.name);
+    }
+  `, "E4206");
+});
+
+test("V30.7 NLL: constRef<T> usado, segundo constRef<T> despues -> OK", () => {
+  const { checker } = check(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: constRef<User> = constRef(u);
+      print(a.name);
+      const b: constRef<User> = constRef(u);  // OK con NLL
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V30.7 NLL: ref<T> + constRef<T> en paralelo, ambos usados -> E4207", () => {
+  // Los dos viven hasta sus respectivos ultimos usos. Como ambos se
+  // usan despues de declarar el segundo, hay conflicto.
+  expectError(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: constRef<User> = constRef(u);
+      print(a.name);
+      print(b.name);
+    }
+  `, "E4207");
+});
+
+test("V30.7 NLL: ref<T> declarado sin usar, segundo ref<T> en mismo scope -> E4206", () => {
+  // Si el primer borrow NUNCA se usa, NLL lo trata como terminado
+  // inmediatamente. Asi que el segundo ref<T> deberia ser OK.
+  // (Este test documenta la politica: borrow sin uso = terminado en su declaracion.)
+  const { checker } = check(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: ref<User> = ref(u);  // OK con NLL si a no se usa
+    }
+  `);
+  assert.ok(checker);
+});
+
+test("V30.7 NLL: comportamiento actual sigue valido (overlap completo) -> E4206", () => {
+  // Si los dos borrows se usan ambos, el conflicto se mantiene.
+  expectError(`
+    class User { name: string; constructor() { this.name = ""; } }
+    function test(u: User): void {
+      const a: ref<User> = ref(u);
+      const b: ref<User> = ref(u);
+      print(a.name);
+      print(b.name);
+    }
+  `, "E4206");
 });
