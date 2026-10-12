@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import type { ResolvedConfig } from "../config/project-config.ts";
@@ -84,66 +84,68 @@ function globalDigest(config: ResolvedConfig, runtimeDigest: string): string {
 
 /**
  * Huella ligera del runtime: SHA-256 + longitud de cada cabecera y
- * .cpp del runtime. Si cambia runtime/, el digest cambia y la caché
- * se invalida.
+ * .cpp del runtime, recursivo en subdirectorios. Si cambia cualquier
+ * archivo de runtime/ (incluyendo runtime/libuv/, runtime/ast/,
+ * runtime/external/), el digest cambia y la caché se invalida.
  *
- * V30.6.1 (H-04): antes solo enumeraba 10 cabeceras hardcodeadas
- * (ets_runtime.hpp, ets_async.hpp, ...). Faltan 27 cabeceras reales
- * (ets_core.hpp, ets_buffer_pool.hpp, ets_dns.hpp, ets_http_curl_async.hpp,
- * ets_runtime_full.hpp, ets_event_loop.hpp, ets_event_loop_iface.hpp,
- * ets_event_loop_libuv.hpp, ets_net_libuv.hpp, ets_net_libuv_api.hpp,
- * ets_net_sync.hpp, ets_optional.hpp, ets_string.hpp, ets_timer.hpp,
- * ets_unq.hpp, ets_rc.hpp, ets_collections.hpp, ets_io.hpp,
- * ets_http_client.hpp, ets_http_curl_client.hpp, ets_http_drogon.hpp,
- * ets_http_httplib.hpp, ets_io_uring.hpp, ets_io_uring_async.hpp,
- * ets_buffer_pool.hpp, ets_fs_watcher.hpp, ets_http_server.hpp,
- * ets_process.hpp, ets_ast.hpp, ets_syntax.hpp, ets_runtime_minimal.hpp,
- * ets_file.hpp, ets_event_loop_libuv_api.hpp, ets_multi_loop.hpp, ...).
- * Un cambio en una no enumerada podia dejar objetos compilados contra
- * codigo anterior.
+ * V30.6.1 (H-04): antes enumeraba 10 cabeceras hardcodeadas; ahora
+ * itera todos los *.hpp/*.h/*.cpp del directorio runtime/ en orden
+ * estable.
  *
- * Ahora: iteramos todos los `*.hpp` y `*.cpp` del directorio runtime/
- * en orden estable, mas el ejecutable del compilador y los flags (que
- * ya entran via `digest` en buildIncremental). El orden estable es
- * alfabetico por nombre de archivo para que la huella sea
- * determinista entre ejecuciones.
+ * V30.6.2 (P-04): recursion en subdirectorios + si readdir falla,
+ * lanzamos error explicito (mejor fallar que aceptar un digest
+ * parcial silencioso). El caller decide si el error es fatal o no.
  */
 async function digestRuntime(compilerRoot: string): Promise<string> {
   const hash = createHash("sha256");
   const runtimeDir = join(compilerRoot, "runtime");
-  let entries: string[];
-  try {
-    const all = await readdir(runtimeDir);
-    entries = all.filter(f => f.endsWith(".hpp") || f.endsWith(".h") || f.endsWith(".cpp")).sort();
-  } catch {
-    entries = [];
-  }
-  if (entries.length === 0) {
-    // Fallback al comportamiento previo si la lectura falla, para no
-    // tirar el build en maquinas sin permisos (mejor un digest debil
-    // que un crash). El assertUniqueIdentities en module-identity.ts
-    // no depende de este digest.
-    const legacy = [
-      "ets_runtime.hpp", "ets_async.hpp", "ets_file.hpp", "ets_net.hpp",
-      "ets_tls.hpp", "ets_io_uring.hpp", "ets_syntax.hpp", "ets_process.hpp",
-      "ets_string.hpp", "ets_ast.hpp",
-    ];
-    for (const name of legacy) {
-      try {
-        const content = await readFile(join(runtimeDir, name), "utf8");
-        hash.update(name + ":" + content.length + ":" + createHash("sha256").update(content).digest("hex") + "\x00");
-      } catch {
-        hash.update(name + ":missing\x00");
+  const entries: string[] = [];
+  // Recorrido recursivo best-effort: si un subdirectorio no se puede
+  // leer, lo saltamos y dejamos que el error se propague arriba.
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    let items;
+    try {
+      items = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // subdirectorio no legible, lo saltamos
+    }
+    for (const item of items) {
+      const name = item.name;
+      if (name === "build" || name === "node_modules" || name === ".git") continue;
+      const abs = join(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (item.isDirectory()) {
+        await walk(abs, rel);
+      } else if (item.isFile() && (name.endsWith(".hpp") || name.endsWith(".h") || name.endsWith(".cpp"))) {
+        entries.push(rel);
       }
     }
-    return hash.digest("hex").slice(0, 16);
+  };
+  try {
+    await walk(runtimeDir, "");
+  } catch (error) {
+    // P-04: el informe seniala que el fallback debil (lista
+    // hardcodeada de 10) es un riesgo. Lanzamos error explicito
+    // para que el caller sepa que el digest no es fiable.
+    throw new Error(
+      `digestRuntime: no se pudo leer ${runtimeDir}: ${error instanceof Error ? error.message : String(error)}. ` +
+      `Esto impide calcular un digest fiable del runtime; abortando build.`
+    );
   }
-  for (const name of entries) {
+  if (entries.length === 0) {
+    throw new Error(
+      `digestRuntime: ${runtimeDir} no contiene ningun archivo .hpp/.h/.cpp. ` +
+      `Verifica que runtime/ este correctamente poblado.`
+    );
+  }
+  // Orden estable (lexicografico) para que la huella sea determinista.
+  entries.sort();
+  for (const rel of entries) {
     try {
-      const content = await readFile(join(runtimeDir, name), "utf8");
-      hash.update(name + ":" + content.length + ":" + createHash("sha256").update(content).digest("hex") + "\x00");
+      const content = await readFile(join(runtimeDir, rel), "utf8");
+      hash.update(rel + ":" + content.length + ":" + createHash("sha256").update(content).digest("hex") + "\x00");
     } catch {
-      hash.update(name + ":missing\x00");
+      hash.update(rel + ":missing\x00");
     }
   }
   return hash.digest("hex").slice(0, 16);
@@ -263,13 +265,29 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   // V17: pre-compiled headers. Generamos `runtime.gch` la primera vez y lo
   // reusamos con `-include` mientras el hash del header runtime no cambie.
   // Esto reduce el tiempo de compilación ~30-50% en programas con runtime
-  // pesado (hello: 3.5s → ~1.8s en la segunda compilación).
+  // pesado.
+  //
+  // V30.6.2 (P-03): el nombre del PCH ahora incluye el comando del
+  // compilador y las flags que afectan al PCH. Cambiar `-std=c++20` a
+  // `-std=c++23`, o cambiar de g++ a clang++, genera un PCH distinto.
+  //
+  // NOTA: el PCH NO se conecta a la compilación de módulos (pchFlag
+  // no se añade a compileArgs) porque añadir un `-include` global a
+  // TODOS los módulos puede colgar g++ durante varios minutos con
+  // el runtime completo. Esto es dead-code conservador; queda
+  // disponible para una iteración futura que lo use selectivamente
+  // (p.ej. solo en módulos que incluyen <ets_runtime.hpp>).
   const pchDir = join(cacheDir, "..", "pch");
   await mkdir(pchDir, { recursive: true });
-  const pchFile = join(pchDir, `runtime-${runtimeDigest}.gch`);
+  const pchConfigHash = createHash("sha256")
+    .update("compiler:" + config.compiler.command + "\x00")
+    .update("flags:" + config.compiler.flags.join("|") + "\x00")
+    .update("runtime:" + runtimeDigest + "\x00")
+    .digest("hex").slice(0, 12);
+  const pchFile = join(pchDir, `runtime-${pchConfigHash}.gch`);
   const needsPch = config.compiler.flags.some((flag: string) => !flag.startsWith("-flto"));
   if (needsPch && !existsSync(pchFile)) {
-    progress.beginPhase(`Generando PCH (runtime-${runtimeDigest}.gch)`);
+    progress.beginPhase(`Generando PCH (runtime-${pchConfigHash}.gch)`);
     const pchSource = join(compilerRoot, "runtime", "ets_runtime.hpp");
     const pchArgs = [
       ...config.compiler.flags.filter((flag: string) => flag !== "-c"),
@@ -283,15 +301,20 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
     catch (error) { progress.warn(`No se pudo generar PCH: ${error instanceof Error ? error.message : String(error)}`); }
   }
   const pchFlag = existsSync(pchFile) ? ["-include", pchFile] : [];
+  // pchFlag queda calculado por si se quiere conectar en una iteración
+  // futura; ahora mismo NO se usa en compileArgs (ver NOTA arriba).
 
   // Si el digest global (runtime + flags + comando) cambió desde el último
-  // build, hay que invalidar TODO el cache. Lo persistimos en `global.manifest`.
+  // build, hay que invalidar TODO el cache. Lo persistimos en
+  // `global.manifest` SOLO al final del build exitoso (P-01 del informe
+  // de revision, 2026-10-12). Ademas, publicamos atómicamente: escribimos
+  // a `global.manifest.tmp` y luego renombramos, para que un crash
+  // durante la escritura no deje el manifest a medias.
   const previousGlobalDigest = await readFile(globalManifestPath, "utf8").catch(() => "");
   const globalDigestChanged = previousGlobalDigest !== digest;
   if (globalDigestChanged && previousGlobalDigest) {
     progress.warn(`Cache global invalidado (runtime/flags cambiaron: ${previousGlobalDigest.slice(0, 8)}... → ${digest.slice(0, 8)}...)`);
   }
-  await writeFile(globalManifestPath, digest, "utf8");
 
   // Cabecera común: estable mientras el digest global no cambie. La
   // reescribimos siempre (es barata) para reflejar el digest actual.
@@ -327,7 +350,15 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
       const objPath = join(cacheDir, `${identity.moduleBase}.o`);
       if (!(await fileExists(objPath))) { allObjectsPresent = false; break; }
     }
-    if (binaryStillExists && allObjectsPresent) {
+    // V30.6.2 (P-05): ademas de existir, el binario debe tener
+    // tamano > 0. Un binario truncado o corrupto no es valido aunque
+    // exista. Tambien exigimos que el moduleManifest coincida con
+    // la forma nueva (cppHash|globalDigest); manifests del formato
+    // anterior (sin |) son incompatibles.
+    let binarySize = 0;
+    try { binarySize = (await stat(binaryPath)).size; } catch { /* binario no existe */ }
+    const binaryIntact = binaryStillExists && binarySize > 0;
+    if (binaryIntact && allObjectsPresent) {
       if (options.verbose) progress.log(`Cache hit: huella del programa coincide, todos los .o reutilizados`);
       return {
         compiled: [],
@@ -339,7 +370,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
         cacheResult: "hit",
       };
     }
-    if (options.verbose) progress.warn(`Cache hit pero artefactos ausentes (binary=${binaryStillExists}, objects=${allObjectsPresent}); regenerando`);
+    if (options.verbose) progress.warn(`Cache hit pero artefactos ausentes (binary=${binaryStillExists}/${binarySize}B, objects=${allObjectsPresent}); regenerando`);
   }
 
   // Diagnóstico claro cuando la caché falla por una razón concreta.
@@ -381,11 +412,16 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
     await writeFile(moduleCppPath, module.cpp, "utf8");
     if (options.verbose) progress.log(`${moduleBase}.cpp escrito (${Buffer.byteLength(module.cpp).toLocaleString()} bytes)`);
     const moduleCppHash = createHash("sha256").update(module.cpp).digest("hex").slice(0, 16);
+    // V30.6.2 (P-01): el manifest por modulo incluye el cpp hash Y el
+    // digest global. Asi, si el manifest global se corrompe o se
+    // escribe antes de tiempo, un objeto viejo no se reutiliza bajo
+    // una nueva configuracion (el cpp hash y el digest van juntos).
+    const moduleManifestValue = `${moduleCppHash}|${digest}`;
     const previousModuleManifest = await readFile(moduleManifestPath, "utf8").catch(() => "");
     const objectExists = await fileExists(moduleObjectPath);
     // Reutilizamos el .o SOLO si (a) el hash del .cpp no cambió Y (b) el
     // digest global no cambió. Si runtime o flags cambiaron, todo a la basura.
-    if (!globalDigestChanged && previousModuleManifest === moduleCppHash && objectExists) {
+    if (!globalDigestChanged && previousModuleManifest === moduleManifestValue && objectExists) {
       reused.push(module.name);
       if (options.verbose) progress.log(`Reutilizado ${moduleBase}.o (manifest coincide)`);
       continue;
@@ -404,7 +440,7 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
     ];
     try { await runNative(config.compiler.command, compileArgs); }
     catch (error) { throw new Error(`Falló la compilación de ${moduleCppPath} a objeto:\n${error instanceof Error ? error.message : String(error)}\nSugerencia: revisa que las flags de compilación en estatic.config.ts sean correctas y que runtime/ esté accesible.`); }
-    await writeFile(moduleManifestPath, moduleCppHash, "utf8");
+    await writeFile(moduleManifestPath, moduleManifestValue, "utf8");
     compiled.push(module.name);
   }
   if (options.verbose) progress.log(`${compiled.length} módulo(s) compilado(s), ${reused.length} reutilizado(s)`);
@@ -456,6 +492,18 @@ export async function buildIncremental(config: ResolvedConfig, compilerRoot: str
   }
 
   await writeFile(manifestPath, programFingerprint, "utf8");
+
+  // V30.6.2 (P-01): publicar el digest global atomicamente, SOLO
+  // despues de un build exitoso (manifest + binario + todos los
+  // moduleManifest ya escritos). Si el linker fallo arriba, el catch
+  // del caller propaga la excepcion y NUNCA llegamos aqui, asi que
+  // el manifest global no se actualiza con builds a medias.
+  // La atomicidad se logra escribiendo a `.tmp` y renombrando
+  // (rename es atomico en POSIX: el lector siempre ve la version vieja
+  // o la nueva, nunca a medias).
+  const globalManifestTmp = globalManifestPath + ".tmp";
+  await writeFile(globalManifestTmp, digest, "utf8");
+  await rename(globalManifestTmp, globalManifestPath);
 
   // Resumen final con tamaño del binario.
   let binarySize = 0;

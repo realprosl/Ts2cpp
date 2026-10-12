@@ -22,7 +22,8 @@
 // que llama debe detectarlo con un Set antes de empezar el build.
 
 import { createHash } from "node:crypto";
-import { basename, extname, isAbsolute, relative, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 
 export interface ModuleIdentity {
   /** Ruta canónica del archivo (realpath). */
@@ -42,24 +43,33 @@ export interface ModuleIdentity {
 }
 
 /**
- * Normaliza una ruta a un identificador C++-seguro y único.
+ * Normaliza una ruta a una representacion canonica estable frente a
+ * representaciones equivalentes del mismo archivo (relativas vs
+ * absolutas, `./` prefix, separadores Windows/Unix, symlinks).
+ * V30.6.2 (P-02 del informe de revision, 2026-10-12).
  *
  * Pasos:
- *  1. Resolver a ruta absoluta si no lo es.
- *  2. Hacer relativa a `baseDirectory` (si está dentro); si no, usar basename.
- *  3. Reemplazar separadores por `_`.
- *  4. Filtrar caracteres no `[A-Za-z0-9_]`.
- *  5. Añadir sufijo de 8 chars del hash SHA-256 de la ruta absoluta.
+ *  1. `resolve(baseDirectory, file)` para obtener una ruta absoluta.
+ *  2. `realpath` para resolver symlinks (best-effort).
+ *  3. Normalizar separadores a `/`.
  *
- * El hash garantiza unicidad incluso si dos rutas se mapean al mismo
- * nombre tras la normalización (p.ej. `a-b` y `a_b`).
+ * Esto garantiza que `./src/a.ts`, `src/a.ts` y `/abs/proj/src/a.ts`
+ * produzcan el MISMO hash.
  */
 function normalizePath(file: string, baseDirectory: string): { rel: string; abs: string } {
-  const abs = isAbsolute(file) ? file : file;
+  const resolved = resolve(baseDirectory, file);
+  let abs: string;
+  try {
+    // best-effort: si falla (e.g. el archivo no existe todavia),
+    // usamos la ruta resuelta sin realpath.
+    abs = realpathSync(resolved);
+  } catch {
+    abs = resolved;
+  }
+  abs = abs.split(sep).join("/");
   let rel: string;
   try {
     const r = relative(baseDirectory, abs);
-    // Si la ruta es alcanzable desde baseDirectory, usarla (sin `./`).
     if (r && !r.startsWith("..") && !isAbsolute(r)) rel = r.split(sep).join("/");
     else rel = basename(abs);
   } catch {
