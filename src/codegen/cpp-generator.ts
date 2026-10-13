@@ -792,7 +792,13 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    for (const node of classes) lines.push(this.classDeclaration(node), "");
+    // V30.12.3: emitir las definiciones de clase en orden topológico para
+    // que cada clase esté completa cuando otra la mencione por valor.
+    // Sin esto, `class Holder { a: A }` antes de `class A { x: i8 }` hace
+    // que g++ se queje con "field 'a' has incomplete type 'A'".
+    const topoSortClassesResult = this.topoSortClasses(classes);
+    if (topoSortClassesResult.cyclicNames.length) this.reportClassCycle(topoSortClassesResult.cyclicNames);
+    for (const node of topoSortClassesResult.ordered) lines.push(this.classDeclaration(node), "");
     for (const fn of functions) {
       // V30.4: renombrar `main` -> `ets_user_main` en la forward
       // declaration.
@@ -891,7 +897,11 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    for (const node of allClasses) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
+    // V30.12.3: orden topológico para los forward decls de clase (consistente
+    // con las definiciones más abajo).
+    const headerTopoResult = this.topoSortClasses(allClasses);
+    if (headerTopoResult.cyclicNames.length) this.reportClassCycle(headerTopoResult.cyclicNames);
+    for (const node of headerTopoResult.ordered) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
     if (allClasses.length) lines.push("");
     // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
     // externamente). El cpp emite `extern "C" <sig>;` y el linker las
@@ -908,7 +918,10 @@ export class CppGenerator {
       }
     }
     if (headerFunctions.length) lines.push("");
-    for (const node of allClasses) lines.push(this.classDeclaration(node), "");
+    // V30.12.3: definiciones de clase en orden topológico (ver comentario
+    // sobre las forward decls más arriba). Cada clase está completa cuando
+    // otra la referencia por valor.
+    for (const node of headerTopoResult.ordered) lines.push(this.classDeclaration(node), "");
     for (const fn of headerFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
     // V15: si la variable es `const` con initializer literal, el header
       // usa `extern const` (no `extern constexpr` — eso requiere definición
@@ -942,7 +955,10 @@ export class CppGenerator {
     const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
-    for (const node of privateClasses) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
+    // V30.12.3: orden topológico para las forward decls de clases privadas.
+    const privateTopoResult = this.topoSortClasses(privateClasses);
+    if (privateTopoResult.cyclicNames.length) this.reportClassCycle(privateTopoResult.cyclicNames);
+    for (const node of privateTopoResult.ordered) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
     if (privateClasses.length) lines.push("");
     // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
     // una vez en C++; van en la definición, no en la forward).
@@ -2978,6 +2994,156 @@ export class CppGenerator {
     return `[]() -> ${cppType(U)} { ${cppType(U)} _ets_acc = ${initStr}; for (const auto& _ets_item : ${arrStr}) { if (${filterLambda}(_ets_item)) { _ets_acc = (${opStr})(_ets_acc, (${mapLambda})(_ets_item)); } } return _ets_acc; }()`;
   }
 
+  // V30.12.3: topological ordering for class definitions.
+  //
+  // El dialecto permite clases que se referencian entre sí mediante forward
+  // declarations (#188), pero una definición `struct Holder { A a; }` requiere
+  // que `A` ya esté completo. Emitir las clases en el orden del AST falla
+  // cuando el usuario declara `Holder` antes que `A` (escenario realista en
+  // archivos grandes con dependencias one-way).
+  //
+  // Construimos un grafo dirigido `C -> D` cuando la definición de `C`
+  // menciona `D` en un campo, parámetro de método o tipo de retorno de método
+  // (recursivo a través de uniones, genéricos `Array<D>`/`Promise<D>`,
+  // intersections, function types, tuplas, arrays fijos, mapas, sets). Las
+  // menciones en cuerpos de método, variables locales, o comentarios, NO
+  // crean aristas (esos usos solo necesitan un forward decl, ya satisfecho).
+  //
+  // Devolvemos:
+  //   - `ordered`: clases en orden topológico (sin ciclos).
+  //   - `cyclicNames`: nombres de clases en SCCs cíclicas (size > 1 o self-
+  //     loop). Las clases del ciclo se devuelven al final preservando el
+  //     orden del AST; el codegen las deja solo como forward decl y emite
+  //     un warning claro (g++ se quejará de "incomplete type" — el dialecto
+  //     no soporta referencias circulares por valor; habría que usar `ptr<D>`
+  //     o `weak<D>` para romper el ciclo).
+  private topoSortClasses(classes: ClassDeclaration[]): {
+    ordered: ClassDeclaration[];
+    cyclicNames: string[];
+  } {
+    // `deps[C]` = clases de las que C depende (campos/params/retornos que
+    // son tipos de clase). El grafo de dependencias es: "si C está en
+    // deps[D], entonces D tiene que estar definido antes que C". El orden
+    // topológico coloca primero las clases sin dependencias (no esperan
+    // a nadie), luego las que sólo dependen de las ya emitidas.
+    const deps = new Map<string, Set<string>>();
+    for (const node of classes) {
+      const refs = new Set<string>();
+      for (const field of node.fields) this.collectClassRefs(field.type, refs);
+      for (const method of node.methods) {
+        for (const param of method.params) this.collectClassRefs(param.type, refs);
+        this.collectClassRefs(method.returnType, refs);
+      }
+      // Self-loops no cuentan (la propia clase aparece porque el tipo es `C`).
+      refs.delete(node.name);
+      // Sólo aristas a clases declaradas en este programa (lo demás se
+      // asume completo — builtins, stdlib, runtime).
+      const filtered = new Set<string>();
+      for (const ref of refs) if (this.classNames.has(ref)) filtered.add(ref);
+      deps.set(node.name, filtered);
+    }
+    const byName = new Map<string, ClassDeclaration>();
+    for (const node of classes) byName.set(node.name, node);
+    // Kahn's en el grafo "reverse-deps": un nodo está listo cuando TODAS
+    // sus deps ya están emitidas. `unsatisfied[C]` = deps que aún no se
+    // emitieron; arrancamos con el total y decrementamos cuando emitimos.
+    const unsatisfied = new Map<string, number>();
+    for (const node of classes) unsatisfied.set(node.name, (deps.get(node.name) ?? new Set()).size);
+    const ready: ClassDeclaration[] = [];
+    for (const node of classes) if ((unsatisfied.get(node.name) ?? 0) === 0) ready.push(node);
+    const ordered: ClassDeclaration[] = [];
+    const placed = new Set<string>();
+    while (ready.length) {
+      // Tomar el primero del AST order entre los ready (estabilidad).
+      ready.sort((a, b) => classes.indexOf(a) - classes.indexOf(b));
+      const next = ready.shift()!;
+      ordered.push(next);
+      placed.add(next.name);
+      // Para cada clase C que dependía de `next`, decrementar unsatisfied.
+      for (const [cName, cDeps] of deps) {
+        if (!cDeps.has(next.name)) continue;
+        if (placed.has(cName)) continue;
+        const newCount = (unsatisfied.get(cName) ?? 0) - 1;
+        unsatisfied.set(cName, newCount);
+        if (newCount === 0) ready.push(byName.get(cName)!);
+      }
+    }
+    // Lo que quedó sin colocar pertenece a SCCs cíclicas. Preservar orden
+    // del AST (revertimos `ready` para que los ready-with-cycles se emitan
+    // primero, manteniendo el orden AST de los colocados).
+    const unplaced = classes.filter(node => !placed.has(node.name));
+    const cyclicNames = unplaced.map(node => node.name);
+    return { ordered: [...ordered, ...unplaced], cyclicNames };
+  }
+  // V30.12.3: warning al usuario cuando se detectan referencias circulares
+  // entre clases por valor (no por indirección `ptr<X>`). El dialecto no las
+  // soporta: el compilador C++ emitirá "field has incomplete type" sobre las
+  // clases del SCC. La solución es romper el ciclo con `ptr<D>` o `weak<D>`.
+  // Emitimos por stderr para que sea visible en CI; el codegen no aborta
+  // (queremos que el programa compile lo máximo posible y que g++ reporte
+  // el error concreto en la posición correcta).
+  private reportClassCycle(cyclicNames: string[]): void {
+    if (!cyclicNames.length) return;
+    const list = cyclicNames.map(n => "`" + n + "`").join(", ");
+    const proc = (globalThis as { process?: { stderr: { write: (s: string) => void } } }).process;
+    proc?.stderr.write(
+      "warning(V30.12.3): ciclo de dependencias entre clases detectado: " + list + ". " +
+      "El dialecto no soporta referencias circulares por valor — usa `ptr<T>` o `weak<T>` para romper el ciclo.\n",
+    );
+  }
+  // V30.12.3: walker recursivo de TypeName que extrae referencias a clases
+  // del dialecto. Recorre unions/intersections, genéricos (incluido `Array<T>`
+  // / `Promise<T>` / `ptr<T>` / `Set<T>` / `Map<K,V>`), function types,
+  // tuplas, arrays fijos. Las menciones a primitivos, stdlib o tipos runtime
+  // se ignoran — sólo conservamos las que aparecen en `this.classNames` (que
+  // es lo que `prepare()` pobló con las clases declaradas en el programa).
+  private collectClassRefs(type: TypeName, refs: Set<string>): void {
+    if (!type) return;
+    if (isUnionType(type)) { for (const m of unionMembers(type)) this.collectClassRefs(m, refs); return; }
+    if (isIntersectionType(type)) { for (const m of intersectionMembers(type)) this.collectClassRefs(m, refs); return; }
+    if (isTupleType(type)) { for (const e of tupleElements(type)) this.collectClassRefs(e, refs); return; }
+    if (isArrayType(type)) { this.collectClassRefs(arrayElement(type), refs); return; }
+    if (isFixedArrayType(type)) {
+      const el = fixedArrayElement(type);
+      if (el) this.collectClassRefs(el, refs);
+      return;
+    }
+    if (isFunctionType(type)) {
+      for (const p of functionParameters(type)) this.collectClassRefs(p, refs);
+      this.collectClassRefs(functionResult(type), refs);
+      return;
+    }
+    if (isMapType(type)) {
+      if (isGenericType(type)) {
+        const args = genericArguments(type);
+        if (args.length >= 1) this.collectClassRefs(args[0], refs);
+        if (args.length >= 2) this.collectClassRefs(args[1], refs);
+      }
+      return;
+    }
+    if (isSetType(type)) {
+      if (isGenericType(type)) {
+        const args = genericArguments(type);
+        if (args.length >= 1) this.collectClassRefs(args[0], refs);
+      }
+      return;
+    }
+    if (isPromiseType(type)) { this.collectClassRefs(promiseResult(type), refs); return; }
+    if (isGenericType(type)) {
+      const base = genericBase(type);
+      // ptr<T>, weak<T>, constPtr<T>, ref<T>, constRef<T>, readonly<T> se
+      // resuelven por indirección (T&) y NO requieren T completo → skip.
+      if (["ptr", "weak", "constPtr", "ref", "constRef"].includes(base)) return;
+      if (base === "readonly") return;
+      // Para genéricos "tipo de dato" (Array<T>) seguimos al argumento; pero
+      // si el base genérico NO es una clase del dialecto, no nos interesa.
+      for (const arg of genericArguments(type)) this.collectClassRefs(arg, refs);
+      return;
+    }
+    // Caso base: un TypeName "plano". Si es una clase declarada en el
+    // programa, agregala. Ignorar primitivos, void, unknown.
+    if (this.classNames.has(type)) refs.add(type);
+  }
   // V7.1: ¿`expr` es una fuente fusible para `arr.filter(...).map(...).reduce(...)`?
   // Acepta identificadores, accesos a miembro simples, llamadas a funciones
   // puras (no filter/map/reduce), y literales de array.

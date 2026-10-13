@@ -675,3 +675,108 @@ test("codegen V30.12.1: match en función libre (no método) NO se ve afectado p
   assert.doesNotMatch(out, /\[=,\s*this\]/);
 });
 
+// V30.12.3: codegen emite las definiciones de clase en orden topológico para
+// que cada clase esté completa cuando otra la referencia por valor.
+// ---------------------------------------------------------------------------
+
+/** Helper: extrae el orden de aparición de `struct X {` (definiciones, no
+ *  los forward decls `struct X;`) en el cpp generado. */
+function structDefinitionOrder(cppSource: string): string[] {
+  const seen = new Set<string>();
+  const order: string[] = [];
+  const defRe = /^struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gm;
+  for (const m of cppSource.matchAll(defRe)) {
+    const name = m[1];
+    if (name && !seen.has(name)) { seen.add(name); order.push(name); }
+  }
+  return order;
+}
+
+test("codegen V30.12.3: dos clases con dependencia simple se ordenan topológicamente", () => {
+  // Holder referencia A por valor en su campo → A debe definirse ANTES que
+  // Holder para que `A a` esté completo. El AST pone Holder primero; el
+  // codegen tiene que emitir el forward decl + def de A primero.
+  const out = cpp(`
+    class Holder {
+      a: A
+      constructor() { this.a = new A() }
+    }
+    class A {
+      x: i8
+      constructor() { this.x = 42 }
+    }
+    const h: Holder = new Holder()
+  `);
+  const order = structDefinitionOrder(out);
+  // `A` debe aparecer antes que `Holder` en las DEFINICIONES (líneas
+  // `struct A {` y `struct Holder {`, no en los forward decls `;`).
+  const ai = order.indexOf("A");
+  const hi = order.indexOf("Holder");
+  assert.ok(ai >= 0 && hi >= 0, `falta A o Holder. Definiciones: ${order.join(", ")}. Output:\n${out}`);
+  assert.ok(ai < hi, `A debe definirse antes que Holder, pero el orden es ${order.join(", ")}`);
+});
+
+test("codegen V30.12.3: tres clases en cadena A→B→C se definen en orden topológico", () => {
+  // Top se construye sobre Mediano, Mediano sobre Base. AST: Top, Mediano,
+  // Base. Tras el sort el orden debe ser Base, Mediano, Top (inverso del
+  // AST) para que cada clase esté completa cuando otra la mencione.
+  const out = cpp(`
+    class Top {
+    medio: Mediano
+    constructor() { this.medio = new Mediano() }
+    }
+    class Mediano {
+      base: Base
+      constructor() { this.base = new Base() }
+    }
+    class Base {
+      leaf: i8
+      constructor() { this.leaf = 1 }
+    }
+    const t: Top = new Top()
+  `);
+  const order = structDefinitionOrder(out);
+  const baseAt = order.indexOf("Base");
+  const medAt = order.indexOf("Mediano");
+  const topAt = order.indexOf("Top");
+  assert.ok(baseAt >= 0 && medAt >= 0 && topAt >= 0,
+    `falta alguna clase. Definiciones: ${order.join(", ")}. Output:\n${out}`);
+  assert.ok(baseAt < medAt, `Base debe ir antes que Mediano, orden = ${order.join(", ")}`);
+  assert.ok(medAt < topAt, `Mediano debe ir antes que Top, orden = ${order.join(", ")}`);
+});
+
+test("codegen V30.12.3: ciclo A↔B se detecta y se emite warning por stderr", () => {
+  // Las dos clases se referencian entre sí por valor. El dialecto no las
+  // soporta (cualquier forward decl que pongamos es inmediatamente
+  // invalidada por la definición de la otra). El codegen detecta el SCC
+  // y emite un warning explicativo por stderr.
+  const src = `
+    class A { b: B; constructor() { this.b = new B() } }
+    class B { a: A; constructor() { this.a = new A() } }
+    const aa: A = new A()
+  `;
+  // Capturamos stderr para verificar que el warning sale sin abortar.
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let warning = "";
+  let fakeWrite: ((s: string | Uint8Array) => boolean) | null = null;
+  fakeWrite = ((chunk: string | Uint8Array): boolean => {
+    warning += typeof chunk === "string" ? chunk : "";
+    return true;
+  }) as unknown as (s: string | Uint8Array) => boolean;
+  (process.stderr as unknown as { write: typeof fakeWrite }).write = fakeWrite;
+  let compileError: unknown = null;
+  let out = "";
+  try {
+    out = compile(src).cpp;
+  } catch (err) {
+    compileError = err;
+  } finally {
+    (process.stderr as unknown as { write: typeof originalWrite }).write = originalWrite;
+  }
+  // El codegen NO aborta (queremos que g++ reporte el error concreto con
+  // su mejor diagnóstico). Solo emitimos warning + salida con orden AST.
+  assert.ok(out.length > 0, "el codegen debe producir salida incluso con ciclo");
+  assert.ok(compileError === null, `el codegen no debe lanzar, lanzó: ${compileError}`);
+  assert.match(warning, /V30\.12\.3/);
+  assert.match(warning, /A.*B|ciclo/);
+});
