@@ -77,3 +77,171 @@ libuv** (el único backend desde V29.3). No hay un reactor intermedio:
   `runtime/libuv/tests/test_multi_loop.cpp`.
 
 Más detalle en `docs/runtime-async-libuv.md`.
+
+## Cómo añadir una función nueva al runtime (workflow paso a paso)
+
+Esta sección documenta el camino que sigue una función desde "quiero
+exponer `foo(x)` en el dialecto" hasta "el test e2e pasa verde". El
+proceso se ha estabilizado tras el PR #183 (V30.10.1); antes había
+pasos implícitos que solo conocían los commits previos.
+
+### 1. Decide la capa
+
+- **Función libre global**: p.ej. `length(s)`, `indexOf(s, needle, fromIndex)`.
+  Va en `runtime/<área>.hpp` y se expone en el dialecto como
+  `foo(args...)`.
+- **Método de un tipo existente**: p.ej. `ets::Server::get(...)`,
+  `ets::HttpResponse::status(...)`. Va como miembro de la clase en el
+  header. El dialecto lo invoca con la sintaxis habitual
+  (`server.get(...)`).
+- **Tipo nuevo**: clase completa. Requiere además registrar su
+  constructor en el type-checker.
+
+### 2. Implementa en C++
+
+- Función simple/inline: en `runtime/ets_<área>.hpp` (header-only).
+- Función pesada o con estado: declara en `.hpp`, define en
+  `runtime/ets_<área>.cpp`. El pre-compilado del runtime
+  (`scripts/build-runtime.sh` y `scripts/postinstall.sh`) se encarga
+  de generar `build/runtime_ets_<área>.o`.
+
+Convenciones (V26+, válidas en todo el runtime):
+
+- `namespace ets` en todo el código.
+- Funciones libres `inline` en headers; clases/struct sin linkage
+  externo salvo `.cpp` con `runtime_ets_<área>`.
+- `[[nodiscard]]` en `Result`, `Task`, y todo lo que devuelve un valor
+  que no debería ignorarse.
+- Naming: snake_case en C++ (`http_param`), PascalCase en el dialecto
+  (`http.param`). El `cpp-generator.ts` hace el mapping.
+- Sin `throw` salvo en wrappers de terceros (httplib, OpenSSL). Si
+  necesitas excepciones, el runner lo detectará por el include y
+  añadirá `-fexceptions` (ver paso 5).
+
+### 3. Expón al dialecto en `src/semantic/type-checker.ts`
+
+- **Global libre**: añadir a la lista/map de builtins. La forma
+  concreta depende de la versión — busca el array `BUILTINS` o el
+  `Map<string, Type>` cerca de las definiciones de tipos primitivos.
+  Especifica `paramTypes` y `returnType` exactamente como los quieres
+  en el dialecto.
+- **Método**: registrar la firma en la tabla correspondiente:
+  `STRING_METHODS`, `ARRAY_METHODS`, `SERVER_METHODS`, etc. Cada
+  tabla tiene `paramTypes: string[]` y `returnType: string`. Si tu
+  método tiene un parámetro cuyo nombre cambia entre el dialecto y
+  C++ (p.ej. `indexOf(needle, fromIndex)` → `indexOf(s, needle, fromIndex)`
+  global), necesitas el workaround documentado en
+  [Bugs conocidos](#bugs-conocidos).
+- **Tipo nuevo**: añade el `class` a la lista de tipos permitidos
+  (puede requerir varias tablas si tiene métodos builtin).
+
+### 4. Verifica que el codegen la emite
+
+El codegen (`src/codegen/cpp-generator.ts`) ya sabe traducir las
+llamadas que pasan por las tablas del paso 3. Si tu función sigue el
+patrón, no hay que tocarlo.
+
+Para verificar:
+
+```bash
+node --experimental-strip-types --no-warnings \
+  src/cli.ts examples/<demo>.ets -o /tmp/x.cpp
+# Mira /tmp/x.cpp y comprueba que la llamada se traduce a
+# ::ets::<nombre>(...) o <objeto>.<método>(...)
+```
+
+Si la firma es especial (parámetro de tipo función, varargs,
+genéricos), puede que el codegen necesite un `case` específico. El
+más común es `ArrayMethodCall` y `StringMethodCall`.
+
+### 5. Headers y flags de compilación
+
+- Si tu header **no está en `runtime/ets_runtime_full.hpp`**,
+  añádelo. El bundle arrastra todo en los tests; sin él, el
+  programa no compila y la culpa parece del usuario.
+- Si tu header usa `throw` (httplib, OpenSSL, futuros wrappers):
+  - Añade el nombre del header al detector de `exceptionFlags` en
+    `test/runner.ts` y `test/e2e/_shared/runner.ts`. El
+    mecanismo actual busca `runtime/ets_http_httplib.hpp` en el
+    `cppText`; si tu header es nuevo, extiende la lista.
+- Si usas **libuv** (cualquier API async, timers, fs, net, dns): el
+  runner ya enlaza `build/runtime_ets_libuv.o` y
+  `build/runtime_ets_net_libuv.o` cuando detecta headers de async.
+- Si usas **OpenSSL/TLS**: el runner añade `-lssl -lcrypto`
+  automáticamente cuando ve `runtime/ets_tls.hpp` en el `cppText`.
+- Si usas **Drogon**: pre-procesa con
+  `etsc <demo>.ets --cpp-drogon` y el codegen emite includes/llamadas
+  a Drogon en vez de httplib.
+
+### 6. Tests
+
+Mínimo recomendado:
+
+- `test/unit/type-checker.test.ts` — verifica que el dialecto
+  acepta la nueva firma. Un test típico:
+  ```ts
+  test("V_NEW: nueva funcion global X", () => {
+    const { checker } = check(`
+      function main(): void {
+        const r: string = myFunc("hello");
+        print(r);
+      }
+    `);
+    assert.ok(checker, "myFunc debe type-checkear");
+  });
+  ```
+- `test/unit/parser.test.ts` — solo si introdujiste sintaxis nueva.
+- `examples/<nombre>.ets` o `test/e2e/<área>/<caso>/` — test
+  end-to-end que compila con `g++` y se ejecuta. Es el que
+  asegura que el header, el codegen, el type-checker y el flag
+  `-fexceptions` (si toca) están todos bien alineados.
+
+Corre los suites:
+
+```bash
+node --experimental-strip-types --no-warnings --test \
+  test/unit/parser.test.ts test/unit/type-checker.test.ts \
+  test/unit/runtime-backends.test.ts test/unit/module-identity.test.ts \
+  test/unit/import-regex.test.ts
+node test/runner.ts
+```
+
+### 7. Workflow de PR
+
+**Importante (lección V30.10.1)**: crea SIEMPRE la rama desde
+`origin/main`, no desde una spike ya mergeada. Las spikes
+mergeadas a main arrastran commits viejos y tu PR mostrará
+conflictos al comparar contra main.
+
+```bash
+git fetch origin main
+git checkout -b spike/vY-X-<slug> origin/main
+# ...trabajo...
+git add -A
+git commit -m "V_Y.X: <resumen>"
+git push -u origin spike/vY-X-<slug>
+gh pr create --base main --head spike/vY-X-<slug> --title "..." --body "..."
+```
+
+Tras mergear, actualiza la memoria con el número de PR y un resumen
+de una línea de lo que aporta.
+
+### Bugs conocidos
+
+- **`indexOf` member vs global** (V30.10.1 y anteriores): la tabla
+  `STRING_METHODS` define `s.indexOf(needle, fromIndex)` con
+  `paramTypes: ["string", "number"]`. Si el usuario escribe
+  `s.indexOf(needle)` (sin `fromIndex`), el type-checker lo acepta
+  con un warning implícito y el codegen pasa el segundo arg como
+  basura. Workaround: usar la función global
+  `indexOf(s, needle, 0)` con `fromIndex=0` explícito.
+- **`Response` colisión con builtin**: el runtime tiene una clase
+  `Response` con `status`/`header`/`send`/`json`. Si tu programa
+  declara `class Response`, colisiona. Renombra a `HttpResponse` o
+  similar. Aplica a cualquier nombre de tipo del runtime.
+- **`const` local en arrow se marca como captura** (V30.10.1 fix):
+  ya resuelto, pero si reaparece en otra rama, ver PR #183.
+- **`listenTcp` es síncrono, no `Promise<Result<...>>`**: a
+  diferencia de `acceptTcp`/`readTcp`/`writeTcp` que sí son
+  async, `listenTcp` retorna `Result<TcpListener>` directamente.
+  No le pongas `await`.
