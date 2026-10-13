@@ -36,6 +36,18 @@ export class CppGenerator {
   private readonly enumUnderlying = new Map<string, "number" | "string">();
   private readonly unionNames: Set<string> = new Set();
   private readonly unionsMap: Map<string, UnionDeclaration> = new Map();
+  // V30.12.2: auto-unions generados automáticamente para soportar
+  // `Array<I>` donde I es una interface. Cada interface con al menos
+  // una clase concreta que tenga campo `kind: string` obtiene un union
+  // sintético `<IFace>_AutoUnion` con una variante por cada clase
+  // implementadora (payload = el tipo de la clase).
+  private readonly autoUnions: Map<string, UnionDeclaration> = new Map();
+  // Conjunto de interfaces cuyo auto-union ya se emitió en este archivo
+  // (header / module / single-TU). Evita redeclaraciones.
+  private readonly autoUnionsEmitted: Set<string> = new Set();
+  // Interfaces que necesitan auto-union porque algún tipo `Array<I>`
+  // aparece en el programa (detectado en `prepare()`).
+  private readonly interfacesNeedingAutoUnion: Set<string> = new Set();
   // Mapa de funciones top-level indexadas por nombre, usado para rellenar
   // argumentos opcionales omitidos en call sites con `optionalNone<T>()`.
   private readonly topLevelFunctions = new Map<string, FunctionDeclaration[]>();
@@ -604,6 +616,112 @@ export class CppGenerator {
     return false;
   }
   private usesUnions(program: Program): boolean { return program.statements.some(s => s.kind === "UnionDeclaration"); }
+  // V30.12.2: tipo C++ de un TypeName, sustituyendo `Array<I>` (con I
+  // interface registrada) por `std::vector<I_AutoUnion>`. Para cualquier
+  // otro tipo delega a `cppType`. Usado en declaraciones de variables
+  // y campos.
+  private cppTypeForVariable(type: TypeName | undefined): string {
+    if (!type || type === "auto" || type === "void") return type ?? "auto";
+    if (isArrayType(type)) return this.arrayCppType(type);
+    if (isGenericType(type) && genericBase(type) === "Array") return this.arrayCppType(type);
+    return cppType(type);
+  }
+  // V30.12.2: nombre C++ del auto-union de una interface. El sufijo
+  // `_AutoUnion` es estable — `emitNewMatch` lo consulta para detectar
+  // si el subject de un match es un auto-union.
+  private autoUnionName(interfaceName: string): string { return `${interfaceName}_AutoUnion`; }
+  // V30.12.2: ¿es `typeName` el nombre del auto-union de una interface
+  // registrada en este programa? Se consulta desde `emitNewMatch`.
+  private isAutoUnionType(typeName: TypeName | undefined): boolean {
+    if (!typeName) return false;
+    for (const name of this.autoUnions.keys()) if (this.autoUnionName(name) === typeName) return true;
+    return false;
+  }
+  // V30.12.2: recorre los `declaredType` de variables y los tipos de
+  // campos de clase/interface para encontrar interfaces I tales que
+  // aparece `I[]` (o `Array<I>`). El dialecto no tiene sintaxis
+  // explícita `implements`, así que después, en `buildAutoUnions`,
+  // decidimos qué clases implementan cada interface.
+  private collectInterfacesNeedingAutoUnion(statements: Statement[]): void {
+    const visit = (type: TypeName | undefined): void => {
+      if (!type) return;
+      if (isArrayType(type)) {
+        const inner = arrayElement(type);
+        if (this.interfaceNames.has(inner)) this.interfacesNeedingAutoUnion.add(inner);
+        return;
+      }
+      if (isGenericType(type) && genericBase(type) === "Array") {
+        const arg = genericArguments(type)[0];
+        if (arg && this.interfaceNames.has(arg)) this.interfacesNeedingAutoUnion.add(arg);
+      }
+    };
+    for (const stmt of statements) {
+      if (stmt.kind === "VariableDeclaration" && stmt.declaredType) visit(stmt.declaredType);
+      if (stmt.kind === "ClassDeclaration") for (const field of stmt.fields) visit(field.type);
+      if (stmt.kind === "InterfaceDeclaration") for (const field of stmt.fields) visit(field.type);
+    }
+  }
+  // V30.12.2: sintetiza un `UnionDeclaration` por cada interface en
+  // `interfacesNeedingAutoUnion`. Una clase cuenta como "implementadora"
+  // si tiene campo `kind: string`. Se ordenan alfabéticamente para
+  // emisión determinista. El union NO se emite aquí — solo se registra;
+  // la emisión ocurre en `emitAutoUnionDeclarations()`.
+  private buildAutoUnions(): void {
+    const taggedClasses = Array.from(this.classesByName.values())
+      .filter(cls => cls.fields.some(field => field.name === "kind" && field.type === "string"))
+      .map(cls => cls.name)
+      .sort();
+    for (const ifaceName of this.interfacesNeedingAutoUnion) {
+      if (this.autoUnions.has(ifaceName)) continue;
+      const variants = taggedClasses.map((className): UnionVariant => ({
+        name: className,
+        payload: className,
+        span: { start: { offset: 0, line: 0, column: 0 }, end: { offset: 0, line: 0, column: 0 } },
+      }));
+      const union: UnionDeclaration = {
+        kind: "UnionDeclaration",
+        name: this.autoUnionName(ifaceName),
+        typeParameters: [],
+        variants,
+        span: { start: { offset: 0, line: 0, column: 0 }, end: { offset: 0, line: 0, column: 0 } },
+      };
+      this.autoUnions.set(ifaceName, union);
+    }
+  }
+  // V30.12.2: emite los auto-unions pendientes. Se llama una vez por
+  // archivo (header, module, single-TU), tras los unions del usuario
+  // y antes de las clases (los payloads referencian tipos de clase).
+  private emitAutoUnionDeclarations(): string[] {
+    const out: string[] = [];
+    for (const [ifaceName, union] of this.autoUnions) {
+      if (this.autoUnionsEmitted.has(ifaceName)) continue;
+      out.push(`// V30.12.2: auto-union generado para Array<${ifaceName}>.`, this.unionDeclaration(union), "");
+      this.autoUnionsEmitted.add(ifaceName);
+    }
+    return out;
+  }
+  // V30.12.2: traduce el tipo del elemento de un array. Si es una
+  // interface registrada con auto-union, devuelve el nombre del
+  // auto-union. Si es una interface sin auto-union, lanza error claro.
+  private arrayElementCppType(elementType: TypeName): string {
+    if (this.interfaceNames.has(elementType)) {
+      const union = this.autoUnions.get(elementType);
+      if (!union) throw new Error(`Array<${elementType}>: la interface ${elementType} no tiene clases concretas con campo \`kind: string\` para generar el auto-union. Define una clase \`class ${elementType}_Impl { kind: string; ... }\` o usa un tipo concreto.`);
+      if (union.variants.length === 0) throw new Error(`Array<${elementType}>: la interface ${elementType} no tiene variantes en su auto-union (ninguna clase concreta con campo \`kind: string\`).`);
+      return this.autoUnionName(elementType);
+    }
+    return cppType(elementType);
+  }
+  // V30.12.2: tipo C++ de un array, sustituyendo el elemento si es
+  // una interface registrada.
+  private arrayCppType(type: TypeName): string {
+    if (isArrayType(type)) return `std::vector<${this.arrayElementCppType(arrayElement(type))}>`;
+    if (isGenericType(type) && genericBase(type) === "Array") {
+      const arg = genericArguments(type)[0];
+      if (arg) return `std::vector<${this.arrayElementCppType(arg)}>`;
+    }
+    return cppType(type);
+  }
   // V1.3: dado un TypeName resuelto por el type-checker, devuelve el
   // UnionDeclaration si representa una tagged union declarada en el
   // programa. Usa los helpers de `type-system.ts` (`isGenericType` +
@@ -785,7 +903,17 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    for (const node of classes) lines.push(this.classDeclaration(node), "");
+    // V30.12.2: auto-unions para los `Array<I>` del programa. Van
+    // DESPUÉS de los unions del usuario y ANTES de las clases (los
+    // payloads referencian tipos de clase).
+    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
+    // V30.12.3: emitir las definiciones de clase en orden topológico para
+    // que cada clase esté completa cuando otra la mencione por valor.
+    // Sin esto, `class Holder { a: A }` antes de `class A` haría que g++
+    // se queje con "field 'a' has incomplete type 'A'".
+    const classOrder = this.topoSortClasses(classes);
+    if (classOrder.cyclicNames.length) this.reportClassCycle(classOrder.cyclicNames);
+    for (const node of classOrder.ordered) lines.push(this.classDeclaration(node), "");
     for (const fn of functions) {
       // V30.4: renombrar `main` -> `ets_user_main` en la forward
       // declaration.
@@ -831,7 +959,9 @@ export class CppGenerator {
       // usan heap y no son `constexpr` en C++ estándar (el ctor de std::string
       // no es literal type). Los arrays/objects tampoco lo son aquí.
       const canBeConstexpr = typeof variable.constValue !== "string" && variable.constValue !== null;
-      lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppType(type)} ${cppName} = ${initializer};`);
+      // V30.12.2: `cppTypeForVariable` para que `Array<I>` se emita como
+      // `std::vector<I_AutoUnion>` en la variable top-level del .cpp.
+      lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${this.cppTypeForVariable(type)} ${cppName} = ${initializer};`);
     }
     if (simpleTopLevel.length) lines.push("");
     // V18: las funciones con `@cpp_name` se emiten como `extern "C"` en lugar
@@ -884,7 +1014,16 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    for (const node of allClasses) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
+    // V30.12.2: auto-unions en el header para que las declaraciones
+    // `extern std::vector<IFace_AutoUnion>` y los usos en otros módulos
+    // compilen.
+    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
+    // V30.12.3: orden topológico para forward decls (consistencia con
+    // las definiciones más abajo). Si hubiera ciclos, las forward decls
+    // se emiten en el orden devuelto por `topoSortClasses`.
+    const headerClassOrder = this.topoSortClasses(allClasses);
+    if (headerClassOrder.cyclicNames.length) this.reportClassCycle(headerClassOrder.cyclicNames);
+    for (const node of headerClassOrder.ordered) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
     if (allClasses.length) lines.push("");
     // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
     // externamente). El cpp emite `extern "C" <sig>;` y el linker las
@@ -901,7 +1040,10 @@ export class CppGenerator {
       }
     }
     if (headerFunctions.length) lines.push("");
-    for (const node of allClasses) lines.push(this.classDeclaration(node), "");
+    // V30.12.3: definiciones de clase en orden topológico (ver comentarios
+    // sobre las forward decls más arriba). Cada clase está completa cuando
+    // otra la referencia por valor.
+    for (const node of headerClassOrder.ordered) lines.push(this.classDeclaration(node), "");
     for (const fn of headerFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
     // V15: si la variable es `const` con initializer literal, el header
       // usa `extern const` (no `extern constexpr` — eso requiere definición
@@ -909,7 +1051,9 @@ export class CppGenerator {
       // literales usamos solo `extern`.
       for (const variable of variables) {
         const isLiteralConst = !variable.mutable && variable.constValue !== undefined && typeof variable.constValue !== "string";
-        const cppT = cppType(variable.declaredType ?? this.expressionType(variable.initializer) ?? "void");
+        // V30.12.2: `cppTypeForVariable` para que `Array<I>` se emita como
+        // `std::vector<I_AutoUnion>` en el `extern` del header.
+        const cppT = this.cppTypeForVariable(variable.declaredType ?? this.expressionType(variable.initializer) ?? "void");
         lines.push(`extern${isLiteralConst ? " const" : ""} ${cppT} ${variable.name};`);
       }
     if (variables.length) lines.push("");
@@ -935,7 +1079,11 @@ export class CppGenerator {
     const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
-    for (const node of privateClasses) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
+    // V30.12.2: emitir auto-unions antes de los forward decls de clases
+    // privadas (los payloads referencian tipos de clase).
+    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
+    // V30.12.3: orden topológico para las forward decls de clases privadas.
+    for (const node of this.topoSortClasses(privateClasses).ordered) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
     if (privateClasses.length) lines.push("");
     // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
     // una vez en C++; van en la definición, no en la forward).
@@ -981,7 +1129,9 @@ export class CppGenerator {
       // para que el header `extern` y esta definición coincidan. Las no exportadas
       // usan `static` para no contaminar el namespace global entre módulos.
       const exportLinkage = variable.exported ? "" : "static ";
-      lines.push(`${exportLinkage}${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppType(type)} ${cppName} = ${initializerText};`);
+      // V30.12.2: `cppTypeForVariable` para que `Array<I>` se emita como
+      // `std::vector<I_AutoUnion>` en la variable top-level del .cpp del módulo.
+      lines.push(`${exportLinkage}${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${this.cppTypeForVariable(type)} ${cppName} = ${initializerText};`);
     }
     if (variables.length) lines.push("");
     // V15: las funciones EXPORTADAS deben tener linkage externo para que el
@@ -1152,7 +1302,9 @@ export class CppGenerator {
     const existingFieldNames = new Set(node.fields.map(f => f.name));
     const newFields = paramProps.filter(p => !existingFieldNames.has(p.name));
     const hasConstructor = !!constructor;
-    for (const field of node.fields) lines.push(`${this.pad()}${cppType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
+    // V30.12.2: `cppTypeForVariable` para que `Array<I>` se emita como
+    // `std::vector<I_AutoUnion>` también en campos de clase.
+    for (const field of node.fields) lines.push(`${this.pad()}${this.cppTypeForVariable(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
     // V20: emitimos los campos implícitos de parameter properties.
     for (const p of newFields) lines.push(`${this.pad()}${cppType(p.type)}${p.readonly ? "" : ""} ${p.name};`);
     if ((node.fields.length || newFields.length) && node.methods.length) lines.push("");
@@ -1410,14 +1562,16 @@ export class CppGenerator {
         if (node.arrayBindings && node.arrayBindings.length > 0) {
           const counter = ++this.destructuringCounter;
           const tmpName = `__ets_destructure_${counter}`;
-          const tmpType = node.declaredType ? cppType(node.declaredType) : "auto";
+          // V30.12.2: `cppTypeForVariable` para que `Array<I>` se emita como
+          // `std::vector<I_AutoUnion>` también en destructuring.
+          const tmpType = node.declaredType ? this.cppTypeForVariable(node.declaredType) : "auto";
           const initType = this.expressionType(node.initializer);
           const initIsArray = initType && isArrayType(initType);
           const lines: string[] = [];
           lines.push(`${this.pad()}${this.variableIsConst(node) ? "const " : ""}${tmpType} ${tmpName} = ${this.emitExpression(node.initializer)};`);
           for (let index = 0; index < node.arrayBindings.length; ++index) {
             const binding = node.arrayBindings[index];
-            const type = binding.declaredType ? cppType(binding.declaredType) : "auto";
+            const type = binding.declaredType ? this.cppTypeForVariable(binding.declaredType) : "auto";
             const mutable = node.mutable ? "" : "const ";
             const access = `${tmpName}[${index}]`;
             const value = (binding.defaultValue && initIsArray)
@@ -1446,7 +1600,14 @@ export class CppGenerator {
           const needsCast = initType === "number" || (initType !== undefined && isNumericType(initType) && initType !== node.declaredType);
           if (needsCast) initializerExpr = `static_cast<${cppType(node.declaredType)}>(${initializerExpr})`;
         }
-        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${node.declaredType && !this.interfaceNames.has(node.declaredType) ? cppType(node.declaredType) + typeRef : "auto"} ${this.cppName(node.name)} = ${initializerExpr};`;
+        // V30.12.2: `Array<I>` se emite como `std::vector<I_AutoUnion>`. Un
+        // interface SIN contenedor (p.ej. `let x: IFoo = ...`) sigue
+        // cayendo al `auto` (no hay tipo C++ canónico para una interface).
+        const declaredType = node.declaredType;
+        const declaredCppType = declaredType && !this.interfaceNames.has(declaredType)
+          ? this.cppTypeForVariable(declaredType) + typeRef
+          : "auto";
+        return `${this.pad()}${this.variableIsConst(node) ? "const " : ""}${declaredCppType} ${this.cppName(node.name)} = ${initializerExpr};`;
       }
       case "FunctionDeclaration": return "";
       case "InterfaceDeclaration": return "";
@@ -1668,11 +1829,22 @@ export class CppGenerator {
         patternText = this.emitExpression(w.pattern);
       }
       // El callback puede tener 0 o 1 parámetro. Si tiene 1, le pasamos
-      // el subject. Si tiene 0, lo invocamos sin argumentos (p.ej.
+      // el subject (o el payload narrowed si el subject es un auto-union:
+      // ver V30.12.2). Si tiene 0, lo invocamos sin argumentos (p.ej.
       // `otherwise(() => "default")`).
       const cb = w.callback;
       let callArgs = "";
-      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
+      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) {
+        // V30.12.2: si el subject es un auto-union (Array<I> se traduce
+        // a `std::vector<I_AutoUnion>` y los elementos son uniones), el
+        // discriminador ya garantizó que `payload` contiene la clase
+        // concreta. Pasamos `std::get<T>(payload)` al callback para que
+        // `x: DrawLine` reciba un DrawLine, no un union.
+        const subjectType = this.expressionType(subject);
+        const autoUnionParamType = subjectType !== undefined && this.isAutoUnionType(subjectType) ? cb.params[0]!.type : undefined;
+        if (autoUnionParamType) callArgs = `std::get<${cppType(autoUnionParamType)}>(${subjectText}.payload)`;
+        else callArgs = subjectText;
+      }
       const callbackCall = `${this.emitExpression(cb)}(${callArgs})`;
       return `        if ((${subjectAccess}) == (${patternText})) { return ${callbackCall}; }`;
     });
@@ -2947,6 +3119,161 @@ export class CppGenerator {
     return `[]() -> ${cppType(U)} { ${cppType(U)} _ets_acc = ${initStr}; for (const auto& _ets_item : ${arrStr}) { if (${filterLambda}(_ets_item)) { _ets_acc = (${opStr})(_ets_acc, (${mapLambda})(_ets_item)); } } return _ets_acc; }()`;
   }
 
+  // V30.12.3: topological ordering for class definitions.
+  //
+  // El dialecto permite clases que se referencian entre sí mediante forward
+  // declarations (#188), pero una definición `struct Holder { A a; }` requiere
+  // que `A` ya esté completo. Emitir las clases en el orden del AST falla
+  // cuando el usuario declara `Holder` antes que `A` (escenario realista en
+  // archivos grandes con dependencias one-way).
+  // Construimos un grafo dirigido `C -> D` cuando la definición de `C`
+  // menciona `D` en un campo, parámetro de método o tipo de retorno de método
+  // (recursivo a través de uniones, genéricos `Array<D>`/`Promise<D>`,
+  // intersections, function types, tuplas, arrays fijos, mapas, sets). Las
+  // menciones en cuerpos de método, variables locales, o comentarios, NO
+  // crean aristas (esos usos solo necesitan un forward decl, ya satisfecho).
+  //
+  // Devolvemos:
+  //   - `ordered`: clases en orden topológico (sin ciclos).
+  //   - `cyclicNames`: nombres de clases en SCCs cíclicas (size > 1 o self-
+  //     loop). Las clases del ciclo se devuelven al final preservando el
+  //     orden del AST; el codegen las deja solo como forward decl y emite
+  //     un warning claro (g++ se quejará de "incomplete type" — el dialecto
+  //     no soporta referencias circulares por valor; habría que usar `ptr<D>`
+  //     o `weak<D>` para romper el ciclo).
+  private topoSortClasses(classes: ClassDeclaration[]): {
+    ordered: ClassDeclaration[];
+    cyclicNames: string[];
+  } {
+    // Paso 1: recolectar aristas por clase.
+    const edges = new Map<string, Set<string>>();
+    for (const node of classes) {
+      const refs = new Set<string>();
+      // Fields.
+      for (const field of node.fields) this.collectClassRefs(field.type, refs);
+      // Methods (parameters + return type).
+      for (const method of node.methods) {
+        for (const param of method.params) this.collectClassRefs(param.type, refs);
+        this.collectClassRefs(method.returnType, refs);
+      }
+      // Self-loops no cuentan como dependencias (la propia clase aparece
+      // porque el tipo es `C`); filtrarlos para no falsear el SCC.
+      refs.delete(node.name);
+      // Sólo nos interesan las aristas que apuntan a clases del propio set
+      // (lo demás se asume ya completo — builtins, stdlib, runtime).
+      const filtered = new Set<string>();
+      for (const ref of refs) if (this.classNames.has(ref)) filtered.add(ref);
+      edges.set(node.name, filtered);
+    }
+    // Paso 2: ordenar topológicamente (Kahn's) preservando el orden del AST
+    // entre clases independientes (importante: tests asumen que `Holder`
+    // aparece antes que `A` cuando NO hay dependencia; un sort estable).
+    const byName = new Map<string, ClassDeclaration>();
+    for (const node of classes) byName.set(node.name, node);
+    const inDegree = new Map<string, number>();
+    for (const node of classes) inDegree.set(node.name, 0);
+    // Construir in-degree SOBRE el conjunto `classes` (no sobre todo classNames)
+    // para que las clases externas al archivo no cuenten.
+    for (const node of classes) {
+      const outgoing = edges.get(node.name)!;
+      for (const target of outgoing) if (byName.has(target)) inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
+    }
+    const ready: ClassDeclaration[] = [];
+    for (const node of classes) if ((inDegree.get(node.name) ?? 0) === 0) ready.push(node);
+    const ordered: ClassDeclaration[] = [];
+    const placed = new Set<string>();
+    while (ready.length) {
+      // Tomar el primero del AST order entre los ready (estabilidad).
+      ready.sort((a, b) => classes.indexOf(a) - classes.indexOf(b));
+      const next = ready.shift()!;
+      ordered.push(next);
+      placed.add(next.name);
+      const outgoing = edges.get(next.name)!;
+      for (const target of outgoing) {
+        if (!byName.has(target)) continue;
+        if (placed.has(target)) continue;
+        const newDeg = (inDegree.get(target) ?? 0) - 1;
+        inDegree.set(target, newDeg);
+        if (newDeg === 0) ready.push(byName.get(target)!);
+      }
+    }
+    // Paso 3: lo que quedó sin colocar pertenece a SCCs cíclicas. Preservar
+    // su orden del AST.
+    const unplaced = classes.filter(node => !placed.has(node.name));
+    const cyclicNames = unplaced.map(node => node.name);
+    return { ordered: [...ordered, ...unplaced], cyclicNames };
+  }
+  // V30.12.3: warning al usuario cuando se detectan referencias circulares
+  // entre clases por valor (no por indirección `ptr<X>`). El dialecto no las
+  // soporta: el compilador C++ emitirá "field has incomplete type" sobre las
+  // clases del SCC. La solución es romper el ciclo con `ptr<D>` o `weak<D>`.
+  // Emitimos por stderr para que sea visible en CI; el codegen no aborta
+  // (queremos que el programa compile lo máximo posible y que g++ reporte
+  // el error concreto en la posición correcta).
+  private reportClassCycle(cyclicNames: string[]): void {
+    if (!cyclicNames.length) return;
+    const list = cyclicNames.map(n => `\`${n}\``).join(", ");
+    process.stderr.write(
+      `warning(V30.12.3): ciclo de dependencias entre clases detectado: ${list}. ` +
+      `El dialecto no soporta referencias circulares por valor — usa \`ptr<T>\` o \`weak<T>\` para romper el ciclo.\n`,
+    );
+  }
+  // V30.12.3: walker recursivo de TypeName que extrae referencias a clases
+  // del dialecto. Recorre unions/intersections, genéricos (incluido `Array<T>`
+  // / `Promise<T>` / `ptr<T>` / `Set<T>` / `Map<K,V>`), function types,
+  // tuplas, arrays fijos. Las menciones a primitivos, stdlib o tipos runtime
+  // se ignoran — sólo conservamos las que aparecen en `this.classNames` (que
+  // es lo que `prepare()` pobló con las clases declaradas en el programa).
+  private collectClassRefs(type: TypeName, refs: Set<string>): void {
+    if (!type) return;
+    if (isUnionType(type)) { for (const m of unionMembers(type)) this.collectClassRefs(m, refs); return; }
+    if (isIntersectionType(type)) { for (const m of intersectionMembers(type)) this.collectClassRefs(m, refs); return; }
+    if (isTupleType(type)) { for (const e of tupleElements(type)) this.collectClassRefs(e, refs); return; }
+    if (isArrayType(type)) { this.collectClassRefs(arrayElement(type), refs); return; }
+    if (isFixedArrayType(type)) {
+      const el = fixedArrayElement(type);
+      if (el) this.collectClassRefs(el, refs);
+      return;
+    }
+    if (isFunctionType(type)) {
+      for (const p of functionParameters(type)) this.collectClassRefs(p, refs);
+      this.collectClassRefs(functionResult(type), refs);
+      return;
+    }
+    if (isMapType(type)) {
+      // Map<K, V> — extrae el base y los argumentos del genérico.
+      if (isGenericType(type)) {
+        const args = genericArguments(type);
+        if (args.length >= 1) this.collectClassRefs(args[0], refs);
+        if (args.length >= 2) this.collectClassRefs(args[1], refs);
+      }
+      return;
+    }
+    if (isSetType(type)) {
+      if (isGenericType(type)) {
+        const args = genericArguments(type);
+        if (args.length >= 1) this.collectClassRefs(args[0], refs);
+      }
+      return;
+    }
+    if (isPromiseType(type)) { this.collectClassRefs(promiseResult(type), refs); return; }
+    if (isGenericType(type)) {
+      const base = genericBase(type);
+      // ptr<T>, weak<T>, constPtr<T>, ref<T>, constRef<T>, readonly<T> se
+      // resuelven por indirección (T&) y NO requieren T completo → skip.
+      // Lo mismo con Array<T>: en el dialecto Array<T> es std::vector<T>,
+      // que necesita T completo. Sí seguimos.
+      if (["ptr", "weak", "constPtr", "ref", "constRef"].includes(base)) return;
+      if (base === "readonly") return;
+      // Para genéricos "tipo de dato" (Array<T>) seguimos al argumento; pero
+      // si el base genérico NO es una clase del dialecto, no nos interesa.
+      for (const arg of genericArguments(type)) this.collectClassRefs(arg, refs);
+      return;
+    }
+    // Caso base: un TypeName "plano". Si es una clase declarada en el
+    // programa, agregala. Ignorar primitivos, void, unknown.
+    if (this.classNames.has(type)) refs.add(type);
+  }
   // V7.1: ¿`expr` es una fuente fusible para `arr.filter(...).map(...).reduce(...)`?
   // Acepta identificadores, accesos a miembro simples, llamadas a funciones
   // puras (no filter/map/reduce), y literales de array.
