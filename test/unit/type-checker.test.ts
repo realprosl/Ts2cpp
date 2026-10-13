@@ -1182,14 +1182,19 @@ test("V22 PR#7: closure sin captura de ref<T> -> OK", () => {
   assert.ok(checker);
 });
 
-test("V22 PR#7: E4205 (Array<ref<T>>) ya implementado", () => {
+test("V22 PR#7: E4205 (ref<T> como type arg de un generic) ya implementado", () => {
+  // Antes este test usaba `Array<ref<User>>` como ejemplo, pero desde
+  // V30.10.2 `Array<T>` es alias sintáctico de `T[]` (no es un generic
+  // real) y por tanto la regla E4205 ya no se aplica a esa forma.
+  // Usamos `Optional<T>`, que sí es un generic real del runtime, para
+  // verificar que la regla sigue cubriendo el caso general.
   expectError(`
     class User {
       name: string;
       constructor() { this.name = ""; }
     }
     function test(): void {
-      const arr: Array<ref<User>> = [];
+      const arr: Optional<ref<User>> = null;
     }
   `, "E4205");
 });
@@ -1573,4 +1578,56 @@ test("V30.10.1: capture real del scope exterior SIGUE funcionando", () => {
     }
   `);
   assert.ok(checker, "captura real del scope exterior debe seguir type-checkeando");
+});
+
+// =============================================================================
+// V30.10.2: `Array<T>` como alias sintáctico de `T[]`
+// =============================================================================
+// El dialecto canónico para vectores es `T[]` (compila a `std::vector<T>`).
+// `Array<T>` es un alias puramente sintáctico: el parser lo normaliza a `T[]`
+// al construir el AST, por lo que se acepta en cualquier posición de tipo
+// (campo de clase, parámetro, retorno, variable local, genérico anidado)
+// sin duplicar lógica aguas abajo.
+
+test("V30.10.2: `Array<T>` como campo de clase se acepta (alias de T[])", () => {
+  // Antes: `Array<Mod>` como campo daba 'Tipo genérico no definido Array'.
+  // Ahora: el parser lo convierte a `Mod[]` y el type-checker lo valida
+  // como array normal.
+  const { checker } = check(`
+    class Mod {
+      kind: string;
+      constructor() { this.kind = ""; }
+    }
+    class Container {
+      mods: Array<Mod>;
+      constructor() { this.mods = []; }
+    }
+  `);
+  assert.ok(checker, "Array<Mod> como campo de clase debe type-checkear");
+});
+
+test("V30.10.2: `Array<T>` como tipo de parámetro se acepta (alias de T[])", () => {
+  const { checker } = check(`
+    class Mod {
+      kind: string;
+      constructor() { this.kind = ""; }
+    }
+    function count(mods: Array<Mod>): number {
+      return mods.length;
+    }
+  `);
+  assert.ok(checker, "Array<Mod> como parámetro debe type-checkear");
+});
+
+test("V30.10.2: `Array<T>` como tipo de retorno se acepta (alias de T[])", () => {
+  const { checker } = check(`
+    class Mod {
+      kind: string;
+      constructor() { this.kind = ""; }
+    }
+    function makeMods(): Array<Mod> {
+      return [];
+    }
+  `);
+  assert.ok(checker, "Array<Mod> como tipo de retorno debe type-checkear");
 });

@@ -1110,7 +1110,19 @@ export class Parser {
       const arguments_: TypeName[] = [];
       do { arguments_.push(this.typeName()); } while (this.match(","));
       this.consume(">", "Se esperaba '>' en el tipo genérico");
-      result = genericType(result, arguments_);
+      // V30.10.2: `Array<T>` es alias sintáctico de `T[]` (vector dinámico,
+      // `std::vector<T>` en C++). No existe una clase `Array` en el
+      // dialecto — solo la forma canónica `T[]`. Normalizamos aquí para
+      // que `Array<T>` se acepte en cualquier posición (campo, parámetro,
+      // retorno, local) sin duplicar el manejo aguas abajo. Si el
+      // usuario escribió `Array` sin argumentos de tipo (p.ej. `let x:
+      // Array;`), lo dejamos como tipo genérico mal formado para que el
+      // type-checker reporte el error con un mensaje claro.
+      if (result === "Array" && arguments_.length === 1) {
+        result = arrayType(arguments_[0]);
+      } else {
+        result = genericType(result, arguments_);
+      }
     }
     // V4: sufijos de array. Distinguimos `[N]` (tamaño literal entero, fijo,
     // pila) de `[]` (vector dinámico, heap). El canónico es T[N] para fijo
