@@ -244,6 +244,113 @@ test("checker: anota resolvedRuntimeType en InterfaceDeclaration", () => {
   }
 });
 
+// V30.11: una interface con solo campos (shape type pura) parsea y registra
+// los campos como miembros estructurales. Antes de V30.11 el parser asumia
+// que cada miembro era un metodo y fallaba con "Se esperaba '('" en cuanto
+// veia `kind: string` (sin parentesis).
+test("V30.11: interface con solo campos parsea y registra la shape", () => {
+  const { ast, checker } = check(`
+    interface Mod {
+      kind: string;
+      x: i8;
+      y: i8;
+    }
+  `);
+  assert.ok(checker);
+  const iface = ast.statements[0];
+  if (iface.kind !== "InterfaceDeclaration") throw new Error("expected InterfaceDeclaration");
+  assert.equal(iface.fields.length, 3, "debe registrar 3 campos");
+  assert.deepEqual(iface.fields.map(f => f.name), ["kind", "x", "y"]);
+  assert.equal(iface.fields[0].type, "string");
+  assert.equal(iface.fields[1].type, "i8");
+  assert.equal(iface.fields[2].optional, false);
+  assert.equal(iface.methods.length, 0, "no hay metodos, solo campos");
+});
+
+// V30.11: una interface puede combinar campos y metodos (contrato hibrido).
+// El parser distingue por el siguiente token tras el identifier: `(` -> metodo,
+// `?` o `:` -> campo. Mezcla ambos para verificar que el pivot funciona.
+test("V30.11: interface hibrida combina campos y metodos", () => {
+  const { ast, checker } = check(`
+    interface Drawable {
+      color: string;
+      draw(): void;
+      move(dx: i8, dy: i8): void;
+    }
+  `);
+  assert.ok(checker);
+  const iface = ast.statements[0];
+  if (iface.kind !== "InterfaceDeclaration") throw new Error("expected InterfaceDeclaration");
+  assert.equal(iface.fields.length, 1);
+  assert.equal(iface.fields[0].name, "color");
+  assert.equal(iface.methods.length, 2);
+  assert.deepEqual(iface.methods.map(m => m.name), ["draw", "move"]);
+});
+
+// V30.11: un object literal satisface la shape de una interface. Esto es la
+// pieza que faltaba para que el ejemplo del usuario compile: `const m: Mod =
+// { kind: "x", x: 1, y: 2 }`. Tambien verificamos el caso de error (falta
+// un campo obligatorio o sobra uno no declarado).
+test("V30.11: object literal satisface la shape de una interface", () => {
+  const { checker } = check(`
+    interface Mod {
+      kind: string;
+      x: i8;
+      y: i8;
+    }
+    const m: Mod = { kind: "draw", x: 1, y: 2 };
+  `);
+  assert.ok(checker);
+});
+
+test("V30.11: object literal rechaza campos faltantes o sobrantes de la shape", () => {
+  // Falta `y`.
+  expectError(`
+    interface Mod { kind: string; x: i8; y: i8; }
+    const m: Mod = { kind: "a", x: 1 };
+  `, "Falta el campo obligatorio 'y'");
+  // Sobra `z` (no declarado en la interface).
+  expectError(`
+    interface Mod { kind: string; x: i8; y: i8; }
+    const m: Mod = { kind: "a", x: 1, y: 2, z: 9 };
+  `, "no declara el campo 'z'");
+});
+
+// V30.11: campos opcionales (`nombre?`) se admiten omitidos en el literal.
+// Sin el `?`, omitir el campo seria error (cubierto arriba). Con `?`, se acepta.
+test("V30.11: campos opcionales (?:) se admiten omitidos en el literal", () => {
+  const { checker } = check(`
+    interface Config {
+      name: string;
+      timeout?: number;
+    }
+    const c: Config = { name: "app" };
+  `);
+  assert.ok(checker);
+});
+
+// V30.11: el acceso a un campo de interface (`m.kind` con `m: Mod`) resuelve
+// al tipo del campo declarado. Antes de V30.11, el member-access rechazaba
+// interfaces que no fuesen clases concretas, devolviendo "no es una clase
+// concreta". Ahora `m.kind` resuelve a `string` y el codegen lo emite
+// como acceso directo en C++.
+test("V30.11: member-access sobre interface resuelve el tipo del campo", () => {
+  const { checker } = check(`
+    interface Mod { kind: string; x: i8; y: i8; }
+    function use(m: Mod): string { return m.kind; }
+  `);
+  assert.ok(checker);
+});
+
+// V30.11: nombre duplicado entre campo y metodo se rechaza. Las interfaces
+// son contratos estructurales: el mismo identificador no puede ser ambos
+// cosas a la vez, porque seria ambiguo en C++ y absurdo en TS.
+test("V30.11: interface rechaza nombre duplicado entre campo y metodo", () => {
+  expectError(`
+    interface Bad { draw(): void; draw: string; }
+  `, "entra en conflicto");
+});
+
 test("checker: anota resolvedRuntimeType en EnumDeclaration", () => {
   const { ast } = check(`
     enum Color { Red, Green, Blue }
