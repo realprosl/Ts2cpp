@@ -347,6 +347,21 @@ export class TypeChecker {
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
   private readonly enums = new Map<string, EnumDeclaration>();
   private readonly unions = new Map<string, UnionDeclaration>();
+  // V30.12.0: forward declarations. Cuando un tipo se referencia antes de
+  // su declaracion (p.ej. `class A { b: B }` antes de `class B { ... }`),
+  // validateType lo encola aqui en vez de reportar error inmediato. Al
+  // final de check() se hace una segunda pasada que re-valida cada entrada.
+  // Si el tipo sigue sin existir, se reporta el error. No resuelve ciclos
+  // (A usa B, B usa A) — solo el orden de declaracion.
+  private readonly forwardRefs: Array<{
+    type: TypeName;
+    node: { span: import("../core/span.ts").Span };
+    interfaceAllowed: boolean;
+    primitiveOnly: boolean;
+    scope?: Scope;
+  }> = [];
+  // Flag anti-recursion: durante la segunda pasada no se reencolan tipos.
+  private resolvingForwardRefs = false;
   // V1.4: mapa de narrowing para tagged unions. Cuando entramos en un
   // `thenBranch` con condición `expr.tag == literal`, marcamos el nombre
   // `expr` como "narrowed" con la lista de variantes que cumplen el
@@ -645,6 +660,18 @@ export class TypeChecker {
     // VariableDeclaration (que sea un borrow) los usos futuros de su
     // nombre, y luego revisamos los conflictos.
     this.resolveBorrowConflicts();
+    // V30.12.0: segunda pasada para resolver forward refs. Tomamos una
+    // copia del array (mismo-reference bug) y los reprocesamos con el
+    // flag resolvingForwardRefs=true para que NO se reencolen.
+    if (this.forwardRefs.length > 0) {
+      const pending = this.forwardRefs.slice();
+      this.forwardRefs.length = 0;
+      this.resolvingForwardRefs = true;
+      for (const ref of pending) {
+        this.validateType(ref.type, ref.node, ref.interfaceAllowed, ref.primitiveOnly, ref.scope);
+      }
+      this.resolvingForwardRefs = false;
+    }
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
   }
 
@@ -1495,7 +1522,19 @@ export class TypeChecker {
     // `Optional<T>` se aceptan siempre (son tipos del runtime).
     const genericBaseName = type.includes("<") ? type.slice(0, type.indexOf("<")) : "";
     const genericConcrete = ["Promise", "Result", "Map", "Set", "Optional"].includes(genericBaseName);
-    if (!primitive && (primitiveOnly || (!concrete && !contract && !genericConcrete))) this.report(node, `Tipo no definido o no permitido '${type}'`);
+    if (!primitive && (primitiveOnly || (!concrete && !contract && !genericConcrete))) {
+      // V30.12.0: forward declaration. Si el tipo no esta declarado
+      // todavia (uso antes de declaracion), encolamos en forwardRefs
+      // y validamos al final de check(). Si seguimos en la segunda
+      // pasada (resolvingForwardRefs=true) y el tipo sigue sin estar,
+      // entonces SI reportamos el error. primitiveOnly=true fuerza
+      // error inmediato (no se encola).
+      if (!primitiveOnly && !this.resolvingForwardRefs) {
+        this.forwardRefs.push({ type, node, interfaceAllowed, primitiveOnly, scope });
+        return;
+      }
+      this.report(node, `Tipo no definido o no permitido '${type}'`);
+    }
   }
 
   private statement(node: Statement, scope: Scope): void {
