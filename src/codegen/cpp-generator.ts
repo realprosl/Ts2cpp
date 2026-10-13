@@ -280,6 +280,11 @@ export class CppGenerator {
     // y registrarlos en `exportAliases` para que el codegen los resuelva.
     this.exportAliases.clear();
     for (const stmt of unwrapped) if (stmt.kind === "ExportNamedDeclaration") for (const spec of stmt.specifiers) if (spec.alias) this.exportAliases.set(spec.alias, spec.name);
+    // V30.12.2: detectar interfaces usadas en `Array<I>` y construir el
+    // union auto-generado con las clases concretas que tengan `kind: string`.
+    this.interfacesNeedingAutoUnion.clear();
+    this.collectInterfacesNeedingAutoUnion(unwrapped);
+    this.buildAutoUnions();
   }
   // V16: visitor genérico que detecta si el programa contiene un
   // `CallExpression` o `MemberCallExpression` cuyo nombre (callee o
@@ -903,17 +908,15 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    // V30.12.2: auto-unions para los `Array<I>` del programa. Van
-    // DESPUÉS de los unions del usuario y ANTES de las clases (los
-    // payloads referencian tipos de clase).
+    // V30.12.2: forward decls de clase ANTES del auto-union (los payloads
+    // son tipos de clase concretos).
+    const singleClassOrder = this.topoSortClasses(classes);
+    if (singleClassOrder.cyclicNames.length) this.reportClassCycle(singleClassOrder.cyclicNames);
+    for (const node of singleClassOrder.ordered) lines.push(this.classForward(node, false), "");
+    // V30.12.2: auto-unions para los `Array<I>` del programa.
     for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
-    // V30.12.3: emitir las definiciones de clase en orden topológico para
-    // que cada clase esté completa cuando otra la mencione por valor.
-    // Sin esto, `class Holder { a: A }` antes de `class A` haría que g++
-    // se queje con "field 'a' has incomplete type 'A'".
-    const classOrder = this.topoSortClasses(classes);
-    if (classOrder.cyclicNames.length) this.reportClassCycle(classOrder.cyclicNames);
-    for (const node of classOrder.ordered) lines.push(this.classDeclaration(node), "");
+    // Definiciones de clase en orden topológico.
+    for (const node of singleClassOrder.ordered) lines.push(this.classDeclaration(node), "");
     for (const fn of functions) {
       // V30.4: renombrar `main` -> `ets_user_main` en la forward
       // declaration.
@@ -1014,17 +1017,17 @@ export class CppGenerator {
     for (const contract of interfaces) lines.push(this.interfaceConcept(contract), "");
     for (const node of enums) lines.push(this.enumDeclaration(node), "");
     for (const node of unions) lines.push(this.unionDeclaration(node), "");
-    // V30.12.2: auto-unions en el header para que las declaraciones
-    // `extern std::vector<IFace_AutoUnion>` y los usos en otros módulos
-    // compilen.
-    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
-    // V30.12.3: orden topológico para forward decls (consistencia con
-    // las definiciones más abajo). Si hubiera ciclos, las forward decls
-    // se emiten en el orden devuelto por `topoSortClasses`.
+    // V30.12.3: forward decls ANTES del auto-union para que el
+    // `std::variant<DrawLine, MoveCursor>` del union auto tenga
+    // los tipos de payload ya declarados.
     const headerClassOrder = this.topoSortClasses(allClasses);
     if (headerClassOrder.cyclicNames.length) this.reportClassCycle(headerClassOrder.cyclicNames);
     for (const node of headerClassOrder.ordered) lines.push(this.classForward(node, false /* includeDefaults: el forward decl no repite el default */));
     if (allClasses.length) lines.push("");
+    // V30.12.2: auto-unions en el header para que las declaraciones
+    // `extern std::vector<IFace_AutoUnion>` y los usos en otros módulos
+    // compilen. Van DESPUÉS de los forward decls de clase.
+    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
     // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
     // externamente). El cpp emite `extern "C" <sig>;` y el linker las
     // resuelve contra la librería.
@@ -1079,12 +1082,12 @@ export class CppGenerator {
     const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
-    // V30.12.2: emitir auto-unions antes de los forward decls de clases
-    // privadas (los payloads referencian tipos de clase).
-    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
-    // V30.12.3: orden topológico para las forward decls de clases privadas.
+    // V30.12.3: forward decls de clases privadas ANTES del auto-union
+    // para que `std::variant<DrawLine, MoveCursor>` tenga los tipos.
     for (const node of this.topoSortClasses(privateClasses).ordered) lines.push(this.classForward(node, false /* includeDefaults: el default va solo en la definición */));
     if (privateClasses.length) lines.push("");
+    // V30.12.2: emitir auto-unions despues de los forward decls.
+    for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
     // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
     // una vez en C++; van en la definición, no en la forward).
     for (const fn of privateFunctions) {

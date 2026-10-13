@@ -580,3 +580,43 @@ test("codegen V30.11.1: método que no llama a nada y no muta → const (baselin
   // verify() no toca this y no llama a métodos de la clase → const.
   assert.match(out, /int8_t\s+verify\(\)\s+const\s*\{/);
 });
+
+test("V30.12.2: Array<Interface> con 2 clases concretas genera auto-union", () => {
+  // El codegen sintetiza un union auto `<Interface>_AutoUnion` con las
+  // clases concretas que tengan campo `kind: string`, y emite el array
+  // como `std::vector<IFace_AutoUnion>`.
+  const out = cpp(`
+    interface Mod {
+      kind: string
+      x: i8
+    }
+    class DrawLine {
+      kind: string
+      x: i8
+      constructor(x: i8) { this.kind = "drawLine"; this.x = x }
+    }
+    class MoveCursor {
+      kind: string
+      x: i8
+      constructor(x: i8) { this.kind = "moveCursor"; this.x = x }
+    }
+    const ops: Array<Mod> = [new DrawLine(10), new MoveCursor(-2)];
+  `);
+  assert.match(out, /Mod_AutoUnion/);
+  assert.match(out, /std::vector<Mod_AutoUnion>/);
+});
+
+test("V30.12.2: Array<Interface> sin clases concretas reporta error", () => {
+  // Sin clases que tengan `kind: string` que implementen la interface,
+  // el codegen no puede generar un union valido y emite un error claro.
+  assert.throws(
+    () => cpp(`
+      interface Mod {
+        kind: string
+        x: i8
+      }
+      const ops: Array<Mod> = [];
+    `),
+    /no hay clases concretas|union auto|Mod/,
+  );
+});
