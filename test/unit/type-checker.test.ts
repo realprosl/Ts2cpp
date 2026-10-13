@@ -1738,3 +1738,50 @@ test("V30.10.2: `Array<T>` como tipo de retorno se acepta (alias de T[])", () =>
   `);
   assert.ok(checker, "Array<Mod> como tipo de retorno debe type-checkear");
 });
+
+// ---------------------------------------------------------------------------
+// V30.12.0: Forward declarations (uso de clase/interfaz antes de declarar).
+// ---------------------------------------------------------------------------
+
+test("V30.12.0: clase usa clase declarada despues (forward en campo)", () => {
+  const { checker } = check(`
+    class Holder {
+      a: A
+      constructor() { this.a = new A() }
+    }
+    class A {
+      x: i8
+      constructor() { this.x = 0 }
+    }
+  `);
+  assert.ok(checker, "clase declarada despues debe type-checkear via forward ref");
+});
+
+test("V30.12.0: clase usa interface declarada despues (forward en param de metodo)", () => {
+  const { checker } = check(`
+    class Holder {
+      apply(m: IMod): void { m.run() }
+    }
+    interface IMod {
+      run(): void
+    }
+  `);
+  assert.ok(checker, "interface declarada despues debe type-checkear via forward ref");
+});
+
+test("V30.12.0: funcion usa interface declarada despues (forward en parametro)", () => {
+  const { checker } = check(`
+    function process(m: IMod): void { m.run() }
+    interface IMod { run(): void }
+  `);
+  assert.ok(checker, "interface forward en parametro de funcion debe type-checkear");
+});
+
+test("V30.12.0: tipo que no existe en ningun lado se sigue reportando (no regresion)", () => {
+  // El forward ref NO captura tipos que no existen en ningun lado.
+  // Tras la segunda pasada, el tipo sigue sin estar declarado y se
+  // reporta el error.
+  expectError(`
+    class Holder { a: NonExistentType }
+  `, "NonExistentType");
+});
