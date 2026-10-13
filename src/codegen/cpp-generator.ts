@@ -1156,7 +1156,7 @@ export class CppGenerator {
     // V20: emitimos los campos implícitos de parameter properties.
     for (const p of newFields) lines.push(`${this.pad()}${cppType(p.type)}${p.readonly ? "" : ""} ${p.name};`);
     if ((node.fields.length || newFields.length) && node.methods.length) lines.push("");
-    for (const method of node.methods) lines.push(this.pad() + this.classMethod(method), "");
+    for (const method of node.methods) lines.push(this.pad() + this.classMethod(method, node), "");
     if (lines.at(-1) === "") lines.pop();
     this.indent--; lines.push("};");
     return lines.join("\n");
@@ -1169,7 +1169,7 @@ export class CppGenerator {
     const requiresPart = node.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`).join("\n");
     return `${template}${requiresPart ? requiresPart + "\n" : ""}struct ${node.name};`;
   }
-  private classMethod(method: ClassMethod): string {
+  private classMethod(method: ClassMethod, classDecl: ClassDeclaration): string {
     const declaration: FunctionDeclaration = { kind: "FunctionDeclaration", name: method.name, async: false, typeParameters: method.typeParameters ?? [], variadicTypeParameters: [], params: method.params, returnType: method.returnType, body: method.body, span: method.span };
     const previous = this.inClassMethod; this.inClassMethod = true;
     let body = this.emitBlock(method.body);
@@ -1194,7 +1194,7 @@ export class CppGenerator {
       const afterBrace = body.indexOf("\n", openBrace) + 1;
       bodyWithWarning = body.slice(0, afterBrace) + deprecated + body.slice(afterBrace);
     }
-    const result = `${this.signature(declaration)}${this.methodMutates(method) ? "" : " const"} ${bodyWithWarning}`;
+    const result = `${this.signature(declaration)}${this.methodMutates(method, classDecl, new Set<string>()) ? "" : " const"} ${bodyWithWarning}`;
     this.inClassMethod = previous; return result;
   }
 
@@ -1216,40 +1216,77 @@ export class CppGenerator {
     // Emitimos `std::cerr << "WARN: ...\n";` al principio del cuerpo.
     return `std::cerr << "WARN: '${memberName}' is deprecated: ${message}\\n"; `;
   }
-  private methodMutates(method: ClassMethod): boolean {
+  /**
+   * V30.11.1: ¿el método muta `this` (directa o transitivamente)?
+   *
+   * Antes (V30.11.0 y anteriores) solo mirábamos si el cuerpo del método
+   * asignaba directamente a `this.campo`. Eso era incorrecto en cuanto una
+   * clase tiene métodos helpers: un método `run()` que no toca `this` pero
+   * llama a `this.modX()` (que sí muta) se marcaba `const` en C++ y g++
+   * reventaba con "passing const Svg as 'this' argument discards qualifiers".
+   *
+   * Ahora, además del análisis intra-procedimental, recorremos las llamadas
+   * `this.otroMetodo(...)` y, por cada una, preguntamos recursivamente a
+   * `methodMutates` sobre ese método de la misma clase. Si alguno de los
+   * métodos transitivos muta, este también se considera mutador. El parámetro
+   * `visited` es un conjunto de métodos ya en la cadena de llamadas: evita
+   * que un ciclo A↔B caiga en recursión infinita. Si una llamada ya está en
+   * `visited` la tratamos conservadoramente como "puede mutar" (true) porque
+   * no queremos perder precisión cuando hay ciclos reales; en la práctica,
+   * los métodos que se llaman entre sí en una clase suelen ser helpers que
+   * sí mutan.
+   */
+  private methodMutates(method: ClassMethod, classDecl: ClassDeclaration, visited: Set<string>): boolean {
     // V20: parameter properties en el constructor implican asignación
     // automática a `this.x`. Eso es una mutación de `this`, así que el
     // constructor nunca es const.
     if (method.name === "constructor" && method.params.some(p => p.access !== undefined || p.readonly === true)) return true;
-    return method.body.statements.some(statement => this.statementMutatesThis(statement));
+    return method.body.statements.some(statement => this.statementMutatesThis(statement, classDecl, visited));
   }
-  private statementMutatesThis(node: Statement): boolean {
+  private statementMutatesThis(node: Statement, classDecl: ClassDeclaration, visited: Set<string>): boolean {
     switch (node.kind) {
-      case "VariableDeclaration": return this.expressionMutatesThis(node.initializer);
-      case "ExpressionStatement": return this.expressionMutatesThis(node.expression);
-      case "ReturnStatement": return !!node.value && this.expressionMutatesThis(node.value);
-      case "BlockStatement": return node.statements.some(statement => this.statementMutatesThis(statement));
-      case "IfStatement": return this.expressionMutatesThis(node.condition) || this.statementMutatesThis(node.thenBranch) || (!!node.elseBranch && this.statementMutatesThis(node.elseBranch));
-      case "WhileStatement": return this.expressionMutatesThis(node.condition) || this.statementMutatesThis(node.body);
-      case "ForStatement": return (!!node.initializer && this.statementMutatesThis(node.initializer)) || (!!node.condition && this.expressionMutatesThis(node.condition)) || (!!node.increment && this.expressionMutatesThis(node.increment)) || this.statementMutatesThis(node.body);
+      case "VariableDeclaration": return this.expressionMutatesThis(node.initializer, classDecl, visited);
+      case "ExpressionStatement": return this.expressionMutatesThis(node.expression, classDecl, visited);
+      case "ReturnStatement": return !!node.value && this.expressionMutatesThis(node.value, classDecl, visited);
+      case "BlockStatement": return node.statements.some(statement => this.statementMutatesThis(statement, classDecl, visited));
+      case "IfStatement": return this.expressionMutatesThis(node.condition, classDecl, visited) || this.statementMutatesThis(node.thenBranch, classDecl, visited) || (!!node.elseBranch && this.statementMutatesThis(node.elseBranch, classDecl, visited));
+      case "WhileStatement": return this.expressionMutatesThis(node.condition, classDecl, visited) || this.statementMutatesThis(node.body, classDecl, visited);
+      case "ForStatement": return (!!node.initializer && this.statementMutatesThis(node.initializer, classDecl, visited)) || (!!node.condition && this.expressionMutatesThis(node.condition, classDecl, visited)) || (!!node.increment && this.expressionMutatesThis(node.increment, classDecl, visited)) || this.statementMutatesThis(node.body, classDecl, visited);
       default: return false;
     }
   }
-  private expressionMutatesThis(node: Expression): boolean {
+  private expressionMutatesThis(node: Expression, classDecl: ClassDeclaration, visited: Set<string>): boolean {
     if (node.kind === "AssignmentExpression") {
       let target: Expression = node.target;
       while (target.kind === "MemberExpression") target = target.object;
       return target.kind === "IdentifierExpression" && target.name === "this";
     }
-    if (node.kind === "BinaryExpression") return this.expressionMutatesThis(node.left) || this.expressionMutatesThis(node.right);
-    if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand);
-    if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand);
-    if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg));
-    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression) : this.expressionMutatesThis(item));
-    if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement)) : this.expressionMutatesThis(node.body);
-    if (node.kind === "MemberCallExpression") return this.expressionMutatesThis(node.object) || node.args.some(arg => this.expressionMutatesThis(arg));
-    if (node.kind === "MemberExpression") return this.expressionMutatesThis(node.object);
-    if (node.kind === "IndexExpression") return this.expressionMutatesThis(node.object) || this.expressionMutatesThis(node.index);
+    if (node.kind === "BinaryExpression") return this.expressionMutatesThis(node.left, classDecl, visited) || this.expressionMutatesThis(node.right, classDecl, visited);
+    if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
+    if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
+    if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg, classDecl, visited));
+    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression, classDecl, visited) : this.expressionMutatesThis(item, classDecl, visited));
+    if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement, classDecl, visited)) : this.expressionMutatesThis(node.body, classDecl, visited);
+    // V30.11.1: análisis inter-procedimental. Si vemos `this.otroMetodo(...)`
+    // y `otroMetodo` pertenece a esta misma clase, preguntamos recursivamente
+    // si muta. Esto cubre el caso Svg.run() que solo llama a modX/modY y
+    // antes se marcaba `const` aunque modX/modY muten `this`.
+    if (node.kind === "MemberCallExpression") {
+      if (this.expressionMutatesThis(node.object, classDecl, visited)) return true;
+      if (node.args.some(arg => this.expressionMutatesThis(arg, classDecl, visited))) return true;
+      const calledOnThis = node.object.kind === "IdentifierExpression" && (node.object as { name: string }).name === "this";
+      if (calledOnThis && classDecl) {
+        const target = classDecl.methods.find(m => m.name === node.method);
+        if (target && !visited.has(target.name)) {
+          const next = new Set(visited);
+          next.add(target.name);
+          if (this.methodMutates(target, classDecl, next)) return true;
+        }
+      }
+      return false;
+    }
+    if (node.kind === "MemberExpression") return this.expressionMutatesThis(node.object, classDecl, visited);
+    if (node.kind === "IndexExpression") return this.expressionMutatesThis(node.object, classDecl, visited) || this.expressionMutatesThis(node.index, classDecl, visited);
     return false;
   }
   private interfaceConcept(node: InterfaceDeclaration): string {

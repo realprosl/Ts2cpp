@@ -493,3 +493,90 @@ function f(n: number): string {
   // Verificamos que NO se le pasa el subject al callback de 0 params.
   assert.doesNotMatch(out, /\[\]\(\)\s*->\s*std::string[^}]*\(\s*n\s*\)/);
 });
+
+// ---------------------------------------------------------------------------
+// V30.11.1: detección inter-procedimental de mutación. Antes, `methodMutates`
+// solo miraba asignaciones directas a `this.campo`. Si un método solo llama
+// a `this.otroMetodo()` que muta, se marcaba `const` en C++ y g++ reventaba
+// con "passing const Svg as 'this' argument discards qualifiers". Estos
+// tests verifican que el método se sigue marcando no-const cuando una
+// llamada transitiva a otro método de la misma clase muta, y que los métodos
+// puramente lectores siguen siendo `const` (no rompemos el caso V30.10.2).
+// ---------------------------------------------------------------------------
+
+test("codegen V30.11.1: método que llama a this.otro() que muta → no-const", () => {
+  // Svg.run() no asigna a this.x/this.y directamente, pero llama a
+  // this.modX()/this.modY() que sí lo hacen. run() debe ser no-const.
+  const out = cpp(`
+    class Svg {
+      x: i8; y: i8
+      constructor() { this.x = 0; this.y = 0 }
+      modX(v: i8): i8 { this.x = this.x + v; return this.x }
+      modY(v: i8): i8 { this.y = this.y + v; return this.y }
+      run(): void { const _a = this.modX(10); const _b = this.modY(20) }
+    }
+    const s = new Svg(); s.run();
+  `);
+  // modX y modY asignan a this → no-const (caso baseline previo).
+  assert.match(out, /int8_t\s+modX\(\s*int8_t\s+v\s*\)\s*\{/);
+  assert.doesNotMatch(out, /modX\([^)]*\)\s+const\s+\{/);
+  // run() NO debe llevar `const` aunque solo llame a modX/modY.
+  const runMatches = out.match(/void\s+run\s*\([^)]*\)\s+(const\s+)?\{/);
+  assert.ok(runMatches, "debe existir método run()");
+  assert.equal(runMatches[1], undefined, "run() debe ser no-const");
+});
+
+test("codegen V30.11.1: método que solo lee this.campo → const (no rompe caso existente)", () => {
+  // getX() solo lee this.x — debe seguir siendo const como en V30.10.2.
+  const out = cpp(`
+    class Pair {
+      x: i8; y: i8
+      constructor() { this.x = 0; this.y = 0 }
+      getX(): i8 { return this.x }
+      getY(): i8 { return this.y }
+      sum(): i8 { return this.getX() + this.getY() }
+    }
+  `);
+  // getX, getY, sum son puramente lectores → todos const.
+  assert.match(out, /int8_t\s+getX\(\)\s+const\s*\{/);
+  assert.match(out, /int8_t\s+getY\(\)\s+const\s*\{/);
+  // sum() llama a this.getX() y this.getY() (que son const), por lo tanto
+  // sum() también debe poder ser const.
+  assert.match(out, /int8_t\s+sum\(\)\s+const\s*\{/);
+});
+
+test("codegen V30.11.1: ciclo A↔B entre métodos de la misma clase no causa recursión infinita", () => {
+  // ping() llama a pong() y pong() llama a ping(). Aunque ambos asignan a
+  // this.counter, lo crítico aquí es que el visited set evita que el
+  // análisis caiga en un loop infinito. Ambos métodos deben ser no-const.
+  const out = cpp(`
+    class PingPong {
+      counter: i8
+      constructor() { this.counter = 0 }
+      ping(): void { this.counter = this.counter + 1; this.pong() }
+      pong(): void { this.counter = this.counter + 1; this.ping() }
+    }
+  `);
+  // Tanto ping como pong asignan a this.counter → no-const.
+  assert.doesNotMatch(out, /void\s+ping\s*\(\)\s+const\s*\{/);
+  assert.doesNotMatch(out, /void\s+pong\s*\(\)\s+const\s*\{/);
+  // El test compila (no se cuelga el codegen) y produce la salida esperada.
+  assert.match(out, /struct\s+PingPong\s*\{/);
+});
+
+test("codegen V30.11.1: método que no llama a nada y no muta → const (baseline)", () => {
+  // verify() no asigna a this y no llama a this.otro() — debe seguir siendo
+  // const. Este test es el guardrail de que no rompemos el camino feliz.
+  const out = cpp(`
+    class Bag {
+      v: i8
+      constructor() { this.v = 0 }
+      verify(): i8 {
+        const local: i8 = 42;
+        return local;
+      }
+    }
+  `);
+  // verify() no toca this y no llama a métodos de la clase → const.
+  assert.match(out, /int8_t\s+verify\(\)\s+const\s*\{/);
+});
