@@ -31,7 +31,14 @@ export interface ArrayBinding { name: string; declaredType?: TypeName; defaultVa
 export interface Parameter { name: string; type: TypeName; out: boolean; passing: ParameterPassing; variadic?: boolean; defaultValue?: Expression; optional?: boolean; /** V19: modificador (private/public/protected) — convierte el parámetro en "parameter property". */ access?: AccessModifier; /** V19: anota si el campo debe ser readonly (true cuando es parameter property con readonly). */ readonly?: boolean; /** V0.1: tipo resuelto adjuntado por el semantic checker. */ resolvedType?: import("../types/type-system.ts").ResolvedType; /** V0.2: el type-checker anota si el nombre del parámetro colisiona con un singleton del runtime. */ fromRuntime?: boolean; span: Span }
 export interface FunctionDeclaration { kind: "FunctionDeclaration"; exported?: boolean; name: string; async: boolean; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; params: Parameter[]; returnType: TypeName; /** V0.3: huella estructural resuelta por el semantic checker. */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; /** V18: decoradores (`@cpp_name(...)`, `@cpp_header(...)`, etc.) */ decorators?: Decorator[]; span: Span }
 export interface InterfaceMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; /** V18 */ decorators?: Decorator[]; span: Span }
-export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; /** V0.4: tipo concreto en runtime C++. */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; /** V18: decoradores sobre la interface en sí (`@cpp_type(...)`). */ decorators?: Decorator[]; span: Span }
+// V30.11: las interfaces admiten campos ademas de metodos (shape types).
+// Un campo es `nombre: tipo` o `nombre?: tipo` (opcional). Sigue el mismo
+// shape que `ClassField` sin los modificadores (access/readonly/decorators)
+// porque las interfaces son contratos estructurales, no declaraciones de
+// almacenamiento: el codegen emite los campos como miembros del struct C++
+// cuando la interface se usa como tipo de dato (no solo como concepto).
+export interface InterfaceField { name: string; type: TypeName; optional: boolean; span: Span }
+export interface InterfaceDeclaration { kind: "InterfaceDeclaration"; exported?: boolean; name: string; methods: InterfaceMethod[]; /** V30.11: campos de la shape (ademas de los metodos). Un interface con solo campos es una "shape type" pura; un interface con ambos es un contrato hibrido. */ fields: InterfaceField[]; /** V0.4: tipo concreto en runtime C++. */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; /** V18: decoradores sobre la interface en sí (`@cpp_type(...)`). */ decorators?: Decorator[]; span: Span }
 export type Decorator = { name: string; args: Expression[] };
 
 // V19: modificador de encapsulación. "public" es el default si se omite.

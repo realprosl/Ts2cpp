@@ -826,7 +826,28 @@ export class TypeChecker {
     // V0.4: interfaces se emiten como `struct` C++ con métodos virtuales puros.
     node.resolvedRuntimeType = { kind: "passthrough", cppName: node.name };
     const methods = new Set<string>();
+    // V30.11: track conjunto de nombres declarados (metodos + campos) para
+    // detectar colisiones entre miembros de la interface. Las interfaces son
+    // contratos estructurales: el mismo nombre no puede ser ambos metodo y
+    // campo (eso seria ambiguo en C++ y absurdo en TS).
+    const memberNames = new Set<string>();
+    // V30.11: validar los campos de la shape. Mismas reglas que un campo de
+    // clase: tipo concreto (no void ni otra interface), no ref/constRef (un
+    // campo no puede almacenar prestamos), y nombres unicos.
+    for (const field of node.fields) {
+      if (memberNames.has(field.name)) this.report(field, `Miembro duplicado '${field.name}'`);
+      memberNames.add(field.name);
+      this.validateType(field.type, field, false, false, scope);
+      if (field.type === "void" || this.interfaces.has(field.type)) this.report(field, `El campo '${field.name}' necesita un tipo concreto`);
+      // V22 (Memory Model v2): ref<T> y constRef<T> son préstamos que no
+      // pueden almacenarse en un campo. Misma regla que en ClassField.
+      if (isGenericType(field.type) && (genericBase(field.type) === "ref" || genericBase(field.type) === "constRef")) {
+        this.report(field, `E4203: borrowed references cannot be stored in interface fields. Use T (value), ptr<T> (exclusive owner), or constPtr<T> (readonly owner) for the field '${field.name}'.`);
+      }
+    }
     for (const method of node.methods) {
+      if (memberNames.has(method.name)) this.report(method, `El método '${method.name}' entra en conflicto con un campo`);
+      memberNames.add(method.name);
       const signature = `${method.name}(${method.params.map(parameter => parameter.type).join(",")})`;
       if (methods.has(signature)) this.report(method, `Sobrecarga de método duplicada '${method.name}'`);
       methods.add(signature);
@@ -882,6 +903,10 @@ export class TypeChecker {
         decorators: [],
         span: this.fakeSpan(),
       })),
+      // V30.11: las interfaces built-in no declaran campos (son contratos
+      // puros de metodos, igual que antes). Solo las interfaces declaradas
+      // en .ets pueden tener `fields`.
+      fields: [],
       decorators: [],
       span: this.fakeSpan(),
     };
@@ -1978,6 +2003,37 @@ export class TypeChecker {
         break;
       }
       case "ObjectLiteralExpression": {
+        // V30.11: object literal como satisfaccion de una shape (interface).
+        // Si `expected` apunta a una interface, cada propiedad del literal
+        // debe coincidir con un campo declarado (nombre + tipo). Los campos
+        // opcionales (`nombre?`) se admiten omitidos. Si falta un campo
+        // obligatorio, o sobra una propiedad no declarada, error.
+        //
+        // Antes de V30.11, el object literal solo era valido como
+        // constructor inline de una object-variant de union. Ahora se
+        // admiten ambos contextos; la rama de union se mantiene intacta
+        // mas abajo (es la original).
+        if (expected && !isGenericType(expected) && this.interfaces.has(expected)) {
+          const iface = this.interfaces.get(expected)!;
+          const ifaceFieldNames = new Set(iface.fields.map(f => f.name));
+          const providedNames = new Set<string>();
+          for (const prop of node.properties) {
+            providedNames.add(prop.key);
+            const fieldDecl = iface.fields.find(f => f.name === prop.key);
+            if (!fieldDecl) {
+              this.report(prop.value, `La interfaz '${expected}' no declara el campo '${prop.key}'`);
+              continue;
+            }
+            this.require(this.expression(prop.value, scope, fieldDecl.type), fieldDecl.type, prop.value);
+          }
+          for (const fieldDecl of iface.fields) {
+            if (!fieldDecl.optional && !providedNames.has(fieldDecl.name)) {
+              this.report(node, `Falta el campo obligatorio '${fieldDecl.name}' de la interfaz '${expected}'`);
+            }
+          }
+          result = expected;
+          break;
+        }
         // V1.4: object literal como constructor inline de object-variant.
         // El primer property debe ser el discriminador (literal primitivo);
         // los demás son bindings del payload. Necesitamos `expected` apuntando
@@ -3365,6 +3421,36 @@ export class TypeChecker {
         }
         const resolved = this.resolveClass(classLookupType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
+        // V30.11: resolución de campos/métodos de interface. Si el tipo del
+        // objeto es una interface (nombrada o genérica como `Foo<T>`),
+        // buscamos el miembro como campo o metodo de la shape. Esto cubre
+        // tanto `const m: Mod = ...; m.kind` (cliente) como llamadas del
+        // estilo `const r: I = ...; r.metodo()` (futuro).
+        const interfaceBase = isGenericType(objectType) ? genericBase(objectType) : objectType;
+        if (!owner && this.interfaces.has(interfaceBase)) {
+          const iface = this.interfaces.get(interfaceBase)!;
+          const fieldMember = iface.fields.find(f => f.name === node.member);
+          if (fieldMember) {
+            // Las interfaces declaradas en .ets no admiten todavia
+            // typeParameters al nivel de la interface (solo los metodos
+            // pueden ser genericos via InterfaceMethod.typeParameters).
+            // Por tanto `field.type` se devuelve tal cual; si en algun
+            // momento se anade genericidad a la interface, aqui habra que
+            // propagar las sustituciones como hace `resolveClass`.
+            result = fieldMember.type;
+            break;
+          }
+          // El miembro tambien puede ser un metodo (MemberCallExpression
+          // lo consumira despues). Devolvemos un nombre sentinela que el
+          // codegen reconoce como dispatch a la firma de la interface.
+          if (iface.methods.some(m => m.name === node.member)) {
+            result = `interface::${interfaceBase}::${node.member}`;
+            break;
+          }
+          this.report(node, `La interfaz '${interfaceBase}' no declara el miembro '${node.member}'`);
+          result = "void";
+          break;
+        }
         // V1.2: los miembros de una unión (variantes) se acceden como `Direction.North`.
         // Si el objeto es un nombre de unión, el miembro es una variante.
         if (!owner && this.unions.has(objectType)) {

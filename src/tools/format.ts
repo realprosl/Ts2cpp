@@ -131,12 +131,17 @@ function formatFunctionDeclaration(declaration: FunctionDeclaration, method = fa
 
 function formatInterfaceDeclaration(declaration: InterfaceDeclaration): string {
   const exported = declaration.exported ? "export " : "";
+  // V30.11: las interfaces pueden tener campos ademas de metodos (shape types).
+  // El formateador emite los campos primero (mismo orden que el parser) y
+  // luego los metodos, con la misma indentacion. Sin esto, `ets fmt` borraba
+  // silenciosamente los campos de la interface al reescribir el archivo.
+  const fields = declaration.fields.map(field => `${INDENT}${field.name}${field.optional ? "?" : ""}: ${field.type};`);
   const methods = declaration.methods.map((method: InterfaceMethod) => {
     const typeParams = method.typeParameters?.length ? `<${method.typeParameters.map(p => `${p.name}${p.constraint ? ` extends ${p.constraint}` : ""}${p.default ? ` = ${p.default}` : ""}`).join(", ")}>` : "";
     const params = method.params.map(formatParameter).join(", ");
     return `${INDENT}${method.name}${typeParams}(${params}): ${method.returnType};`;
   });
-  return `${exported}interface ${declaration.name} {\n${methods.join("\n")}\n}`;
+  return `${exported}interface ${declaration.name} {\n${[...fields, ...methods].join("\n")}\n}`;
 }
 
 function formatClassDeclaration(declaration: ClassDeclaration): string {

@@ -18,7 +18,7 @@ import type {
 type DocEntry =
   | { kind: "function"; exported: boolean; name: string; typeParameters: string[]; params: Parameter[]; returnType: string }
   | { kind: "class"; exported: boolean; name: string; typeParameters: string[]; fields: { name: string; type: string }[]; methods: { name: string; typeParameters: string[]; params: Parameter[]; returnType: string }[] }
-  | { kind: "interface"; exported: boolean; name: string; methods: { name: string; typeParameters: string[]; params: Parameter[]; returnType: string }[] }
+  | { kind: "interface"; exported: boolean; name: string; /** V30.11: campos de la shape (ademas de los metodos). */ fields: { name: string; type: string; optional: boolean }[]; methods: { name: string; typeParameters: string[]; params: Parameter[]; returnType: string }[] }
   | { kind: "variable"; exported: boolean; name: string; declaredType?: string };
 
 function formatParameter(parameter: Parameter): string {
@@ -94,6 +94,10 @@ function collectInterface(declaration: InterfaceDeclaration): DocEntry {
     kind: "interface",
     exported: !!declaration.exported,
     name: declaration.name,
+    // V30.11: los campos de la shape se exportan a la doc API igual que
+    // los campos de una clase. Sin esto, `ets doc` silenciosamente
+    // descartaba los campos al generar la declaracion.
+    fields: declaration.fields.map(field => ({ name: field.name, type: field.type, optional: field.optional })),
     methods: declaration.methods.map((method) => ({
       name: method.name,
       typeParameters: (method.typeParameters ?? []).map(parameter => parameter.name),

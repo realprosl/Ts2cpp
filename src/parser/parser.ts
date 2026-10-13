@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, UnionDeclaration, UnionVariant, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, InterfaceField, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, UnionDeclaration, UnionVariant, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -234,6 +234,16 @@ export class Parser {
     const name = this.consume("identifier", "Se esperaba el nombre de la interfaz");
     const open = this.consume("{", "Las interfaces son estructurales y no admiten herencia; se esperaba '{'");
     const methods: InterfaceMethod[] = [];
+    // V30.11: las interfaces admiten campos (shape types) ademas de metodos.
+    // Un campo es `nombre: tipo` o `nombre?: tipo` (opcional). La decision
+    // field-vs-method se hace mirando el siguiente token tras el identifier:
+    //   - `(` -> metodo (forma existente: nombre(args): ret)
+    //   - `?` -> campo opcional (`nombre?: tipo`)
+    //   - `:` -> campo obligatorio (`nombre: tipo`)
+    // Cualquier otra cosa es un error (es exactamente la logica del parser
+    // de clases en la linea 297 en adelante, que ya distingue entre field
+    // y method por el mismo pivot).
+    const fields: InterfaceField[] = [];
     while (!this.check("}") && !this.check("eof")) {
       // V30.5.3 fix: el bucle del parser de interfaces no llamaba a
       // skipNewlines(), a diferencia del parser de clases (linea 273).
@@ -246,30 +256,42 @@ export class Parser {
       // desde V18+ con error en linea 3:7.
       this.skipNewlines();
       if (this.check("}") || this.check("eof")) break;
-      // V18: `@cpp_name(...)` por método de la interface.
-      const methodDecorators = this.parseDecorators();
-      const methodName = this.consume("identifier", "Se esperaba el nombre del método");
-      this.consume("(", "Se esperaba '('");
-      const params: Parameter[] = [];
-      if (!this.check(")")) do {
-        const out = this.match("out");
-        // V22: `mut` eliminado. Consumir + diagnosticar.
-        if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
-        const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
+      // V18: `@cpp_name(...)` por método o campo de la interface.
+      const memberDecorators = this.parseDecorators();
+      const memberName = this.consume("identifier", "Se esperaba el nombre del campo o método");
+      // V30.11: detectar field vs method por el siguiente token.
+      if (this.check("(")) {
+        const params: Parameter[] = [];
+        this.advance(); // consume "("
+        if (!this.check(")")) do {
+          const out = this.match("out");
+          // V22: `mut` eliminado. Consumir + diagnosticar.
+          if (this.match("mut")) this.error(this.previous(), "E4400: 'mut' has been removed. Use ref<T> for an explicit mutable reference, or constRef<T> for a readonly borrow.");
+          const parameter = this.consume("identifier", "Se esperaba el nombre del parámetro");
+          const optional = this.match("?");
+          this.consume(":", "El parámetro necesita un tipo");
+          const type = this.typeName();
+          const defaultValue = this.match("=") ? this.expression() : undefined;
+          params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : "value", defaultValue, optional, span: parameter.span });
+        } while (this.match(","));
+        this.consume(")", "Se esperaba ')' después de los parámetros");
+        this.consume(":", "El método necesita un tipo de retorno");
+        const returnType = this.typeName();
+        const end = this.consumeStatementTerminator("Se esperaba ';' después del método");
+        methods.push({ name: memberName.lexeme, params, returnType, decorators: memberDecorators, span: span(memberName.span.start, end.span.end) });
+      } else {
+        // V30.11: campo. Sintaxis: `nombre?: tipo;` o `nombre: tipo;`.
+        // El `?` opcional marca el campo como opcional (se permite omitir
+        // en el object literal que satisface la shape).
         const optional = this.match("?");
-        this.consume(":", "El parámetro necesita un tipo");
+        this.consume(":", "Se esperaba ':' después del nombre del campo");
         const type = this.typeName();
-        const defaultValue = this.match("=") ? this.expression() : undefined;
-        params.push({ name: parameter.lexeme, type, out, passing: out ? "out" : "value", defaultValue, optional, span: parameter.span });
-      } while (this.match(","));
-      this.consume(")", "Se esperaba ')' después de los parámetros");
-      this.consume(":", "El método necesita un tipo de retorno");
-      const returnType = this.typeName();
-      const end = this.consumeStatementTerminator("Se esperaba ';' después del método");
-      methods.push({ name: methodName.lexeme, params, returnType, decorators: methodDecorators, span: span(methodName.span.start, end.span.end) });
+        const end = this.consumeStatementTerminator("Se esperaba ';' o newline después del campo");
+        fields.push({ name: memberName.lexeme, type, optional, span: span(memberName.span.start, end.span.end) });
+      }
     }
     const close = this.consume("}", "Se esperaba '}' después de la interfaz");
-    return { kind: "InterfaceDeclaration", exported, name: name.lexeme, methods, decorators, span: span(keyword.span.start, close.span.end) };
+    return { kind: "InterfaceDeclaration", exported, name: name.lexeme, methods, fields, decorators, span: span(keyword.span.start, close.span.end) };
   }
 
   private classDeclaration(keywordAlreadyConsumed: boolean, exported = false): Statement {

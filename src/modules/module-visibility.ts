@@ -113,7 +113,7 @@ export function validateModuleVisibility(programs: ModuleProgram[]): void {
           node.params.forEach(parameter => { checkType(parameter.type, parameter.span, child); child.add(parameter.name); });
           checkType(node.returnType, node.span, child); statement(node.body, child); break;
         }
-        case "InterfaceDeclaration": node.methods.forEach(method => { const child = new Set(locals); (method.typeParameters ?? []).forEach(parameter => child.add(parameter.name)); (method.typeParameters ?? []).forEach(parameter => { if (parameter.constraint) checkType(parameter.constraint, method.span, child); }); method.params.forEach(parameter => checkType(parameter.type, parameter.span, child)); checkType(method.returnType, method.span, child); }); break;
+        case "InterfaceDeclaration": node.fields.forEach(field => checkType(field.type, field.span, locals)); node.methods.forEach(method => { const child = new Set(locals); (method.typeParameters ?? []).forEach(parameter => child.add(parameter.name)); (method.typeParameters ?? []).forEach(parameter => { if (parameter.constraint) checkType(parameter.constraint, method.span, child); }); method.params.forEach(parameter => checkType(parameter.type, parameter.span, child)); checkType(method.returnType, method.span, child); }); break;
         case "ClassDeclaration": {
           const child = new Set(locals); node.typeParameters.forEach(parameter => child.add(parameter.name)); node.typeParameters.forEach(parameter => { if (parameter.constraint) checkType(parameter.constraint, node.span, child); });
           node.fields.forEach(field => checkType(field.type, field.span, child));
