@@ -996,3 +996,27 @@ test("V30.15.1: whenType<T> sobre type-alias union narrowa via c.payload", () =>
   assert.match(out, /std::holds_alternative<Line>\(c\.payload\)/, "whenType<Line> debe narrowar via c.payload");
   assert.match(out, /std::holds_alternative<Circle>\(c\.payload\)/, "whenType<Circle> debe narrowar via c.payload");
 });
+
+test("V30.16: type parameter constraint permite acceder a miembros del constraint", () => {
+  const src = `
+    interface HasLength { length: number }
+    function longest<T extends HasLength>(a: T, b: T): T {
+      if (a.length > b.length) return a
+      return b
+    }
+    class S {
+      length: number
+      constructor(public s: string) { this.length = s.length }
+    }
+    let r: S = longest(new S("hello"), new S("hi!"))
+    print(r.s)
+  `;
+  const out = compile(src).cpp;
+  // V30.16: el type-checker debe resolver `a.length` mirando el
+  // constraint `HasLength` (que es una interface con `length: number`).
+  // El codegen emite `requires HasLength<T>` y permite el acceso a
+  // `a.length` y `b.length`.
+  assert.match(out, /template\s*<typename\s*T>\s*requires\s*HasLength<T>/, "debe emitir requires HasLength<T>");
+  assert.match(out, /a\.length/, "debe emitir a.length");
+  assert.match(out, /b\.length/, "debe emitir b.length");
+});
