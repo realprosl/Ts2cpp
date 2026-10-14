@@ -3400,6 +3400,15 @@ export class CppGenerator {
         if (etsNetworkCalleeMap[finalCallee]) {
           return `${etsNetworkCalleeMap[finalCallee]}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
         }
+        // V30.18: combinators async (`timeout`/`retry`) se emiten
+        // como `::ets::timeout<T>(...)` etc. `delay` se omite del
+        // mapeo porque choca con funciones del usuario que se llamen
+        // `delay`; los users usan `sleep` (que ya existe) o su propio
+        // `delay` y el codegen lo emite como llamada normal.
+        if (finalCallee === "timeout" || finalCallee === "retry") {
+          const ta = typeArguments.length ? typeArguments.map(cppType).join(", ") : "";
+          return `::ets::${finalCallee}${ta ? `<${ta}>` : ""}(${args.join(", ")})`;
+        }
         // V9.1: awaiters io_uring viven en `ets::` (header runtime/ets_io_uring_async.hpp).
         if (finalCallee === "asyncIoUringRead" || finalCallee === "asyncIoUringWrite" ||
             finalCallee === "ioUringRead" || finalCallee === "ioUringWrite") {
