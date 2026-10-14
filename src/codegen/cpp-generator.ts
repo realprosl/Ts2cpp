@@ -3430,6 +3430,32 @@ export class CppGenerator {
         return finalCallee === "print" ? `print(${args.join(", ")})` : `${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {
+        // V30.17: `Promise.all([...])` y `Promise.race([...])` se emiten
+        // como llamadas a los helpers `::ets::when_all` / `::ets::when_race`
+        // del runtime. El side-channel `_etsPromiseStatic` lo pone el
+        // type-checker.
+        if (node.object.kind === "IdentifierExpression" && node.object.name === "Promise") {
+          const side = (node as unknown as { _etsPromiseStatic?: string })._etsPromiseStatic;
+          if (side === "all" || side === "race") {
+            const arrText = this.emitExpression(node.args[0]!);
+            // V30.17: usamos `::ets::task_all<T>(tasks)` /
+            // `::ets::task_race<T>(tasks)` que devuelven una Task
+            // (no el valor directo), para que el `await` del dialecto
+            // funcione via `co_await` o `ets::syncWait`. El user debe
+            // pasar el type argument explicito: `Promise.all<number>(...)`.
+            const cppFn = side === "all" ? "::ets::task_all" : "::ets::task_race";
+            const tArg = node.typeArguments[0];
+            if (tArg) {
+              const cppT = this.cppT(tArg);
+              // Usamos `::ets::make_task_vector(arr)` para mover los
+              // elementos del array del usuario a un `std::vector<Task<...>>`
+              // sin requerir que `Task<T>` sea copiable.
+              return `(${cppFn}<${cppT}>(::ets::make_task_vector(${arrText})))`;
+            }
+            // Sin type argument: fallback que falla limpiamente (compilation error).
+            return `(${cppFn}</* ERROR: Promise.${side} requiere type argument */>(${arrText}))`;
+          }
+        }
         const typeArguments = node.typeArguments.length ? node.typeArguments : this.callTypeArguments(node);
         // `delete` es keyword en C++; los wrappers `ets::Map`/`ets::Set` exponen el
         // método como `removeKey` y mapeamos aquí la llamada del lenguaje fuente.
