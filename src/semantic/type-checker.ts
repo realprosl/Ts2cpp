@@ -3299,8 +3299,27 @@ export class TypeChecker {
           result = "void";
           break;
         }
-        const argumentTypes = node.args.map(arg => this.expression(arg, scope));
+        // V30.13: misma propagación contextual que CallExpression — si TODAS
+        // las sobrecargas coinciden en el tipo del parámetro en una posición,
+        // lo pasamos como `expected` al argumento. Esto permite que un literal
+        // `[new Line(), new MultiLine(10, 20)]` se infiera como
+        // `Array<SvgChild>` cuando el método espera `Array<SvgChild>` (antes
+        // el literal se evaluaba como tupla `(Line, MultiLine)` y el
+        // matchOverload no encontraba la firma porque `satisfiesInterface`
+        // no acepta tuplas como el lado "actual").
         const classSubstitutions = resolvedClass?.substitutions ?? new Map<string, TypeName>();
+        const contextualArgTypes = node.args.map((_, index) => {
+          const candidates = methods
+            .map(method => {
+              const parameter = method.params[Math.min(index, method.params.length - (method.params.at(-1)?.variadic ? 1 : 0))];
+              return parameter ? this.substituteType(parameter.type, classSubstitutions) : undefined;
+            })
+            .filter((type): type is TypeName => !!type);
+          if (!candidates.length) return undefined;
+          if (candidates.every(type => type === candidates[0])) return candidates[0];
+          return undefined;
+        });
+        const argumentTypes = node.args.map((arg, index) => this.expression(arg, scope, contextualArgTypes[index]));
         const matches = methods.map(method => {
           const signature: FunctionSignature = {
             typeParameters: TypeChecker.namesOf(method.typeParameters ?? []), variadicTypeParameters: [], typeConstraints: TypeChecker.constraintsOf(method.typeParameters ?? []), defaults: TypeChecker.defaultsOf(method.typeParameters ?? []),
