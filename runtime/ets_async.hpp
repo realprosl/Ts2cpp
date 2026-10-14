@@ -316,33 +316,24 @@ auto make_task_vector(Container&& values) {
 }
 
 // V30.18: `timeout<T>(task, ms, sentinel)` espera a la task con un
-// timeout. Si no completa en `ms` milisegundos, devuelve `sentinel`
-// (por default 0). Internamente, race entre la task y un sleep(ms).
+// timeout. Si no completa en `ms` milisegundos, devuelve `sentinel`.
+// Implementacion: race entre la task y una task "delay-then-sentinel"
+// que duerme `ms` y devuelve el sentinel. Como el race es cooperativo,
+// se ejecutan en paralelo: la task hace progreso via co_await a sus
+// awaitables, y la task de delay hace progreso via el SleepAwaiter.
 template <typename T>
 Task<T> timeout(Task<T> task, double ms, T sentinel) {
-    // Iniciamos ambas y esperamos a la primera que complete. Si gana
-    // el sleep, devolvemos sentinel; si gana la task, devolvemos su
-    // resultado. Para T=void, sentinel es 0 (ignorado).
-    if constexpr (std::is_same_v<T, void>) {
-        while (!task.done() && ms > 0) {
-            defaultEventLoop.runOne();
-            ms -= 1.0;  // aproximado; mejora futura: usar timer real
-        }
-        if (task.done()) co_await task;
-        // si no, descartamos task (su destructor la limpia)
-    } else {
-        if (!task.done() && ms > 0) {
-            // Spin-wait cooperativo. Mejora futura: usar uv_timer.
-            auto start = std::chrono::steady_clock::now();
-            while (!task.done()) {
-                defaultEventLoop.runOne();
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration<double, std::milli>(now - start).count() >= ms) break;
-            }
-        }
-        if (task.done()) co_return co_await task;
-        co_return sentinel;
-    }
+    // Task de "delay-then-sentinel": duerme ms, luego devuelve sentinel.
+    auto delayTask = [](double d, T s) -> Task<T> {
+        co_await sleep(d);
+        co_return s;
+    };
+    // Hacemos race entre la task y la delay-task. Si la task gana,
+    // devolvemos su valor. Si la delay-task gana, devolvemos sentinel.
+    // El race espera a la primera que complete (V30.17.1 fix).
+    if (task.done()) co_return co_await task;
+    Task<T> winner = race<T>(std::vector<Task<T>>{ std::move(task), delayTask(ms, sentinel) });
+    co_return co_await winner;
 }
 
 // V30.18: `retry<T>(fn, times, delayMs, sentinel)` reintenta la

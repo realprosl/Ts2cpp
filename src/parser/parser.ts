@@ -931,6 +931,16 @@ export class Parser {
   }
   private assignment(): Expression {
     const left = this.binary(1);
+    // V30.19: operadores compuestos (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`,
+    // `&=`, `|=`, `^=`, `<<=`, `>>=`). Azucar sobre `x = x op y`.
+    const compoundOps = ["+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="] as const;
+    for (const op of compoundOps) {
+      if (this.match(op as TokenKind)) {
+        const value = this.assignment();
+        if (left.kind !== "IdentifierExpression" && left.kind !== "MemberExpression" && left.kind !== "IndexExpression") this.error(this.previous(), "El lado izquierdo de una asignación debe ser una variable, campo o índice");
+        return { kind: "CompoundAssignmentExpression", operator: op, target: left as Extract<Expression, { kind: "IdentifierExpression" | "MemberExpression" | "IndexExpression" }>, value, span: span(left.span.start, value.span.end) };
+      }
+    }
     if (!this.match("=")) return left;
     const value = this.assignment();
     if (left.kind !== "IdentifierExpression" && left.kind !== "MemberExpression" && left.kind !== "IndexExpression") this.error(this.previous(), "El lado izquierdo de una asignación debe ser una variable, campo o índice");

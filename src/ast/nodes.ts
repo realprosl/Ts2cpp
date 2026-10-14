@@ -87,7 +87,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
+export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
   /**
    * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
    * El codegen consume este campo directamente en lugar de parsear
@@ -145,4 +145,10 @@ export interface MemberCallExpression { kind: "MemberCallExpression"; object: Ex
 export interface IndexExpression { kind: "IndexExpression"; object: Expression; index: Expression; span: Span }
 export interface NewExpression { kind: "NewExpression"; className: string; args: Expression[]; span: Span }
 export interface AssignmentExpression { kind: "AssignmentExpression"; target: IdentifierExpression | MemberExpression | IndexExpression; value: Expression; span: Span }
+// V30.19: operadores compuestos (`x += y`, `x -= y`, etc.). Azucar sobre
+// `x = x op y` pero emitido como una sola expresión en C++ (e.g.
+// `x += y;` en lugar de `x = x + y;`). Esto evita leer y reescribir el
+// target dos veces, lo cual importa para campos de struct.
+export type CompoundAssignmentOperator = "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>=";
+export interface CompoundAssignmentExpression { kind: "CompoundAssignmentExpression"; operator: CompoundAssignmentOperator; target: IdentifierExpression | MemberExpression | IndexExpression; value: Expression; span: Span }
 export interface TernaryExpression { kind: "TernaryExpression"; condition: Expression; thenBranch: Expression; elseBranch: Expression; span: Span }

@@ -7,6 +7,9 @@ export type TokenKind =
   | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?" | "@"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
   | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "eof"
+  // V30.19: operadores compuestos. Azucar sobre `x = x op y` pero emitido
+  // como una sola expresion en C++ (`x += y;` en vez de `x = x + y;`).
+  | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>="
   // Salto de linea significativo. El lexer lo emite cuando encuentra \n
   // fuera de strings/comentarios; el parser lo usa como terminador
   // alternativo de statement (junto con ';' y '}').

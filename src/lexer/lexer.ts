@@ -212,8 +212,13 @@ export class Lexer {
     if (this.peek() + this.peek(1) + this.peek(2) === "...") {
       this.advance(); this.advance(); this.advance(); this.add("...", "...", start); return;
     }
+    // V30.19: operadores compuestos de 3 chars (`**=`, `<<=`, `>>=`).
+    const three = this.peek() + this.peek(1) + this.peek(2);
+    if (three === "**=" || three === "<<=" || three === ">>=") {
+      this.advance(); this.advance(); this.advance(); this.add(three as TokenKind, three, start); return;
+    }
     const two = this.peek() + this.peek(1);
-    const doubles: TokenKind[] = ["==", "!=", "<=", ">=", "&&", "||", "=>", "??", "?."];
+    const doubles: TokenKind[] = ["==", "!=", "<=", ">=", "&&", "||", "=>", "??", "?.", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="];
     if (doubles.includes(two as TokenKind)) {
       this.advance(); this.advance(); this.add(two as TokenKind, two, start); return;
     }
