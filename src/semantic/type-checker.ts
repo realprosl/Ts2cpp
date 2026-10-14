@@ -261,6 +261,9 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   concat:  { arity: 1, paramKinds: ["value"], returnType: ([T]) => `${T}[]`, variadic: true },
   // `includes` busca por igualdad.
   includes: { arity: 1, paramKinds: ["value"], returnType: () => "boolean" },
+  // V30.13.2: `pop` elimina el último elemento del array (muta in-place).
+  // Devuelve `void` (estilo JS, aunque TS lo tipa como `T | undefined`).
+  pop:     { arity: 0, paramKinds: [], returnType: () => "void" },
 };
 
 // V28: metodos de la API de string estilo TypeScript. El dialecto los

@@ -2969,6 +2969,82 @@ export class CppGenerator {
             return `JSON.stringify(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
           }
         }
+        // V30.13.2: reescritura de metodos de array (`arr.push(x)`,
+        // `arr.length`, `arr.map(f)`, `arr.filter(p)`, etc.) a llamadas a
+        // los helpers del runtime `ets_*_vec<T>(...)`. Sin esta
+        // reescritura, el parser falla porque las clases del dialecto
+        // no exponen metodos en std::vector (no hay inheritance ni
+        // extension methods). El dialecto es conservador: solo estos
+        // metodos se soportan, todos los demas producen un error de
+        // codegen claro.
+        const arrayType = this.expressionType(node.object);
+        if (arrayType && (isArrayType(arrayType) || (isGenericType(arrayType) && genericBase(arrayType) === "Array"))) {
+          const arrayObj = this.emitExpression(node.object);
+          // .length -> .size()
+          if (method === "length" && node.args.length === 0 && node.typeArguments.length === 0) {
+            return `(${arrayObj}).size()`;
+          }
+          // .push(value) -> ets_push_vec<T>(arr, value)
+          if (method === "push" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_push_vec<${cppElement}>(${arrayObj}, ${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          }
+          // .pop() -> ets_pop_vec<T>(arr)
+          if (method === "pop" && node.args.length === 0) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_pop_vec<${cppElement}>(${arrayObj})`;
+          }
+          // .map(f) -> ets_map_vec<T, U>(arr, f)
+          // Si el usuario declaro el tipo destino (arr.map<U>(f)),
+          // lo propagamos al template C++; si no, usamos `auto` para
+          // que el compilador C++ lo deduzca del lambda.
+          if (method === "map" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            // El typeArgument explicito del usuario (si lo hay) es
+            // el tipo destino del map (U), no T.
+            const userU = node.typeArguments.length > 0 ? cppType(node.typeArguments[0]) : "auto";
+            return `ets_map_vec<${cppElement}, ${userU}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .filter(p) -> ets_filter_vec<T>(arr, p)
+          if (method === "filter" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_filter_vec<${cppElement}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .forEach(f) -> ets_for_each_vec<T>(arr, f)
+          if (method === "forEach" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_for_each_vec<${cppElement}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .slice(start, end) -> ets_slice_vec<T>(arr, start, end)
+          if (method === "slice" && (node.args.length === 1 || node.args.length === 2)) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_slice_vec<${cppElement}>(${arrayObj}, ${node.args.map(a => this.emitExpression(a)).join(", ")})`;
+          }
+          // .find(p) -> ets_find_vec<T>(arr, p)
+          if (method === "find" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_find_vec<${cppElement}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .includes(v) -> ets_includes_vec<T>(arr, v)
+          if (method === "includes" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_includes_vec<${cppElement}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .concat(other) -> ets_concat_vec<T>({arr, other}) (ya existe)
+          if (method === "concat" && node.args.length === 1) {
+            const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
+            const cppElement = this.arrayElementCppType(elementType);
+            return `ets_concat_vec<${cppElement}>({${arrayObj}, ${this.emitExpression(node.args[0])}})`;
+          }
+        }
         // `http.get(url)` y `http.post(url, body, contentType?)` se traducen a
         // llamadas a las funciones libres ets::httpGet/ets::httpPost (declaradas
         // en runtime/ets_http.hpp). Como el type-checker ya valido la forma,
