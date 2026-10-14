@@ -878,3 +878,28 @@ test("codegen V30.12.3: ciclo A↔B se detecta y se emite warning por stderr", (
   assert.match(warning, /V30\.12\.3/);
   assert.match(warning, /A.*B|ciclo/);
 });
+
+test("V30.14.2: type alias union genera SvgChild_Union struct con dispatch + kind publico", () => {
+  const src = `
+    class Line {
+      kind: string
+      constructor() { this.kind = "line" }
+      build(): string { return "<line/>" }
+    }
+    class Circle {
+      kind: string
+      constructor() { this.kind = "circle" }
+      build(): string { return "<circle/>" }
+    }
+    type SvgChild = Line | Circle
+    let c: SvgChild = new Line()
+    print(c.kind)
+    print(c.build())
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /struct SvgChild_Union/, "debe emitir SvgChild_Union");
+  assert.match(out, /std::string kind/, "kind publico es string");
+  assert.match(out, /_kindIndex/, "_kindIndex privado");
+  assert.match(out, /build\(\) const \{ switch \(_kindIndex\)/, "build() dispatch via _kindIndex");
+  assert.match(out, /make_Line/, "make_Line constructor del union");
+});

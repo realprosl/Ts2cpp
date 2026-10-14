@@ -149,12 +149,23 @@ export class CppGenerator {
   // V30.14.1: resolver de type aliases (pasado por el TypeChecker).
   // Usado para expandir type arguments en generic types.
   private resolveTypeAlias: ((name: string) => string | undefined) | undefined;
+  // V30.14.2: callback para resolver un union literal (`Line | Circle`)
+  // de vuelta a su nombre de type alias original (`SvgChild`). Usado por
+  // `cppT` cuando el type-checker ya expandio el alias.
+  private resolveUnionAliasName?: (union: TypeName) => string | undefined;
+  // V30.14.2: variables top-level cuyo tipo es un auto-union de type alias.
+  // Se emiten como `static <Union>` (default-init) en el header y la
+  // inicializacion real va al bloque `ets_init_*()` (despues de los
+  // globals). Asi evitamos problemas de orden de inicializacion con
+  // `make_X` y el std::variant del auto-union.
+  private _deferredInitVars: { variable: VariableDeclaration; cppName: string; initializer: string }[] | undefined = undefined;
   private readonly identifierTypes = new Map<string, TypeName>();
   private destructuringCounter = 0;
-  constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[], resolveTypeAlias?: (name: string) => string | undefined) {
+  constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[], resolveTypeAlias?: (name: string) => string | undefined, resolveUnionAliasName?: (union: TypeName) => string | undefined) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
     this.resolveTypeAlias = resolveTypeAlias;
+    this.resolveUnionAliasName = resolveUnionAliasName;
   }
   // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
   // por colisión con un global del runtime, devuelve el nombre prefijado.
@@ -293,6 +304,10 @@ export class CppGenerator {
     // V30.12.2: detectar interfaces usadas en `Array<I>` y construir el
     // union auto-generado con las clases concretas que tengan `kind: string`.
     this.interfacesNeedingAutoUnion.clear();
+    // V30.14.2: limpiar tambien el set de type aliases union y la cola
+    // de init diferido (entre módulos no deben acumularse).
+    this.typeAliasesNeedingUnion.clear();
+    if (this._deferredInitVars) this._deferredInitVars.length = 0;
     this.collectInterfacesNeedingAutoUnion(unwrapped);
     this.buildAutoUnions();
   }
@@ -635,12 +650,61 @@ export class CppGenerator {
   // `_AutoUnion` es estable — `emitNewMatch` lo consulta para detectar
   // si el subject de un match es un auto-union.
   private autoUnionName(interfaceName: string): string { return `${interfaceName}_AutoUnion`; }
+  // V30.14.2: type aliases que necesitan auto-union (no solo interfaces).
+  // `type X = A | B` (sin ser un array) genera un `X_Union` struct
+  // con la misma semantica que el `_AutoUnion` de las interfaces.
+  private typeAliasesNeedingUnion: Set<string> = new Set();
+  private typeAliasUnionName(aliasName: string): string { return `${aliasName}_Union`; }
+  private typeAliasUnionKey(aliasName: string): string { return `__typealias_${aliasName}`; }
+  // V30.14.2: type alias union name helper (consulta el `resolveUnionAliasName`
+  // para resolver una union expandida a su nombre de type alias).
+  private typeAliasUnionType(typeName: TypeName | undefined): TypeName | undefined {
+    if (!typeName) return undefined;
+    if (isUnionType(typeName) && this.resolveUnionAliasName) {
+      const alias = this.resolveUnionAliasName(typeName);
+      if (alias && this.typeAliasesNeedingUnion.has(alias)) return this.typeAliasUnionName(alias);
+    }
+    if (typeof typeName === "string" && this.typeAliasesNeedingUnion.has(typeName)) return this.typeAliasUnionName(typeName);
+    return undefined;
+  }
+  // V30.14.2: helper unificado para resolver un tipo a su representacion
+  // C++ post-union-expansion. Cubre: `Array<I>` (auto-union), `type X = A | B`
+  // (union alias), `Array<typeAlias>` (expand + array), y fallback a
+  // `cppType` estatico.
+  private cppT(type: TypeName | undefined): string {
+    if (!type) return "void";
+    const ta = this.typeAliasUnionType(type);
+    if (ta) return ta;
+    if (isGenericType(type) && genericBase(type) === "Array") {
+      const arg = genericArguments(type)[0];
+      if (arg) {
+        const argExpanded = this.typeAliasUnionType(arg);
+        if (argExpanded) return `std::vector<${argExpanded}>`;
+      }
+    }
+    return cppType(type);
+  }
+  // V30.14.2: detecta si el type es un auto-union (interface o type alias).
+  // Usado por `NewExpression` y `AssignmentExpression` para envolver
+  // con `make_X(...)` cuando el target lo requiere.
+  private isAutoUnionTarget(type: TypeName | undefined): boolean {
+    if (!type) return false;
+    if (this.interfaceNames.has(type) && this.interfacesNeedingAutoUnion.has(type)) return true;
+    if (typeof type === "string" && this.typeAliasesNeedingUnion.has(type)) return true;
+    if (isUnionType(type) && this.resolveUnionAliasName) {
+      const alias = this.resolveUnionAliasName(type);
+      if (alias && this.typeAliasesNeedingUnion.has(alias)) return true;
+    }
+    return false;
+  }
   // V30.12.2: dada un nombre de tipo, es el nombre del auto-union de
   // una interface registrada en este programa? Se consulta desde
   // `emitNewMatch`.
   private isAutoUnionType(typeName: TypeName | undefined): boolean {
     if (!typeName) return false;
     for (const name of this.autoUnions.keys()) if (this.autoUnionName(name) === typeName) return true;
+    // V30.14.2: type aliases tambien pueden ser auto-unions.
+    for (const alias of this.typeAliasesNeedingUnion) if (this.typeAliasUnionName(alias) === typeName) return true;
     return false;
   }
   // V30.12.2: recorre los `declaredType` de variables y los tipos de
@@ -665,6 +729,42 @@ export class CppGenerator {
       if (stmt.kind === "VariableDeclaration" && stmt.declaredType) visit(stmt.declaredType);
       if (stmt.kind === "ClassDeclaration") for (const field of stmt.fields) visit(field.type);
       if (stmt.kind === "InterfaceDeclaration") for (const field of stmt.fields) visit(field.type);
+      // V30.14.2: parametros de funciones y returns tambien pueden
+      // requerir auto-union. `function f(x: SvgChild)` debe despachar
+      // igual que `let c: SvgChild`.
+      if (stmt.kind === "FunctionDeclaration") {
+        for (const p of stmt.params) visit(p.type);
+        if (stmt.returnType) visit(stmt.returnType);
+      }
+      // V30.14.2: `let c: SvgChild` (SvgChild es type alias) tambien
+      // necesita un auto-union. Detectamos el caso: el type-checker
+      // expandio el alias a `Line | Circle` antes de llegar aqui, asi
+      // que tenemos que consultar el mapa inverso.
+      if (stmt.kind === "VariableDeclaration" && stmt.declaredType) {
+        if (isUnionType(stmt.declaredType) && this.resolveUnionAliasName) {
+          const alias = this.resolveUnionAliasName(stmt.declaredType);
+          if (alias) this.typeAliasesNeedingUnion.add(alias);
+        }
+        // V30.14.2: si el type es directamente un nombre de type alias
+        // registrado (no expandido), lo añadimos tambien.
+        if (typeof stmt.declaredType === "string" && this.aliasNames.has(stmt.declaredType)) {
+          // Necesita un type alias que sea union de clases. Lo verificamos
+          // reasignando desde el `resolveTypeAlias`.
+          if (this.resolveTypeAlias) {
+            const expansion = this.resolveTypeAlias(stmt.declaredType);
+            if (expansion && isUnionType(expansion)) this.typeAliasesNeedingUnion.add(stmt.declaredType);
+          }
+        }
+      }
+      // V30.14.2: parametros de funciones con tipo type alias union.
+      if (stmt.kind === "FunctionDeclaration") {
+        for (const p of stmt.params) {
+          if (typeof p.type === "string" && this.aliasNames.has(p.type) && this.resolveTypeAlias) {
+            const expansion = this.resolveTypeAlias(p.type);
+            if (expansion && isUnionType(expansion)) this.typeAliasesNeedingUnion.add(p.type);
+          }
+        }
+      }
     }
   }
   // V30.12.2: sintetiza un `UnionDeclaration` por cada interface en
@@ -693,18 +793,76 @@ export class CppGenerator {
       };
       this.autoUnions.set(ifaceName, union);
     }
+    // V30.14.2: registra tambien cada type alias union como un auto-union
+    // con prefijo `__typealias_`. La estructura es identica al caso
+    // interface, pero el struct emite `kind: std::string` + `_kindIndex`
+    // (campo privado) en vez de `kind: enum` solo.
+    for (const aliasName of this.typeAliasesNeedingUnion) {
+      const key = this.typeAliasUnionKey(aliasName);
+      if (this.autoUnions.has(key)) continue;
+      if (!this.resolveTypeAlias) continue;
+      const expansion = this.resolveTypeAlias(aliasName);
+      if (!expansion || !isUnionType(expansion)) continue;
+      const variants = unionMembers(expansion).map((name): UnionVariant => {
+        // V30.14.2: el type-checker marca `union_alias::SvgChild` en las
+        // clases que son parte de un union type-alias. Filtramos por
+        // este sentinel.
+        return { name, payload: name, span: { start: { offset: 0, line: 0, column: 0 }, end: { offset: 0, line: 0, column: 0 } } };
+      });
+      const union: UnionDeclaration = {
+        kind: "UnionDeclaration",
+        name: this.typeAliasUnionName(aliasName),
+        typeParameters: [],
+        variants,
+        span: { start: { offset: 0, line: 0, column: 0 }, end: { offset: 0, line: 0, column: 0 } },
+      };
+      this.autoUnions.set(key, union);
+    }
   }
   // V30.13: emite los auto-unions pendientes. Se llama una vez por
   // archivo (header, module, single-TU), tras los unions del usuario
   // y antes de las clases (los payloads referencian tipos de clase).
   private emitAutoUnionDeclarations(): string[] {
     const out: string[] = [];
-    for (const [ifaceName, union] of this.autoUnions) {
-      if (this.autoUnionsEmitted.has(ifaceName)) continue;
-      out.push(`// V30.12.2: auto-union generado para Array<${ifaceName}>.`, this.unionDeclaration(union, this.methodsForInterface(ifaceName)), "");
-      this.autoUnionsEmitted.add(ifaceName);
+    for (const [key, union] of this.autoUnions) {
+      if (this.autoUnionsEmitted.has(key)) continue;
+      // V30.14.2: si el key es un type alias (empieza con __typealias_),
+      // el comentario es distinto y los forwarded methods se extraen
+      // de la primera variante (no de una interface, que no existe).
+      const isTypeAlias = key.startsWith("__typealias_");
+      // V30.14.2: para interfaces, usar `methodsForInterface` (que lee
+      // los metodos del InterfaceDeclaration); para type aliases usar
+      // `forwardedMethodsForTypeAlias` (que los extrae de las clases).
+      const forwardedMethods = isTypeAlias
+        ? this.forwardedMethodsForTypeAlias(key)
+        : this.methodsForInterface(key);
+      const comment = isTypeAlias
+        ? `// V30.14.2: auto-union generado para type alias ${key.slice("__typealias_".length)}.`
+        : `// V30.12.2: auto-union generado para Array<${key}>.`;
+      out.push(comment, this.unionDeclaration(union, forwardedMethods, isTypeAlias), "");
+      this.autoUnionsEmitted.add(key);
     }
     return out;
+  }
+  // V30.14.2: forwarded methods para el auto-union de un type alias.
+  // Se extraen de las clases payload: la interseccion de los metodos
+  // que tienen TODAS las variantes con la misma firma.
+  private forwardedMethodsForTypeAlias(key: string): { name: string; returnType: string; params: { name: string; type: string }[] }[] {
+    if (!key.startsWith("__typealias_")) return [];
+    const union = this.autoUnions.get(key);
+    if (!union) return [];
+    for (const variant of union.variants) {
+      const cls = this.classesByName.get(variant.payload ?? "");
+      if (!cls) continue;
+      return cls.methods
+        .filter(m => m.name !== "constructor")
+        .map(m => ({
+          name: m.name,
+          returnType: cppType(m.returnType ?? "void"),
+          params: m.params.map(p => ({ name: p.name, type: cppType(p.type) })),
+        }));
+    }
+    return [];
   }
   // V30.13: lee los métodos de una interface declarada en el programa.
   // Usado para emitir dispatch automático en el struct del auto-union.
@@ -1049,7 +1207,10 @@ export class CppGenerator {
     for (const variable of simpleTopLevel) {
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
-      let initializer = this.emitExpression(variable.initializer);
+      // V30.14.2: propagamos el target type al emit del initializer para
+      // que `new Line()` sepa que el target es un auto-union y envuelva
+      // con `make_Line(...)`.
+      let initializer = variable.declaredType ? this.emitExpression(variable.initializer, variable.declaredType) : this.emitExpression(variable.initializer);
       // V3: idem VariableDeclaration; emitir `static_cast<target>` cuando el
       // tipo declarado es un numérico concreto y el initializer es de otro tipo
       // numérico (o `number` literal). Esto cubre el caso de top-level.
@@ -1074,8 +1235,20 @@ export class CppGenerator {
       const canBeConstexpr = typeof variable.constValue !== "string" && variable.constValue !== null;
       // V30.12.2: usar `arrayCppType` para que `Array<Interface>` se emita
       // como `std::vector<I_AutoUnion>`. Si no, fallback a `cppType`.
-      const cppT = (isArrayType(type) || (isGenericType(type) && genericBase(type) === "Array")) ? this.arrayCppType(type) : cppType(type);
-      lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppT} ${cppName} = ${initializer};`);
+      // V30.14.2: usar `cppT` helper que tambien cubre `type X = A | B`
+      // suelto (no solo dentro de Array<...>).
+      const cppTypeText = this.cppT(type);
+      // V30.14.2: si la variable tiene tipo auto-union struct (interface
+      // o type alias), el initializer no puede ir en static-init porque
+      // `make_X(...)` puede no existir aún. Lo difiere al bloque
+      // `ets_init_*()` que emite el codegen después de los globals.
+      if (this.isAutoUnionTarget(type)) {
+        if (!this._deferredInitVars) this._deferredInitVars = [];
+        this._deferredInitVars.push({ variable, cppName, initializer });
+        lines.push(`static ${cppTypeText} ${cppName};`);
+        continue;
+      }
+      lines.push(`static ${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppTypeText} ${cppName} = ${initializer};`);
     }
     if (simpleTopLevel.length) lines.push("");
     // V18: las funciones con `@cpp_name` se emiten como `extern "C"` en lugar
@@ -1101,6 +1274,14 @@ export class CppGenerator {
     lines.push("int main(int argc, char** argv) {"); this.indent++;
     lines.push(this.pad() + "ets_argc = argc;");
     lines.push(this.pad() + "ets_argv = argv;");
+    // V30.14.2: deferred init para variables top-level con tipo auto-union
+    // struct. El static-init ya se hizo (declaracion `static T name;`) y
+    // aqui asignamos el valor real (que envuelve con `make_X(...)`).
+    if (this._deferredInitVars && this._deferredInitVars.length > 0) {
+      for (const { cppName, initializer } of this._deferredInitVars) {
+        lines.push(this.pad() + `${cppName} = ${initializer};`);
+      }
+    }
     for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
     for (const statement of topLevelOther) lines.push(this.emitStatement(statement));
     lines.push(this.pad() + "return 0;"); this.indent--; lines.push("}", "");
@@ -1268,8 +1449,16 @@ export class CppGenerator {
       // usan `static` para no contaminar el namespace global entre módulos.
       const exportLinkage = variable.exported ? "" : "static ";
       // V30.12.2: usar `arrayCppType` para `Array<Interface>`.
-      const cppT = (isArrayType(type) || (isGenericType(type) && genericBase(type) === "Array")) ? this.arrayCppType(type) : cppType(type);
-      lines.push(`${exportLinkage}${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppT} ${cppName} = ${initializerText};`);
+      // V30.14.2: usar `cppT` helper que tambien cubre `type X = A | B`.
+      const cppTypeText = this.cppT(type);
+      // V30.14.2: deferir la inicializacion al init() si es auto-union.
+      if (this.isAutoUnionTarget(type)) {
+        if (!this._deferredInitVars) this._deferredInitVars = [];
+        this._deferredInitVars.push({ variable, cppName, initializer: initializerText });
+        lines.push(`${exportLinkage}${cppTypeText} ${cppName};`);
+        continue;
+      }
+      lines.push(`${exportLinkage}${canBeConstexpr && variable.constValue !== undefined ? "constexpr " : ""}${cppTypeText} ${cppName} = ${initializerText};`);
     }
     if (variables.length) lines.push("");
     // V15: las funciones EXPORTADAS deben tener linkage externo para que el
@@ -1297,10 +1486,23 @@ export class CppGenerator {
     // Si la variable colisiona con un singleton del runtime (path, fs, console,
     // process, JSON), también la renombramos aquí para que coincida con la
     // declaración de la línea 351.
+    // V30.14.2: primero emitimos el deferred init (variables auto-union
+    // que NO se pudieron inicializar en static-init). Despues las
+    // reasignaciones normales de las variables mutables.
+    if (this._deferredInitVars && this._deferredInitVars.length > 0) {
+      for (const { cppName, initializer: deferredInit } of this._deferredInitVars) {
+        lines.push(this.pad() + `${cppName} = ${deferredInit};`);
+      }
+    }
     for (const variable of variables) {
+      // V30.14.2: si esta variable fue diferida al ets_init_*() (por ser
+      // auto-union struct), su inicializacion ya se emitio arriba desde
+      // `_deferredInitVars`. Aqui solo reasignamos las que NO fueron
+      // diferidas (las const/mutables no-union, o las que se reasignan).
+      if (this._deferredInitVars && this._deferredInitVars.some(entry => entry.variable === variable)) continue;
       if (variable.mutable) {
         const targetName = this.cppName(this.resolveAlias(variable.name));
-        lines.push(this.pad() + `${targetName} = ${this.emitExpression(variable.initializer)};`);
+        lines.push(this.pad() + `${targetName} = ${this.emitExpression(variable.initializer, variable.declaredType)};`);
       }
     }
     for (const statement of destructuringTopLevel) lines.push(this.emitStatement(statement));
@@ -1746,7 +1948,7 @@ export class CppGenerator {
   // V1: tagged unions nativas del dialecto. Se emiten como un struct C++
   // con un discriminador (índice de la variante) y un `std::variant` que
   // contiene los payloads. Esto permite pattern matching exhaustivo en V1.2.
-  private unionDeclaration(node: UnionDeclaration, forwardedMethods: { name: string; returnType: string; params: { name: string; type: string }[] }[] = []): string {
+  private unionDeclaration(node: UnionDeclaration, forwardedMethods: { name: string; returnType: string; params: { name: string; type: string }[] }[] = [], isTypeAlias = false): string {
     const variantIndexEnum = `${node.name}_Kind`;
     const variantKindFields = node.variants.map((variant, index) => `    ${variant.name} = ${index}`).join(",\n");
     const isGeneric = node.typeParameters.length > 0;
@@ -1786,7 +1988,16 @@ export class CppGenerator {
           // función NO coincide con el nombre del payload.
           const payloadType = cppType(variant.payload);
           const castType = variant.name === variant.payload ? `struct ${payloadType}` : payloadType;
-          return `${tparamSpec} inline ${node.name}${tnamesSpec} ${fnName}(${payloadType} ${paramName}) { ${node.name}${tnamesSpec} u; u.payload.template emplace<${index}>(static_cast<${castType}&&>(${paramName})); u.kind = ${variantIndexEnum}::${variant.name}; return u; }`;
+          // V30.14.2: para type aliases, el campo `kind` publico es el
+          // `kind` del payload (string), y el campo `_kindIndex` es el
+          // enum interno. El codegen usa `_kindIndex` para los switches.
+          // Tambien capturamos el kind en un string local ANTES del move
+          // (use-after-move es UB y el kind queda vacio).
+          const kindInit = isTypeAlias
+            ? `u.kind = kindCapture; u._kindIndex = ${variantIndexEnum}::${variant.name};`
+            : `u.kind = ${variantIndexEnum}::${variant.name};`;
+          const kindCapture = isTypeAlias ? `std::string kindCapture = ${paramName}.kind;` : "";
+          return `${tparamSpec} inline ${node.name}${tnamesSpec} ${fnName}(${payloadType} ${paramName}) { ${node.name}${tnamesSpec} u; ${kindCapture} u.payload.template emplace<${index}>(static_cast<${castType}&&>(${paramName})); ${kindInit} return u; }`;
         }).join("\n");
     const variantPayloads = node.variants.map(variant => variant.payload ? cppType(variant.payload) : "std::monostate").join(", ");
     // `operator<<` para `print(union)` (V1.3). Cada variante se imprime como
@@ -1804,7 +2015,8 @@ export class CppGenerator {
       const printer = `std::cout << "${variant.name}"; break;`;
       return `        case ${variantIndexEnum}::${variant.name}: ${printer}`;
     }).join("\n");
-    const printerDef = `${tparamSpec}\ninline std::ostream& operator<<(std::ostream& os, const ${node.name}${tnamesSpec}& u) {\n    switch (u.kind) {\n${printerBranches}\n    }\n    return os;\n}`;
+    const printerKindField = isTypeAlias ? "_kindIndex" : "kind";
+    const printerDef = `${tparamSpec}\ninline std::ostream& operator<<(std::ostream& os, const ${node.name}${tnamesSpec}& u) {\n    switch (u.${printerKindField}) {\n${printerBranches}\n    }\n    return os;\n}`;
     // V1.3: `operator==` contextual para tagged unions. `std::variant` no
     // ofrece comparación por defecto; emitimos uno que dispatcha por
     // discriminador y compara payload solo si los kinds coinciden.
@@ -1812,8 +2024,9 @@ export class CppGenerator {
     // payload class) en lugar de `==`, porque las clases del dialecto
     // NO generan `operator==` automáticamente y el `operator==` del
     // auto-union necesita poder comparar payloads.
+    const eqKindField = isTypeAlias ? "_kindIndex" : "kind";
     const eqBranches = node.variants.map((variant, index) =>
-      `    (a.kind == ${variantIndexEnum}::${variant.name} && b.kind == ${variantIndexEnum}::${variant.name} && std::get<${index}>(a.payload).equals(std::get<${index}>(b.payload)))`
+      `    (a.${eqKindField} == ${variantIndexEnum}::${variant.name} && b.${eqKindField} == ${variantIndexEnum}::${variant.name} && std::get<${index}>(a.payload).equals(std::get<${index}>(b.payload)))`
     ).join(" ||\n");
     const eqDef = `${tparamSpec}\ninline bool operator==(const ${node.name}${tnamesSpec}& a, const ${node.name}${tnamesSpec}& b) {\n    return\n${eqBranches};\n}`;
     // V30.13: dispatch methods para auto-unions. Cada método declarado en
@@ -1827,15 +2040,26 @@ export class CppGenerator {
       const args = method.params.map(p => p.name).join(", ");
       if (method.returnType === "void") {
         const voidBranches = node.variants.map((variant, index) => `case ${variantIndexEnum}::${variant.name}: std::get<${index}>(payload).${method.name}(${args}); return;`).join("\n            ");
-        return `    void ${method.name}(${params}) { switch (kind) {\n            ${voidBranches}\n        } }`;
+        return `    void ${method.name}(${params}) { switch (${eqKindField}) {\n            ${voidBranches}\n        } }`;
       }
+      // V30.14.2: si el method retorna un valor, añadimos un default
+      // vacio para que GCC no emita warning de "control reaches end of
+      // non-void function" (todos los casos ya tienen return; el
+      // default es unreachable pero suprime el warning).
+      const defaultReturn = `return ${method.returnType}();`;
       const branches = node.variants.map((variant, index) => `case ${variantIndexEnum}::${variant.name}: return std::get<${index}>(payload).${method.name}(${args});`).join("\n            ");
-      return `    ${method.returnType} ${method.name}(${params}) const { switch (kind) {\n            ${branches}\n        } }`;
+      return `    ${method.returnType} ${method.name}(${params}) const { switch (${eqKindField}) {\n            ${branches}\n        default: ${defaultReturn} } }`;
     }).join("\n");
+    // V30.14.2: para type aliases, el campo `kind` publico es `std::string`
+    // (compatibilidad con la API declarada por el usuario), pero el
+    // dispatch interno usa un campo separado `_kindIndex` (enum).
+    const kindFieldDecl = isTypeAlias
+      ? `std::string kind;\n    ${variantIndexEnum} _kindIndex;`
+      : `${variantIndexEnum} kind;`;
     // El prefijo `template <...>` ya se emite arriba; el nombre del struct
     // NO lleva los angle brackets (eso es lo que provocaba el error
     // "'Outcome' is not a class template" de GCC).
-    return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${variantIndexEnum} kind;\n    std::variant<${variantPayloads}> payload;\n${dispatchMethodDefs}\n};\n${constructorDefs}\n${printerDef}\n${eqDef}`;
+    return `enum class ${variantIndexEnum} : int {\n${variantKindFields}\n};\n${tparamSpec ? tparamSpec + "\n" : ""}struct ${node.name} {\n    ${kindFieldDecl}\n    std::variant<${variantPayloads}> payload;\n${dispatchMethodDefs}\n};\n${constructorDefs}\n${printerDef}\n${eqDef}`;
   }
   private function(fn: FunctionDeclaration, internal = false): string {
     // V18: si la función está mapeada a un símbolo C/C++ externo
@@ -2743,7 +2967,14 @@ export class CppGenerator {
         // lambda que hace push_back por movimiento. Para tipos copiables,
         // `std::vector<T>{...}` funciona directamente.
         const valueType = cppArrayType(type ?? "void[]");
-        const values = node.elements.map(item => this.emitExpression(item as import("../ast/nodes.ts").Expression));
+        // V30.14.2: propagamos el element type al emit de cada item
+        // para que `new Line()` dentro de un array sepa que el target
+        // es un auto-union y aplique el wrap con `make_X`.
+        const elementType = (type && (isArrayType(type) || (isGenericType(type) && genericBase(type) === "Array"))) ? genericArguments(type)[0] ?? (isArrayType(type) ? arrayElement(type) : undefined) : undefined;
+        const values = node.elements.map(item => {
+          if (item.kind === "SpreadElement") return this.emitExpression(item as unknown as import("../ast/nodes.ts").Expression);
+          return this.emitExpression(item as import("../ast/nodes.ts").Expression, elementType);
+        });
         if (node.elements.some(item => item.kind === "SpreadElement")) {
           // (spread path) - ver bloque arriba
         }
@@ -2872,11 +3103,11 @@ export class CppGenerator {
         return node.operator === "%" ? `std::fmod(${leftText}, ${rightText})` : `(${leftText} ${node.operator} ${rightText})`;
       }
       case "AssignmentExpression": {
-        // V3: si el target es un numérico concreto y el value es de otro tipo
-        // numérico (o `number`), emitir `static_cast<Target>` para evitar
-        // narrowing warnings del compilador C++.
-        let valueText = this.emitExpression(node.value);
+        // V30.14.2: propagamos el target type al emit del value para
+        // que el NewExpression (en el RHS) sepa que el target es un
+        // auto-union y aplique el wrap con `make_X`.
         const targetType = this.expressionType(node.target);
+        let valueText = this.emitExpression(node.value, targetType);
         if (targetType && isNumericType(targetType)) {
           const valueType = this.expressionType(node.value);
           if (valueType && (valueType === "number" || isNumericType(valueType)) && valueType !== targetType) {
@@ -3476,8 +3707,11 @@ export class CppGenerator {
             })()
           : [];
         const args = node.args.map((arg, index) => {
-          let text = this.emitExpression(arg);
-          const target = paramTypes[index];
+          // V30.14.2: propagamos el target type del argumento al sub-emit
+          // para que `make_X` wrapping se anide correctamente.
+          const argTarget = paramTypes[index];
+          let text = argTarget ? this.emitExpression(arg, argTarget) : this.emitExpression(arg);
+          const target = argTarget;
           if (target && isNumericType(target)) {
             const argType = this.expressionType(arg);
             const needsCast = argType === "number" || (argType !== undefined && isNumericType(argType) && argType !== target);
@@ -3504,15 +3738,11 @@ export class CppGenerator {
         // explícitamente: `Line(Line{...})` invoca la función variante
         // sobre un Line construido aggregate-style, devolviendo un
         // SvgChild_AutoUnion.
-        const inAutoUnion = this.classesInAutoUnion().has(node.className);
-        // Si la clase tiene constructor con parámetros, debemos llamarlo
-        // explícitamente (aggregate-init sigue el orden de campos, no el
-        // del constructor). El `constructor` del dialecto devuelve void
-        // y modifica el objeto in-place; en C++ lo emitimos con un
-        // prefijo de valor de retorno `*this` para que la expresión sea
-        // usable como rvalue (`MultiLine{}.constructor(10, 20)` es un
-        // `MultiLine&`). Ver `classMethodDeclaration` que aplica este
-        // truco.
+        // V30.14.2: si el target es un auto-union (interface o type alias
+        // registrado), envolvemos con `make_X`. La condicion ya no es
+        // `classesInAutoUnion().has(className)` (eso siempre era true
+        // para variantes de union), sino `isAutoUnionTarget(targetType)`.
+        const targetIsAutoUnion = this.isAutoUnionTarget(targetType);
         const ctor = cls ? cls.methods.find(m => m.name === "constructor") : undefined;
         if (ctor && cls) {
           // V30.13.3: el constructor del dialecto SIEMPRE debe invocarse
@@ -3523,11 +3753,11 @@ export class CppGenerator {
           // del dialecto devuelve `*this` (V30.13) para que la
           // expresion sea usable como rvalue.
           const callExpr = `${cppType(node.className)}{}`;
-          if (inAutoUnion) return `make_${node.className}(${callExpr}.constructor(${args.join(", ")}))`;
+          if (targetIsAutoUnion) return `make_${node.className}(${callExpr}.constructor(${args.join(", ")}))`;
           return `${callExpr}.constructor(${args.join(", ")})`;
         }
         const innerExpr = `${cppType(node.className)}{${args.join(", ")}}`;
-        if (inAutoUnion) return `(make_${node.className}(${innerExpr}))`;
+        if (targetIsAutoUnion) return `(make_${node.className}(${innerExpr}))`;
         return innerExpr;
       }
     }

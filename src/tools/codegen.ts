@@ -36,6 +36,7 @@ try {
     expression => checker.isVariadic(expression),
     expression => checker.typeArgumentsOf(expression),
     name => checker.resolveTypeAlias(name),
+    union => checker.resolveUnionAliasName(union),
   ).generate(program);
   process.stdout.write(cpp);
   if (!cpp.endsWith("\n")) process.stdout.write("\n");

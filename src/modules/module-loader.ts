@@ -182,6 +182,7 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
       expression => checker.isVariadic(expression),
       expression => checker.typeArgumentsOf(expression),
       name => checker.resolveTypeAliasFromAst(name),
+      union => checker.resolveUnionAliasNameFromAst(union),
     );
     // V16: si el usuario quiere minimal, el header `estatic_common.hpp` no
     // incluye `ets_io.hpp`. El usuario es responsable de usar `std::cout`
