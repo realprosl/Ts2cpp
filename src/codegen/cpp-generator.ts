@@ -574,6 +574,7 @@ export class CppGenerator {
         case "UnaryExpression": return visitExpr(node.operand);
         case "MemberExpression": return visitExpr(node.object);
         case "AssignmentExpression": return visitExpr(node.value);
+        case "CompoundAssignmentExpression": return visitExpr(node.value);
         case "ArrayLiteralExpression":
           return node.elements.some(item => item.kind === "SpreadElement" ? visitExpr(item.expression) : visitExpr(item));
         case "IndexExpression": return visitExpr(node.object) || visitExpr(node.index);
@@ -1897,7 +1898,7 @@ export class CppGenerator {
     }
   }
   private expressionMutatesThis(node: Expression, classDecl: ClassDeclaration, visited: Set<string>): boolean {
-    if (node.kind === "AssignmentExpression") {
+    if (node.kind === "AssignmentExpression" || node.kind === "CompoundAssignmentExpression") {
       let target: Expression = node.target;
       while (target.kind === "MemberExpression") target = target.object;
       return target.kind === "IdentifierExpression" && target.name === "this";
@@ -3225,6 +3226,15 @@ export class CppGenerator {
           }
         }
         return `(${this.emitExpression(node.target)} = ${valueText})`;
+      }
+      // V30.19: operadores compuestos (`+=`, `-=`, etc.). C++ tiene los
+      // mismos operadores para tipos primitivos; el dialecto los pasa
+      // tal cual. El type-checker valida que el target sea mutable y
+      // que el operador aplique al tipo del target.
+      case "CompoundAssignmentExpression": {
+        const targetText = this.emitExpression(node.target);
+        const valueText = this.emitExpression(node.value);
+        return `(${targetText} ${node.operator} ${valueText})`;
       }
       case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
       case "MatchExpression": return this.emitMatch(node);

@@ -1071,3 +1071,60 @@ test("V30.18: retry<T>(fn, times, delayMs, sentinel) emite ::ets::retry<T>", () 
   const out = compile(src).cpp;
   assert.match(out, /::ets::retry<[^>]+>/, "debe emitir ::ets::retry<T>");
 });
+
+test("V30.19: += -= *= /= emiten C++ con el operador (no target = target op value)", () => {
+  const src = `
+    let x: number = 10
+    x += 5
+    x -= 3
+    x *= 2
+    x /= 4
+    print(x)
+  `;
+  const out = compile(src).cpp;
+  // V30.19: el codegen debe emitir el operador compuesto directamente
+  // (e.g. `x += 5.0;` en lugar de `x = x + 5.0;`). Esto es mas
+  // eficiente y semanticamente equivalente para tipos primitivos.
+  assert.match(out, /\(x \+= 5\.0\)/, "debe emitir x += 5.0");
+  assert.match(out, /\(x -= 3\.0\)/, "debe emitir x -= 3.0");
+  assert.match(out, /\(x \*= 2\.0\)/, "debe emitir x *= 2.0");
+  assert.match(out, /\(x \/= 4\.0\)/, "debe emitir x /= 4.0");
+});
+
+test("V30.19: this.count += 1 cuenta como mutacion (metodo no es const)", () => {
+  const src = `
+    class Counter {
+      count: number
+      constructor() { this.count = 0 }
+      inc(): void {
+        this.count += 1
+        this.count *= 2
+      }
+    }
+    let c: Counter = new Counter()
+    c.inc()
+    c.inc()
+    c.inc()
+    print(c.count)
+  `;
+  const out = compile(src).cpp;
+  // V30.19: el metodo `inc` debe ser no-const (sin `const` al final)
+  // porque muta `this.count`. Antes de V30.19, `methodMutates` no
+  // reconocia `CompoundAssignmentExpression` y marcaba el metodo como
+  // const, lo que producia un error de compilacion C++ ("assignment of
+  // member in read-only object").
+  assert.match(out, /void inc\(\) \{/, "inc() no debe ser const");
+  assert.doesNotMatch(out, /void inc\(\) const/, "inc() no debe tener `const`");
+});
+
+test("V30.19: arr[0] += 10 funciona para indices de array", () => {
+  const src = `
+    let arr: number[] = [1, 2, 3]
+    arr[0] += 10
+    print(arr[0])
+  `;
+  const out = compile(src).cpp;
+  // V30.19: el compound assignment sobre IndexExpression emite
+  // `arr[static_cast<std::size_t>(0.0)] += 10.0`.
+  assert.match(out, /\+= 10\.0/, "debe emitir el += aplicado al indice");
+});
