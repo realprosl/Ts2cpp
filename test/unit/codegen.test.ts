@@ -49,12 +49,16 @@ test("codegen: class genera struct C++", () => {
   assert.match(out, /double\s+x/);
 });
 
-test("codegen: constructor emite método void", () => {
-  // El dialecto emite el constructor como un método void dentro del struct,
-  // SIN prefijo `Foo::` (los métodos se acceden vía `this->`). El nombre
-  // se mantiene para que sea accesible desde C++.
+test("codegen: constructor devuelve *this (no void) para rvalues en auto-union", () => {
+  // V30.13: el constructor del dialecto se emite como un método que devuelve
+  // `Foo&` (no void) para que la expresión `Foo{}.constructor(...)` se
+  // pueda usar como rvalue. Esto es necesario para envolver la clase en
+  // un auto-union: `make_Foo(Foo{}.constructor(x))`. Sin `*this`, el
+  // metodo retorna void y el `std::vector<...>{...make_Foo(void)...}`
+  // falla con "invalid use of void expression". El nombre se mantiene
+  // (`constructor`) para que sea accesible desde C++.
   const out = cpp("class Foo { x: number; constructor(n: number) { this.x = n; } }");
-  assert.match(out, /void\s+constructor\(\s*double\s+n\s*\)/);
+  assert.match(out, /Foo\s*&\s+constructor\(\s*double\s+n\s*\)/);
 });
 
 test("codegen: destructor no se emite (no hay manejo manual)", () => {
