@@ -1464,11 +1464,17 @@ export class CppGenerator {
     for (const fn of privateFunctions) {
       // V30.4: renombrar `main` -> `ets_user_main` en las forward
       // declarations static.
+      // V30.21.1: en C++ los defaults de parametros de valor SOLO pueden
+      // aparecer en la primera declaracion (forward / header). Si los
+      // ponemos tambien en la definicion, C++ se queja con
+      // `redeclaration ... may not have default arguments`. Por eso
+      // emitimos `includeValueDefaults=true` aqui (forward) y
+      // `includeValueDefaults=false` en la def (funcion `function`).
       if (fn.name === "main") {
         const renamed = { ...fn, name: "ets_user_main" };
-        lines.push(this.signature(renamed, true, false, false) + ";");
+        lines.push(this.signature(renamed, true, false, true) + ";");
       } else {
-        lines.push(this.signature(fn, true, false, false) + ";");
+        lines.push(this.signature(fn, true, false, true) + ";");
       }
     }
     if (privateFunctions.length) lines.push("");
@@ -2162,7 +2168,10 @@ export class CppGenerator {
       const sig = this.signature(fn, internal, false, true, true);
       return `extern "C" ${sig.replace(fn.name + "(", cppName + "(")};`;
     }
-    const signature = this.signature(fn, internal, false);
+    // V30.21.1: en C++ los value defaults van SOLO en la primera
+    // declaracion (forward / header). La def los omite para evitar
+    // el error `redeclaration ... may not have default arguments`.
+    const signature = this.signature(fn, internal, false, false);
     const appendCoReturn = fn.async && isPromiseType(fn.returnType) && promiseResult(fn.returnType) === "void" && fn.body.statements.at(-1)?.kind !== "ReturnStatement";
     // V8.0: el codegen necesita conocer el tipo declarado del retorno
     // para envolver automáticamente `return new T()` cuando la firma es

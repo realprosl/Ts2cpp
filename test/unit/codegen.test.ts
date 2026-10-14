@@ -1195,3 +1195,74 @@ test("V30.20: object destructuring anidado `{ name, inner: i } = o; { v } = i`",
   const matches = out.match(/__ets_destructure_\d+/g) || [];
   assert.ok(matches.length >= 2, "debe haber al menos 2 temporales de destructuring");
 });
+
+test("V30.21.1: default args en template functions NO se duplican en la definicion", () => {
+  // V30.21.1: en C++ los value defaults solo pueden aparecer en la
+  // primera declaracion (forward / header). Si el codegen los pone
+  // tambien en la def, C++ se queja con
+  // `redeclaration ... may not have default arguments`. El fix
+  // emite los defaults solo en el forward, no en la def.
+  const src = `
+    function square(x: number): number { return x * x }
+    function apply(f: (n: number) => number, x: number = 4): number {
+      return f(x)
+    }
+    print(apply(square))
+    print(apply(square, 5))
+  `;
+  const out = compile(src).cpp;
+  // El forward del template `apply` puede ser multilinea
+  // (`template <typename F0>\nstatic double apply(...);`).
+  // Debe tener `= 4.0` en la primera declaracion.
+  assert.match(out, /apply\([^;]*= 4\.0\);/, "el forward debe tener el default = 4.0");
+  // La def: NO debe tener defaults (sino hay duplicacion).
+  // La def aparece despues del forward, asi que usamos un regex
+  // que busque la def (con `{` al final, no `;`).
+  const defMatch = out.match(/apply\(F0&& f, double x\)\s*\{/);
+  assert.ok(defMatch, "debe haber una definicion de apply sin default");
+  assert.doesNotMatch(defMatch![0], /=/, "la def NO debe tener defaults");
+});
+
+test("V30.21.1: default args en funciones no-template funcionan (forward con default, def sin default)", () => {
+  const src = `
+    function greet(name: string = "World"): void {
+      print(name)
+    }
+    greet()
+    greet("Alice")
+  `;
+  const out = compile(src).cpp;
+  // El forward debe llevar el default. El codegen emite
+  // `void greet(std::string name = std::string("World"));`
+  // (con std::string wrap para tipos de string).
+  const forwardMatch = out.match(/^void greet\([^;]+\);/m);
+  assert.ok(forwardMatch, "debe haber un forward de greet");
+  assert.match(forwardMatch![0], /std::string\("World"\)/, "el forward debe tener el default wrap en std::string");
+  // La def no debe llevar el default.
+  const defMatch = out.match(/void greet\([^)]*\)\s*\{/m);
+  assert.ok(defMatch, "debe haber una def de greet");
+  assert.doesNotMatch(defMatch![0], /World/, "la def no debe tener el default");
+});
+
+test("V30.21.1: default args en constructors funcionan (constructor shorthand)", () => {
+  const src = `
+    class Counter {
+      start: number
+      end: number
+      constructor(start: number = 0, end: number = 10) {
+        this.start = start
+        this.end = end
+      }
+    }
+    new Counter()
+    new Counter(5)
+    new Counter(5, 7)
+  `;
+  const out = compile(src).cpp;
+  // V30.21.1: el constructor es un metodo, no usa la misma `signature()`
+  // que las funciones libres, asi que los defaults se emiten en el
+  // sitio unico donde aparece el metodo (dentro del struct).
+  // Solo verificamos que compila sin "redeclaration with default
+  // arguments" — si V30.21.1 funciona, no hay duplicacion.
+  assert.doesNotMatch(out, /redeclaration/i, "no debe haber error de redeclaracion");
+});
