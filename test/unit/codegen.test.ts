@@ -932,3 +932,34 @@ test("V30.14.3: add(SvgChild) enveuelve el call site con make_X", () => {
   assert.match(out, /svg\.add\(make_Line\(/, "svg.add(new Line()) debe envolver con make_Line");
   assert.match(out, /svg\.add\(make_Circle\(/, "svg.add(new Circle()) debe envolver con make_Circle");
 });
+
+test("V30.15: match con type-alias union narrowa el subject al tipo de la variant", () => {
+  const src = `
+    class Line {
+      kind: string
+      constructor() { this.kind = "line" }
+      build(): string { return "<line/>" }
+    }
+    class Circle {
+      kind: string
+      constructor() { this.kind = "circle" }
+      build(): string { return "<circle/>" }
+    }
+    type SvgChild = Line | Circle
+    function describe(c: SvgChild): string {
+      return match(c, "kind", [
+        when("Line", (x: Line): string => x.build()),
+        when("Circle", (x: Circle): string => x.build()),
+      ])
+    }
+    let s: SvgChild = new Line()
+    print(describe(s))
+  `;
+  const out = compile(src).cpp;
+  // V30.15: cada `when` con class name debe narrowar el subject via
+  // `std::holds_alternative<T>(c.payload)` + `std::get<T>(c.payload)`.
+  assert.match(out, /std::holds_alternative<Line>\(c\.payload\)/, "debe narrowar a Line via holds_alternative");
+  assert.match(out, /std::holds_alternative<Circle>\(c\.payload\)/, "debe narrowar a Circle via holds_alternative");
+  assert.match(out, /std::get<Line>\(c\.payload\)/, "debe extraer Line via std::get");
+  assert.match(out, /std::get<Circle>\(c\.payload\)/, "debe extraer Circle via std::get");
+});

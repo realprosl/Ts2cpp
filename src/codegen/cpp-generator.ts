@@ -697,6 +697,32 @@ export class CppGenerator {
     }
     return false;
   }
+  // V30.15: dado un type, devuelve el UnionDeclaration del auto-union
+  // correspondiente. Usado por `emitNewMatch` para narrowar el subject.
+  // Acepta: nombre de interface auto-union (`SvgChild`), type-alias
+  // union (`SvgChild` o el type expandido `Line | Circle`).
+  private findAutoUnionForType(type: TypeName | undefined): UnionDeclaration | undefined {
+    if (!type) return undefined;
+    // Direct lookup en el map de auto-unions (interface path).
+    if (typeof type === "string" && this.autoUnions.has(type)) return this.autoUnions.get(type);
+    // Type-alias union path: el type puede ser el alias name o la expansion.
+    if (typeof type === "string" && this.typeAliasesNeedingUnion.has(type)) {
+      const key = this.typeAliasUnionKey(type);
+      return this.autoUnions.get(key);
+    }
+    // V30.15: `typeOf` puede retornar el union SIN espacios
+    // (`Line|Circle`) mientras que el map se lleno CON espacios
+    // (`Line | Circle`). Chequeamos con un test laxo.
+    if (typeof type === "string" && type.includes("|") && this.resolveUnionAliasName) {
+      const alias = this.resolveUnionAliasName(type)
+        ?? this.resolveUnionAliasName(type.replace(/\|/g, " | ") as TypeName)
+        ?? this.resolveUnionAliasName(type.replace(/ \| /g, "|") as TypeName);
+      if (alias && this.typeAliasesNeedingUnion.has(alias)) {
+        return this.autoUnions.get(this.typeAliasUnionKey(alias));
+      }
+    }
+    return undefined;
+  }
   // V30.12.2: dada un nombre de tipo, es el nombre del auto-union de
   // una interface registrada en este programa? Se consulta desde
   // `emitNewMatch`.
@@ -2356,12 +2382,36 @@ export class CppGenerator {
       } else {
         patternText = this.emitExpression(w.pattern);
       }
-      // El callback puede tener 0 o 1 parámetro. Si tiene 1, le pasamos
-      // el subject. Si tiene 0, lo invocamos sin argumentos (p.ej.
-      // `otherwise(() => "default")`).
+      // V30.15: el callback puede tener 0 o 1 parámetro. Si tiene 1 y el
+      // subject es un auto-union struct (interface o type alias) y el
+      // pattern es un string literal, narrowamos el subject via
+      // `std::holds_alternative<T>(subj.payload)` + `std::get<T>(subj.payload)`
+      // y pasamos la variante narrowed al callback.
+      // V30.15: subjectType se declara mas abajo (despues de procesar
+      // los whens). Lo computamos aqui bajo demanda via expressionType.
       const cb = w.callback;
       let callArgs = "";
-      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
+      if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) {
+        // Detectar si podemos narrowar.
+        const subjT = this.expressionType(subject);
+        const subjectAutoUnion = this.findAutoUnionForType(subjT);
+        const patternName = w.pattern.kind === "LiteralExpression" && w.pattern.literalType === "string" ? String(w.pattern.value) : null;
+        if (subjectAutoUnion && patternName) {
+          const variant = subjectAutoUnion.variants.find((v: UnionVariant) => v.name === patternName);
+          if (variant && variant.payload) {
+            const index = subjectAutoUnion.variants.indexOf(variant);
+            // Narrow via holds_alternative + std::get.
+            const narrowName = `__ets_narrow_${index}`;
+            const condBlock = `if (std::holds_alternative<${variant.payload}>(${subjectText}.payload)) { ${variant.payload} ${narrowName} = std::get<${variant.payload}>(${subjectText}.payload);`;
+            this.inMatchCallback = true;
+            let callbackCall: string;
+            try { callbackCall = `${this.emitExpression(cb)}(${narrowName})`; }
+            finally { this.inMatchCallback = false; }
+            return `        ${condBlock} return ${callbackCall}; }`;
+          }
+        }
+        callArgs = subjectText;
+      }
       // V30.12.1: capturar `this` por referencia en callbacks de match para
       // permitir llamadas a métodos no-const de `this` aunque el método
       // exterior sea `const`. Restauramos el flag en finally por si la
@@ -2742,6 +2792,9 @@ export class CppGenerator {
     // V30.12.2: los parámetros tipo `Array<Interface>` deben mapearse al
     // auto-union concreto (`std::vector<I_AutoUnion>`), igual que los campos.
     if (isArrayType(type) || (isGenericType(type) && genericBase(type) === "Array")) return this.arrayCppType(type);
+    // V30.15: type-alias union (no en array) -> `Alias_Union`.
+    const ta = this.typeAliasUnionType(type);
+    if (ta) return ta;
     return cppType(type);
   }
 
