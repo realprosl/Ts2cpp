@@ -743,16 +743,32 @@ export class CppGenerator {
       if (stmt.kind === "VariableDeclaration" && stmt.declaredType) {
         if (isUnionType(stmt.declaredType) && this.resolveUnionAliasName) {
           const alias = this.resolveUnionAliasName(stmt.declaredType);
-          if (alias) this.typeAliasesNeedingUnion.add(alias);
+          if (alias) {
+            // V30.14.4: solo registramos el alias si TODAS las variantes
+            // son clases del dialecto. Para uniones con tipos built-in
+            // (e.g. `type Maybe = string | number`), el auto-union no
+            // tiene sentido (no podemos hacer `make_string` sobre
+            // std::string porque no tiene `kind` field).
+            const expansion = this.resolveTypeAlias?.(alias);
+            if (expansion && isUnionType(expansion)) {
+              const variants = unionMembers(expansion);
+              if (variants.every(v => this.classesByName.has(v))) {
+                this.typeAliasesNeedingUnion.add(alias);
+              }
+            }
+          }
         }
         // V30.14.2: si el type es directamente un nombre de type alias
         // registrado (no expandido), lo añadimos tambien.
         if (typeof stmt.declaredType === "string" && this.aliasNames.has(stmt.declaredType)) {
-          // Necesita un type alias que sea union de clases. Lo verificamos
-          // reasignando desde el `resolveTypeAlias`.
           if (this.resolveTypeAlias) {
             const expansion = this.resolveTypeAlias(stmt.declaredType);
-            if (expansion && isUnionType(expansion)) this.typeAliasesNeedingUnion.add(stmt.declaredType);
+            if (expansion && isUnionType(expansion)) {
+              const variants = unionMembers(expansion);
+              if (variants.every(v => this.classesByName.has(v))) {
+                this.typeAliasesNeedingUnion.add(stmt.declaredType);
+              }
+            }
           }
         }
       }
@@ -761,7 +777,13 @@ export class CppGenerator {
         for (const p of stmt.params) {
           if (typeof p.type === "string" && this.aliasNames.has(p.type) && this.resolveTypeAlias) {
             const expansion = this.resolveTypeAlias(p.type);
-            if (expansion && isUnionType(expansion)) this.typeAliasesNeedingUnion.add(p.type);
+            if (expansion && isUnionType(expansion)) {
+              // V30.14.4: solo si todas las variantes son clases.
+              const variants = unionMembers(expansion);
+              if (variants.every(v => this.classesByName.has(v))) {
+                this.typeAliasesNeedingUnion.add(p.type);
+              }
+            }
           }
         }
       }
@@ -1860,8 +1882,18 @@ export class CppGenerator {
     // debe seguir siendo const). La heuristica correcta: solo marcar como
     // mutacion si el metodo llamado es uno de los que mutan in-place en
     // el runtime (`push`, `pop`, `insert`, `clear`, `remove`, etc.).
+    // V30.14.4: unifico los dos bloques de MemberCallExpression que
+    // existian duplicados (V30.13.4 anadio el chequeo de MUTATING pero
+    // sin `return` explicito, lo que impedia que el analisis
+    // inter-procedimental del segundo bloque se ejecutara para
+    // `this.metodo()` donde metodo no es MUTATING).
     if (node.kind === "MemberCallExpression") {
-      // Detectar `this.<algo>.method(...)` o `this.method(...)`
+      // V30.13.4: `this.field.method()` puede mutar `this` (side-effect sobre
+      // un sub-objeto de this). Sin embargo, marcar TODO `this.algo()` como
+      // mutacion rompe el caso V30.11.1 (sum() llama a getX()/getY() const y
+      // debe seguir siendo const). La heuristica correcta: solo marcar como
+      // mutacion si el metodo llamado es uno de los que mutan in-place en
+      // el runtime (`push`, `pop`, `insert`, `clear`, `remove`, etc.).
       const startsFromThis = (e: Expression): boolean => {
         if (e.kind === "IdentifierExpression") return e.name === "this";
         if (e.kind === "MemberExpression") return startsFromThis(e.object);
@@ -1876,18 +1908,10 @@ export class CppGenerator {
       if (startsFromThis(node.object) && MUTATING_RUNTIME_METHODS.has(node.method)) {
         return true;
       }
-    }
-    if (node.kind === "BinaryExpression") return this.expressionMutatesThis(node.left, classDecl, visited) || this.expressionMutatesThis(node.right, classDecl, visited);
-    if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
-    if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
-    if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg, classDecl, visited));
-    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression, classDecl, visited) : this.expressionMutatesThis(item, classDecl, visited));
-    if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement, classDecl, visited)) : this.expressionMutatesThis(node.body, classDecl, visited);
-    // V30.11.1: análisis inter-procedimental. Si vemos `this.otroMetodo(...)`
-    // y `otroMetodo` pertenece a esta misma clase, preguntamos recursivamente
-    // si muta. Esto cubre el caso Svg.run() que solo llama a modX/modY y
-    // antes se marcaba `const` aunque modX/modY muten `this`.
-    if (node.kind === "MemberCallExpression") {
+      // V30.11.1: analisis inter-procedimental. Si vemos `this.otroMetodo(...)`
+      // y `otroMetodo` pertenece a esta misma clase, preguntamos recursivamente
+      // si muta. Esto cubre el caso Svg.run() que solo llama a modX/modY y
+      // antes se marcaba `const` aunque modX/modY muten `this`.
       if (this.expressionMutatesThis(node.object, classDecl, visited)) return true;
       if (node.args.some(arg => this.expressionMutatesThis(arg, classDecl, visited))) return true;
       const calledOnThis = node.object.kind === "IdentifierExpression" && (node.object as { name: string }).name === "this";
@@ -1901,6 +1925,19 @@ export class CppGenerator {
       }
       return false;
     }
+    if (node.kind === "BinaryExpression") return this.expressionMutatesThis(node.left, classDecl, visited) || this.expressionMutatesThis(node.right, classDecl, visited);
+    if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
+    if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
+    if (node.kind === "CallExpression" || node.kind === "NewExpression") return node.args.some(arg => this.expressionMutatesThis(arg, classDecl, visited));
+    if (node.kind === "ArrayLiteralExpression") return node.elements.some(item => item.kind === "SpreadElement" ? this.expressionMutatesThis(item.expression, classDecl, visited) : this.expressionMutatesThis(item, classDecl, visited));
+    // V30.14.4: template strings interpolan expressions que pueden mutar
+    // `this` (e.g. `print(`${this.modX(x.x)}`)`. Sin este case, el visit
+    // caia al default `return false` y no detectaba la mutacion.
+    if (node.kind === "TemplateLiteralExpression") return node.expressions.some(e => this.expressionMutatesThis(e, classDecl, visited));
+    if (node.kind === "ArrowFunctionExpression") return node.body.kind === "BlockStatement" ? node.body.statements.some(statement => this.statementMutatesThis(statement, classDecl, visited)) : this.expressionMutatesThis(node.body, classDecl, visited);
+    // V30.11.1: análisis inter-procedimental. Si vemos `this.otroMetodo(...)`
+    // y `otroMetodo` pertenece a esta misma clase, preguntamos recursivamente
+    // si muta. Esto cubre el caso Svg.run() que solo llama a modX/modY y
     if (node.kind === "MemberExpression") return this.expressionMutatesThis(node.object, classDecl, visited);
     if (node.kind === "IndexExpression") return this.expressionMutatesThis(node.object, classDecl, visited) || this.expressionMutatesThis(node.index, classDecl, visited);
     return false;
@@ -2025,10 +2062,19 @@ export class CppGenerator {
     // NO generan `operator==` automáticamente y el `operator==` del
     // auto-union necesita poder comparar payloads.
     const eqKindField = isTypeAlias ? "_kindIndex" : "kind";
-    const eqBranches = node.variants.map((variant, index) =>
-      `    (a.${eqKindField} == ${variantIndexEnum}::${variant.name} && b.${eqKindField} == ${variantIndexEnum}::${variant.name} && std::get<${index}>(a.payload).equals(std::get<${index}>(b.payload)))`
-    ).join(" ||\n");
-    const eqDef = `${tparamSpec}\ninline bool operator==(const ${node.name}${tnamesSpec}& a, const ${node.name}${tnamesSpec}& b) {\n    return\n${eqBranches};\n}`;
+    // V30.14.4: en vez de llamar `.equals()` (que solo existe en clases
+    // del dialecto, no en std::string ni std::monostate), usamos `==`
+    // para tipos built-in y `.equals()` para clases del dialecto.
+    // El helper `equalsDispatch(i, T)` elige en compile-time.
+    const eqBranchesTyped = node.variants.map((variant, index) => {
+      const T = variant.payload ?? "void";
+      const isClass = variant.payload ? this.classesByName.has(variant.payload) : false;
+      const cmp = isClass
+        ? `std::get<${index}>(a.payload).equals(std::get<${index}>(b.payload))`
+        : `(std::get<${index}>(a.payload) == std::get<${index}>(b.payload))`;
+      return `    (a.${eqKindField} == ${variantIndexEnum}::${variant.name} && b.${eqKindField} == ${variantIndexEnum}::${variant.name} && ${cmp})`;
+    }).join(" ||\n");
+    const eqDef = `${tparamSpec}\ninline bool operator==(const ${node.name}${tnamesSpec}& a, const ${node.name}${tnamesSpec}& b) {\n    return\n${eqBranchesTyped};\n}`;
     // V30.13: dispatch methods para auto-unions. Cada método declarado en
     // la interface original se reescribe como un `switch (kind)` que
     // llama al método del payload concreto. Esto permite que el código
