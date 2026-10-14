@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, Parameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression, BlockStatement } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, Parameter, TypeParameter, FunctionDeclaration, InterfaceDeclaration, InterfaceMethod, ClassDeclaration, ClassMethod, ArrowFunctionExpression, TypeAliasDeclaration, EnumDeclaration, UnionDeclaration, EnumMember, MatchExpression, LiteralExpression, BlockStatement } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { Scope, type FunctionSignature, type FunctionSymbol, type SymbolInfo } from "./symbols.ts";
 import { arrayElement, arrayType, fixedArrayElement, fixedArraySize, functionParameters, functionResult, functionType, genericArguments, genericBase, genericType, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPrimitive, isPromiseType, isReadonlyType, isSetType, isTupleType, isTypeofType, isUnionType, numericBitWidth, numericKind, numericSign, promiseResult, readonlyInner, readonlyType, registerFixedArray, resolvedTypeToTypeName, toResolvedRuntimeType, toResolvedType, tupleElements, tupleType, typeMatches, typeofTarget, unionMembers } from "../types/type-system.ts";
@@ -541,7 +541,7 @@ export class TypeChecker {
     // `Promise<T>` se permite pero el dialecto trata el `T` como `any`
     // para type-checking (la conversion a C++ se hace en codegen).
     this.registerBuiltinInterface("Promise", []);
-    // V30.17: Promise.all / Promise.race como funciones globales.
+    // V30.17: `Promise.all([...])` y `Promise.race([...])` como funciones globales.
     // `promiseAll(arr: any[]): Promise<any[]>` espera a todas las
     // tasks del array en paralelo y devuelve un array con los resultados.
     // `promiseRace(arr: any[]): Promise<any>` devuelve el primer
@@ -549,6 +549,34 @@ export class TypeChecker {
     // llamadas a ets::when_all/ets::when_race).
     global.define("promiseAll", fn([{ type: "any[]", out: false }], "Promise"));
     global.define("promiseRace", fn([{ type: "any[]", out: false }], "Promise"));
+    // V30.18: combinators async. `timeout<T>(task, ms, sentinel)`:
+    // espera a la task con un timeout. Si no completa en `ms`
+    // milisegundos, devuelve `sentinel` (por default 0).
+    // `retry<T>(fn, times, delayMs, sentinel)`: invoca `fn` (que
+    // retorna Task<T>), y si el resultado es `sentinel`, reintenta
+    // hasta `times` veces con un delay de `delayMs` entre intentos.
+    // Los type parameters <T> son obligatorios. NOTA: no exportamos
+    // `delay` como builtin porque choca con funciones del usuario
+    // que se llamen `delay`. Los usuarios pueden usar `sleep` (que
+    // ya existe) o definir su propio `delay`.
+    {
+      const sym: FunctionSymbol = { kind: "function", overloads: [{
+        typeParameters: ["T"],
+        variadicTypeParameters: [],
+        params: [{ type: "any", out: false }, { type: "number", out: false }, { type: "number", out: false }],
+        returnType: genericType("Promise", ["T"]),
+      }]};
+      global.define("timeout", sym);
+    }
+    {
+      const sym: FunctionSymbol = { kind: "function", overloads: [{
+        typeParameters: ["T"],
+        variadicTypeParameters: [],
+        params: [{ type: "any", out: false }, { type: "number", out: false }, { type: "number", out: false }, { type: "number", out: false }],
+        returnType: genericType("Promise", ["T"]),
+      }]};
+      global.define("retry", sym);
+    }
     // V30.2: stopLoop() cierra el event loop actual (lo saca de
     // run() sin matar el proceso). Util para auto-cancelar
     // setInterval: el callback compara un contador y llama a
@@ -3976,6 +4004,10 @@ export class TypeChecker {
     // (actuales, returnType contextual) intente llenar los huecos; los
     // defaults solo cubren los parámetros que queden sin inferir al final
     // (estilo TS).
+    // V30.18: `substitutions` ya estaba bien, pero el codepath de
+    // `tryInferType` setea keys string ("T"), y esta linea debe
+    // tambien usar string keys. La firma `typeParameters: string[]`
+    // (en `FunctionSignature`) hace `parameter` un string directamente.
     normalTypeParameters.forEach((parameter, index) => { if (explicit[index]) substitutions.set(parameter, explicit[index]); });
     const parameters = new Set(signature.typeParameters); let score = rest ? -1 : 0;
     for (let index = 0; index < actuals.length; index++) {
@@ -3984,6 +4016,8 @@ export class TypeChecker {
       if (rest && signature.variadicTypeParameters.includes(parameter.type)) { score += 1; continue; }
       if (!this.tryInferType(parameter.type, actuals[index], parameters, substitutions)) return undefined;
       const expected = this.substituteType(parameter.type, substitutions);
+      // V30.18: `any` acepta cualquier actual (incluyendo Promise<number>).
+      if (expected === "any") { score += parameters.has(parameter.type) ? 2 : 4; continue; }
       if (this.enumCompatible(actuals[index], expected) || typeMatches(actuals[index], expected) || this.satisfiesInterface(actuals[index], expected)) score += parameters.has(parameter.type) ? 2 : 4;
       else return undefined;
     }
@@ -4012,6 +4046,10 @@ export class TypeChecker {
       if (previous && previous !== actual) return false;
       substitutions.set(pattern, actual); return true;
     }
+    // V30.18: `any` acepta cualquier tipo (incluyendo generics como
+    // Promise<T>). Util para combinators como `timeout`/`retry` que
+    // toman cualquier task.
+    if (pattern === "any") return true;
     // Union types: `actual` cubre `pattern` si cada miembro del union es uno de los tipos
     // esperados (covarianza). Permite pasar un `string` a un parámetro `string | number`.
     if (typeMatches(actual, pattern)) return true;

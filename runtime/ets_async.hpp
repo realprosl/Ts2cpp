@@ -280,7 +280,11 @@ inline Task<void> sleep(double milliseconds) { co_await SleepAwaiter{millisecond
 // declarados en runtime/ets_net_libuv_api.hpp y exportados por
 // runtime/ets_net.hpp.
 
-// V30.17: `task_all<T>(tasks)` y `task_race<T>(tasks)` devuelven una
+// V30.18: combinators async. `delay(ms)` es un alias de `sleep(ms)`.
+// Lo expongo bajo `ets::` namespace para que el codegen pueda
+// emitirlo como `::ets::delay(...)` (mismo patron que los demas
+// combinators).
+inline Task<void> delay(double ms) { return sleep(ms); }
 // Task que contiene el resultado de `all`/`race` respectivamente. Esto
 // permite encadenarlos con `await` igual que cualquier otra Task. La
 // Task resultante se puede usar tanto dentro de una funcion async
@@ -309,6 +313,53 @@ auto make_task_vector(Container&& values) {
     out.reserve(values.size());
     for (auto& v : values) out.push_back(std::move(v));
     return out;
+}
+
+// V30.18: `timeout<T>(task, ms, sentinel)` espera a la task con un
+// timeout. Si no completa en `ms` milisegundos, devuelve `sentinel`
+// (por default 0). Internamente, race entre la task y un sleep(ms).
+template <typename T>
+Task<T> timeout(Task<T> task, double ms, T sentinel) {
+    // Iniciamos ambas y esperamos a la primera que complete. Si gana
+    // el sleep, devolvemos sentinel; si gana la task, devolvemos su
+    // resultado. Para T=void, sentinel es 0 (ignorado).
+    if constexpr (std::is_same_v<T, void>) {
+        while (!task.done() && ms > 0) {
+            defaultEventLoop.runOne();
+            ms -= 1.0;  // aproximado; mejora futura: usar timer real
+        }
+        if (task.done()) co_await task;
+        // si no, descartamos task (su destructor la limpia)
+    } else {
+        if (!task.done() && ms > 0) {
+            // Spin-wait cooperativo. Mejora futura: usar uv_timer.
+            auto start = std::chrono::steady_clock::now();
+            while (!task.done()) {
+                defaultEventLoop.runOne();
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration<double, std::milli>(now - start).count() >= ms) break;
+            }
+        }
+        if (task.done()) co_return co_await task;
+        co_return sentinel;
+    }
+}
+
+// V30.18: `retry<T>(fn, times, delayMs, sentinel)` reintenta la
+// task hasta `times` veces si el resultado es `sentinel`. `fn` es
+// un callable que produce una Task<T> cada vez (e.g. una lambda
+// `() => task()`). Esto es necesario porque Task<T> no es copiable
+// ni movible despues de iniciar; el lambda nos permite crear una
+// task fresca en cada intento. Si agota los intentos, devuelve
+// `sentinel`.
+template <typename T>
+Task<T> retry(std::function<Task<T>()> fn, int times, double delayMs, T sentinel) {
+    for (int i = 0; i < times; i++) {
+        T result = co_await timeout<T>(fn(), delayMs, sentinel);
+        if (!(result == sentinel)) co_return result;
+        if (i < times - 1) co_await sleep(delayMs);
+    }
+    co_return sentinel;
 }
 
 } // namespace ets

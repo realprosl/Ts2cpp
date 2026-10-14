@@ -1048,3 +1048,26 @@ test("V30.17.1: Promise.race<T>(tasks) emite ::ets::task_race<T>", () => {
   const out = compile(src).cpp;
   assert.match(out, /::ets::task_race<[^>]+>/, "debe emitir ::ets::task_race<T>");
 });
+
+test("V30.18: timeout<T>(task, ms, sentinel) emite ::ets::timeout<T>", () => {
+  const src = `
+    async function slow(): Promise<number> { return 42 }
+    const r: number = await timeout<number>(slow(), 50, -1)
+    print(r)
+  `;
+  const out = compile(src).cpp;
+  // V30.18: el codegen debe emitir `::ets::timeout<T>(...)` con el
+  // type argument explicito, para que el runtime pueda instanciar
+  // el helper con el tipo concreto.
+  assert.match(out, /::ets::timeout<[^>]+>/, "debe emitir ::ets::timeout<T>");
+});
+
+test("V30.18: retry<T>(fn, times, delayMs, sentinel) emite ::ets::retry<T>", () => {
+  const src = `
+    async function flaky(): Promise<number> { return 0 }
+    const r: number = await retry<number>(() => flaky(), 3, 10, 0)
+    print(r)
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /::ets::retry<[^>]+>/, "debe emitir ::ets::retry<T>");
+});
