@@ -945,3 +945,54 @@ test("V30.14.4: type alias union con built-ins NO genera auto-union", () => {
   assert.doesNotMatch(out, /struct Maybe_Union/, "no debe emitir Maybe_Union para built-ins");
   assert.doesNotMatch(out, /make_string/, "no debe emitir make_string");
 });
+
+test("V30.15: match con type-alias union narrowa el subject al tipo de la variant", () => {
+  const src = `
+    class Line {
+      kind: string
+      constructor() { this.kind = "line" }
+      build(): string { return "<line/>" }
+    }
+    class Circle {
+      kind: string
+      constructor() { this.kind = "circle" }
+      build(): string { return "<circle/>" }
+    }
+    type SvgChild = Line | Circle
+    function describe(c: SvgChild): string {
+      return match(c, "kind", [
+        when("Line", (x: Line): string => x.build()),
+        when("Circle", (x: Circle): string => x.build()),
+      ])
+    }
+    let s: SvgChild = new Line()
+    print(describe(s))
+  `;
+  const out = compile(src).cpp;
+  // V30.15: cada `when` con class name debe narrowar el subject via
+  // `std::holds_alternative<T>(c.payload)` + `std::get<T>(c.payload)`.
+  assert.match(out, /std::holds_alternative<Line>\(c\.payload\)/, "debe narrowar a Line via holds_alternative");
+  assert.match(out, /std::holds_alternative<Circle>\(c\.payload\)/, "debe narrowar a Circle via holds_alternative");
+  assert.match(out, /std::get<Line>\(c\.payload\)/, "debe extraer Line via std::get");
+  assert.match(out, /std::get<Circle>\(c\.payload\)/, "debe extraer Circle via std::get");
+});
+
+test("V30.15.1: whenType<T> sobre type-alias union narrowa via c.payload", () => {
+  const src = `
+    class Line { kind: string; constructor() { this.kind = "line" } }
+    class Circle { kind: string; constructor() { this.kind = "circle" } }
+    type SvgChild = Line | Circle
+    function describe(c: SvgChild): string {
+      return match(c, [
+        whenType<Line>(() => "line!"),
+        whenType<Circle>(() => "circle!"),
+      ])
+    }
+    let s: SvgChild = new Line()
+    print(describe(s))
+  `;
+  const out = compile(src).cpp;
+  // V30.15.1: whenType<T> debe usar c.payload para holds_alternative.
+  assert.match(out, /std::holds_alternative<Line>\(c\.payload\)/, "whenType<Line> debe narrowar via c.payload");
+  assert.match(out, /std::holds_alternative<Circle>\(c\.payload\)/, "whenType<Circle> debe narrowar via c.payload");
+});
