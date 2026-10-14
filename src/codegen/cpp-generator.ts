@@ -1468,6 +1468,22 @@ export class CppGenerator {
     }
     const previous = this.inClassMethod; this.inClassMethod = true;
     let body = this.emitBlock(method.body);
+    // V30.13: si el constructor ahora devuelve `ClassName&` (no void),
+    // hay que añadir `return *this;` al final del body para que el
+    // método C++ efectivamente devuelva una referencia. Sin esto, g++
+    // emite un warning ("control reaches end of non-void function") y
+    // la rvalue temporal es UB, lo que se manifiesta como `free():
+    // invalid pointer` al destruir el std::variant del auto-union.
+    const isReturningClassRef = method.name === "constructor" && declaration.returnType === `${classDecl.name}&`;
+    if (isReturningClassRef) {
+      // Insertar `return *this;` antes del `}` final del body.
+      const closeBrace = body.lastIndexOf("}");
+      if (closeBrace > 0) {
+        const beforeClose = body.slice(0, closeBrace);
+        const afterClose = body.slice(closeBrace);
+        body = beforeClose + "    return *this;\n" + afterClose;
+      }
+    }
     if (method.name === "constructor") {
       const paramProps = method.params.filter(p => p.access !== undefined || p.readonly === true);
       if (paramProps.length > 0) {
