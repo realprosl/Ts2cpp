@@ -932,3 +932,16 @@ test("V30.14.3: add(SvgChild) enveuelve el call site con make_X", () => {
   assert.match(out, /svg\.add\(make_Line\(/, "svg.add(new Line()) debe envolver con make_Line");
   assert.match(out, /svg\.add\(make_Circle\(/, "svg.add(new Circle()) debe envolver con make_Circle");
 });
+
+test("V30.14.4: type alias union con built-ins NO genera auto-union", () => {
+  const src = `
+    type Maybe = string | number
+    let m: Maybe = "hello"
+    print(m)
+  `;
+  const out = compile(src).cpp;
+  // El type alias Maybe = string | number NO debe generar Maybe_Union
+  // porque sus variantes son built-ins, no clases del dialecto.
+  assert.doesNotMatch(out, /struct Maybe_Union/, "no debe emitir Maybe_Union para built-ins");
+  assert.doesNotMatch(out, /make_string/, "no debe emitir make_string");
+});
