@@ -1251,8 +1251,11 @@ export class CppGenerator {
     // siguen funcionando porque la inicialización forma parte de la declaración.
     // Separamos las top-level: las que tienen destructuring se emiten en main()
 // (no son static-init válidas), el resto va al bloque de static init.
-    const simpleTopLevel = topLevelVariables.filter(variable => !variable.arrayBindings || variable.arrayBindings.length === 0);
-    const destructuringTopLevel = topLevelVariables.filter(variable => !!variable.arrayBindings && variable.arrayBindings.length > 0);
+    // V30.20: incluye tambien object destructuring (`{ x, y } = p`).
+    const isDestructuring = (v: VariableDeclaration): boolean =>
+      (!!v.arrayBindings && v.arrayBindings.length > 0) || (!!v.objectBindings && v.objectBindings.length > 0);
+    const simpleTopLevel = topLevelVariables.filter(variable => !isDestructuring(variable));
+    const destructuringTopLevel = topLevelVariables.filter(isDestructuring);
     for (const variable of simpleTopLevel) {
       const type = variable.declaredType ?? this.expressionType(variable.initializer) ?? "auto";
       const previous = this.inStaticInit; this.inStaticInit = true;
@@ -1439,9 +1442,12 @@ export class CppGenerator {
     const privateFunctions = allFunctions.filter(statement => !statement.exported);
     const privateInterfaces = unwrappedProgram.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !statement.exported);
     const privateClasses = unwrappedProgram.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !statement.exported);
-    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && (!statement.arrayBindings || statement.arrayBindings.length === 0));
+    // V30.20: incluye tambien object destructuring (`{ x, y } = p`).
+    const isDestructuring = (v: VariableDeclaration): boolean =>
+      (!!v.arrayBindings && v.arrayBindings.length > 0) || (!!v.objectBindings && v.objectBindings.length > 0);
+    const variables = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !isDestructuring(statement));
     const topLevel = unwrappedProgram.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration" && statement.kind !== "ExportNamedDeclaration");
-    const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
+    const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && isDestructuring(statement));
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
     // V30.13.4: el header ya tiene los `interfaceConcept` para todas
     // las interfaces (incluidas las privadas). Aqui no los
@@ -1475,6 +1481,15 @@ export class CppGenerator {
     // parámetros de valor (eso es lo que permite llamarlas con menos args
     // en otros módulos).
     for (const variable of variables) {
+      // V30.20: skip destructuring declarations (array + object). They
+      // are emitted at the use site (`emitStatement` -> VariableDeclaration
+      // with `arrayBindings` / `objectBindings`), not as a top-level
+      // module variable. The empty `name` would otherwise produce
+      // `static T  = init;` which is invalid C++.
+      if ((variable.arrayBindings && variable.arrayBindings.length > 0)
+          || (variable.objectBindings && variable.objectBindings.length > 0)) {
+        continue;
+      }
       // V15: declaramos la top-level variable con su initializer literal
       // (igual que `generate` hace). Si no tiene initializer literal, usamos
       // `auto` para que C++ deduzca, y emitimos la asignación en el init.
@@ -2185,6 +2200,26 @@ export class CppGenerator {
             const value = (binding.defaultValue && initIsArray)
               ? `(${tmpName}.size() > ${index} ? ${access} : (${this.emitExpression(binding.defaultValue)}))`
               : access;
+            lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${value};`);
+          }
+          return lines.join("\n");
+        }
+        // V30.20: object destructuring `const { x, y } = p;` se desazucara a
+        // una variable temporal oculta + N declaraciones `const T name = tmp.<property>;`.
+        // Shorthand (`{ x }`) y renombrado (`{ x: a }`) se manejan via
+        // `binding.name` (local) y `binding.property` (campo del objeto).
+        if (node.objectBindings && node.objectBindings.length > 0) {
+          const counter = ++this.destructuringCounter;
+          const tmpName = `__ets_destructure_${counter}`;
+          const tmpType = node.declaredType ? cppType(node.declaredType) : "auto";
+          const lines: string[] = [];
+          lines.push(`${this.pad()}${this.variableIsConst(node) ? "const " : ""}${tmpType} ${tmpName} = ${this.emitExpression(node.initializer)};`);
+          for (const binding of node.objectBindings) {
+            const type = binding.declaredType ? cppType(binding.declaredType) : "auto";
+            const mutable = node.mutable ? "" : "const ";
+            const value = binding.defaultValue
+              ? `(${tmpName}.${binding.property})`  // default: simplificacion; C++ no permite omitir si el field no existe
+              : `${tmpName}.${binding.property}`;
             lines.push(`${this.pad()}${mutable}${type} ${this.cppName(binding.name)} = ${value};`);
           }
           return lines.join("\n");

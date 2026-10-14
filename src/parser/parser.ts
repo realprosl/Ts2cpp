@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, InterfaceField, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, UnionDeclaration, UnionVariant, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, Expression as Expr, TypeName, BlockStatement, Parameter, InterfaceMethod, InterfaceField, ClassField, ClassMethod, TemplateLiteralExpression, TypeParameter, TypeAliasDeclaration, EnumDeclaration, EnumMember, LiteralExpression, ArrayElement, SpreadElement, Decorator, MatchExpression, MatchArm, UnionDeclaration, UnionVariant, ExportDefaultDeclaration, ExportNamedDeclaration, ExportSpecifier, ObjectBinding } from "../ast/nodes.ts";
 import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
 import { span } from "../core/span.ts";
 import { Lexer } from "../lexer/lexer.ts";
@@ -152,6 +152,46 @@ export class Parser {
       const initializer = this.expression();
       const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración");
       return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: "", declaredType, initializer, arrayBindings: bindings, span: span(keyword.span.start, end.span.end) };
+    }
+    // V30.20: object destructuring `const { x, y } = p;` con soporte para
+    // renombrado (`{ x: a, y: b } = p`), default values (`{ x = 5 } = p`)
+    // y tipos declarados (`{ x: number } = p`). El shorthand `{ x }`
+    // equivale a `{ x: x }`.
+    if (this.check("{")) {
+      this.advance();
+      const bindings: ObjectBinding[] = [];
+      while (!this.check("}")) {
+        const keyTok = this.consume("identifier", "Se esperaba un nombre de propiedad en el patrón de destructuring");
+        let property = keyTok.lexeme;
+        let declaredType: TypeName | undefined;
+        if (this.match(":")) {
+          // Renombrado: `{ x: a }` significa "toma p.x y guardalo en a".
+          // Tambien aceptamos tipo: `{ x: number }` (shorthand para
+          // `{ x: x }` con type).
+          if (this.check("identifier")) {
+            const valueName = this.advance().lexeme;
+            if (this.match(":")) {
+              declaredType = this.typeName();
+            }
+            bindings.push({ name: valueName, property, declaredType });
+          } else {
+            declaredType = this.typeName();
+            bindings.push({ name: property, property, declaredType });
+          }
+        } else {
+          let defaultValue: Expression | undefined;
+          if (this.match("=")) defaultValue = this.expression();
+          bindings.push({ name: property, property, declaredType, defaultValue });
+        }
+        if (!this.match(",")) break;
+      }
+      this.consume("}", "Se esperaba '}' después del patrón de destructuring de objeto");
+      let declaredType: TypeName | undefined;
+      if (this.match(":")) declaredType = this.typeName();
+      this.consume("=", "Toda variable debe tener un inicializador");
+      const initializer = this.expression();
+      const end = this.consumeStatementTerminator("Se esperaba ';' después de la declaración");
+      return { kind: "VariableDeclaration", exported, mutable: keyword.kind === "let", name: "", declaredType, initializer, objectBindings: bindings, span: span(keyword.span.start, end.span.end) };
     }
     const name = this.consume("identifier", "Se esperaba el nombre de la variable");
     let declaredType: TypeName | undefined;
@@ -1081,12 +1121,21 @@ export class Parser {
     // un par `field: value`; el primer campo debe ser el discriminador
     // (literal primitivo). El type-checker conecta el literal con la
     // unión esperada en el contexto.
+    // V30.20: soporta también object literal shorthand (`{x, y}` ≡
+    // `{x: x, y: y}`) para escribir código TS idiomático.
     if (token.kind === "{") {
       const properties: { key: string; value: Expression }[] = [];
       if (!this.check("}")) do {
         const keyTok = this.consume("identifier", "Se esperaba el nombre de la propiedad");
-        this.consume(":", "Se esperaba ':' después del nombre de la propiedad");
-        const value = this.expression();
+        let value: Expression;
+        if (this.match(":")) {
+          // Forma normal: `key: value`.
+          value = this.expression();
+        } else {
+          // Shorthand: `{x}` ≡ `{x: x}`. El value es un IdentifierExpression
+          // con el mismo nombre que la key.
+          value = { kind: "IdentifierExpression", name: keyTok.lexeme, span: keyTok.span };
+        }
         properties.push({ key: keyTok.lexeme, value });
       } while (this.match(","));
       const close = this.consume("}", "Se esperaba '}' para cerrar el object literal");

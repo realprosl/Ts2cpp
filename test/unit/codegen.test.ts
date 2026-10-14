@@ -1128,3 +1128,70 @@ test("V30.19: arr[0] += 10 funciona para indices de array", () => {
   // `arr[static_cast<std::size_t>(0.0)] += 10.0`.
   assert.match(out, /\+= 10\.0/, "debe emitir el += aplicado al indice");
 });
+
+test("V30.20: object destructuring shorthand `{ x, y } = p` desazucara a accesos a fields", () => {
+  const src = `
+    class Point {
+      x: number
+      y: number
+      constructor(x: number, y: number) { this.x = x; this.y = y }
+    }
+    function describe(p: Point): void {
+      const { x, y } = p
+      print(x)
+      print(y)
+    }
+    describe(new Point(1, 2))
+  `;
+  const out = compile(src).cpp;
+  // V30.20: el destructuring se desazucara a un temporal + accesos
+  // directos a fields. Buscamos `__ets_destructure_N.x` (shorthand).
+  assert.match(out, /__ets_destructure_\d+\.x/, "debe emitir acceso a .x en el temporal");
+  assert.match(out, /__ets_destructure_\d+\.y/, "debe emitir acceso a .y en el temporal");
+});
+
+test("V30.20: object destructuring renombrado `{ x: a, y: b } = p` emite a = p.x; b = p.y", () => {
+  const src = `
+    class Point {
+      x: number
+      y: number
+      constructor(x: number, y: number) { this.x = x; this.y = y }
+    }
+    const p: Point = new Point(10, 20)
+    const { x: a, y: b } = p
+    print(a)
+    print(b)
+  `;
+  const out = compile(src).cpp;
+  // V30.20: el rename usa el mismo `property` (x, y) pero con `name`
+  // distinto (a, b). La emision C++ es la misma: `a = p_tmp.x; b = p_tmp.y`.
+  assert.match(out, /__ets_destructure_\d+\.x/, "debe acceder al field x");
+  assert.match(out, /__ets_destructure_\d+\.y/, "debe acceder al field y");
+  // Las variables locales son `a` y `b`, no `x` e `y`.
+  assert.match(out, /\b(?!static )a = __ets_destructure_\d+\.x/, "a se inicializa con .x");
+  assert.match(out, /\b(?!static )b = __ets_destructure_\d+\.y/, "b se inicializa con .y");
+});
+
+test("V30.20: object destructuring anidado `{ name, inner: i } = o; { v } = i`", () => {
+  const src = `
+    class Inner {
+      v: number
+      constructor(v: number) { this.v = v }
+    }
+    class Outer {
+      name: string
+      inner: Inner
+      constructor(name: string, inner: Inner) { this.name = name; this.inner = inner }
+    }
+    const o: Outer = new Outer("test", new Inner(42))
+    const { name, inner: i } = o
+    const { v } = i
+    print(name)
+    print(v)
+  `;
+  const out = compile(src).cpp;
+  // V30.20: dos `__ets_destructure_N` separados, uno para `o` y otro para `i`.
+  // El segundo accede a `.v` sobre el primero.
+  const matches = out.match(/__ets_destructure_\d+/g) || [];
+  assert.ok(matches.length >= 2, "debe haber al menos 2 temporales de destructuring");
+});
