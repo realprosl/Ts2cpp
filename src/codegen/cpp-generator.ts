@@ -105,6 +105,13 @@ export class CppGenerator {
   private inClassMethod = false;
   private inStaticInit = false;
   private inAsyncFunction = false;
+  // V30.12.1: true mientras se emite el callback de un `when`/`whenType`/`otherwise`
+  // dentro de `emitNewMatch`. Hace que las lambdas anidadas capturen `this` por
+  // referencia (`[&, this]`) en lugar de por valor (`[=, this]`), evitando
+  // "passing const T as 'this' argument discards qualifiers" cuando el método
+  // exterior fue marcado `const` pero el callback llama a métodos no-const de
+  // `this` (p.ej. `apply(m).match(m, "kind", [when("drawLine", (x)=>this.modX(x.x))])`).
+  private inMatchCallback = false;
   // V8.0: tipo declarado del retorno de la función actual. Se setea en
   // `function()` antes de emitir el cuerpo y se restaura al salir.
   // `undefined` cuando no estamos dentro de una función.
@@ -1673,7 +1680,14 @@ export class CppGenerator {
       const cb = w.callback;
       let callArgs = "";
       if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
-      const callbackCall = `${this.emitExpression(cb)}(${callArgs})`;
+      // V30.12.1: capturar `this` por referencia en callbacks de match para
+      // permitir llamadas a métodos no-const de `this` aunque el método
+      // exterior sea `const`. Restauramos el flag en finally por si la
+      // emisión lanza (defensa).
+      this.inMatchCallback = true;
+      let callbackCall: string;
+      try { callbackCall = `${this.emitExpression(cb)}(${callArgs})`; }
+      finally { this.inMatchCallback = false; }
       return `        if ((${subjectAccess}) == (${patternText})) { return ${callbackCall}; }`;
     });
     // Forma del fallback según haya `whens` o no. Si hay `whens`, el
@@ -1756,17 +1770,30 @@ export class CppGenerator {
         const hasCb = cb.kind === "ArrowFunctionExpression" && cb.params.length === 1;
         const prefix = i === 0 ? "if" : "else if";
         if (hasCb) {
-          const callbackCall = `${this.emitExpression(cb)}(__ets_match_narrowed_${this.cppName(tArg)})`;
+          // V30.12.1: see note above — capture `this` by reference in match
+          // callbacks so they can call non-const methods on `this`.
+          this.inMatchCallback = true;
+          let callbackCall: string;
+          try { callbackCall = `${this.emitExpression(cb)}(__ets_match_narrowed_${this.cppName(tArg)})`; }
+          finally { this.inMatchCallback = false; }
           whenTypeBranches.push(`        ${prefix} (std::holds_alternative<${tCpp}>(${subjectText})) { auto __ets_match_narrowed_${this.cppName(tArg)} = std::get<${tCpp}>(${subjectText}); return ${callbackCall}; }`);
         } else {
-          const callbackCall = `${this.emitExpression(cb)}()`;
+          // V30.12.1: mismo tratamiento para el callback sin params.
+          this.inMatchCallback = true;
+          let callbackCall: string;
+          try { callbackCall = `${this.emitExpression(cb)}()`; }
+          finally { this.inMatchCallback = false; }
           whenTypeBranches.push(`        ${prefix} (std::holds_alternative<${tCpp}>(${subjectText})) { return ${callbackCall}; }`);
         }
       }
     } else if (whenTypeElements.length > 0) {
       // Comportamiento legacy: solo el primer whenType es activo.
       const cb = whenTypeElements[0]!.callback;
-      const callbackCall = `${this.emitExpression(cb)}()`;
+      // V30.12.1: capturar `this` por referencia en callbacks de match.
+      this.inMatchCallback = true;
+      let callbackCall: string;
+      try { callbackCall = `${this.emitExpression(cb)}()`; }
+      finally { this.inMatchCallback = false; }
       whenTypeBranches.push(`        else { return ${callbackCall}; }`);
     }
     let otherwiseBranch: string | undefined;
@@ -1774,7 +1801,11 @@ export class CppGenerator {
       const cb = liveFallback.callback;
       let callArgs = "";
       if (cb.kind === "ArrowFunctionExpression" && cb.params.length === 1) callArgs = subjectText;
-      const callbackCall = `${this.emitExpression(cb)}(${callArgs})`;
+      // V30.12.1: capturar `this` por referencia en callbacks de match.
+      this.inMatchCallback = true;
+      let callbackCall: string;
+      try { callbackCall = `${this.emitExpression(cb)}(${callArgs})`; }
+      finally { this.inMatchCallback = false; }
       otherwiseBranch = `        else { return ${callbackCall}; }`;
     }
     // Encadenamos: `whens` con `if`/`else if`, luego `whenType` (que
@@ -2244,7 +2275,7 @@ export class CppGenerator {
         // está vacío, la lambda no captura nada: usamos `[]`.
         let capture: string;
         if (this.inStaticInit) capture = "[]";
-        else if (this.inClassMethod) capture = "[=, this]";
+        else if (this.inClassMethod) capture = this.inMatchCallback ? "[&, this]" : "[=, this]";
         else if (node.capturedSymbols !== undefined) {
           // V28: filtramos los namespaces globales que NO son variables
           // (http, Math, Date, console, fs, path, process, JSON, FileReader,

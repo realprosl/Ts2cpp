@@ -580,3 +580,98 @@ test("codegen V30.11.1: método que no llama a nada y no muta → const (baselin
   // verify() no toca this y no llama a métodos de la clase → const.
   assert.match(out, /int8_t\s+verify\(\)\s+const\s*\{/);
 });
+
+// ---------------------------------------------------------------------------
+// V30.12.1: captura de `this` por referencia en callbacks de `match`.
+//
+// Antes, las arrow functions dentro de un método de clase se emitían con
+// `[=, this]` (captura por valor de `this`). Si el método exterior estaba
+// marcado `const` por el codegen (no mutaba directamente), el `this` copiado
+// al callback era `const`, y llamadas a métodos no-const de `this` desde el
+// callback fallaban con `passing const Svg as \'this\' argument discards
+// qualifiers`. El fix: dentro de `emitNewMatch`, activamos una flag
+// `inMatchCallback` que hace que la captura del callback use `[&, this]`
+// (por referencia) en lugar de `[=, this]`. Esto solo afecta a los callbacks
+// emitidos como `when`/`whenType`/`otherwise`; el resto de lambdas siguen
+// con la captura legacy.
+// ---------------------------------------------------------------------------
+
+test("codegen V30.12.1: callback de match en método que llama a this.metodoNoConst() → captura por referencia", () => {
+  // Repro mínimo del fallo reportado. apply() NO muta directamente, por lo
+  // que el codegen lo marca `const`. Pero el callback de `when` llama a
+  // this.modX() que sí muta. Antes del fix el callback se emitía con
+  // `[=, this]` → g++ reventaba. Después del fix usa `[&, this]`.
+  // Usamos el patrón del test V23 (clase con campo `kind: string`):
+  // el discriminator matchea contra el literal "drawLine" como string.
+  const out = cpp(`
+    class Mod { kind: string; x: i8; constructor(k: string, v: i8) { this.kind = k; this.x = v } }
+    class Counter {
+      x: i8
+      constructor() { this.x = 0 }
+      modX(d: i8): i8 { this.x = this.x + d; return this.x }
+      apply(m: Mod): void {
+        match(m, "kind", [
+          when("drawLine", (x: Mod): void => print(\`x: \${this.modX(x.x)}\`)),
+        ])
+      }
+    }
+  `);
+  // El callback de `when` debe capturar `this` por referencia.
+  // Buscamos el patrón dentro del IIFE del match. Como `[&, this]` puede
+  // aparecer en varios sitios (uno por callback), basta con que aparezca
+  // AL MENOS una vez en el contexto del callback.
+  assert.match(out, /\[&,\s*this\]/);
+  // Y la llamada a this.modX() debe estar presente (la prueba semántica
+  // del fix: el callback sí intenta llamar al método no-const). El
+  // dialecto emite la llamada sobre `(*this)` en lugar de `this->`.
+  assert.match(out, /\(\*this\)\.modX\(/);
+});
+
+test("codegen V30.12.1: callback de match que solo lee this.campo → sigue funcionando (no regresión)", () => {
+  // El fix solo cambia la captura en callbacks de match. Un callback que
+  // SOLO lee `this` (no llama a métodos no-const) debe seguir funcionando,
+  // y la salida C++ debe seguir capturando `this` por referencia dentro del
+  // callback de match. Aquí verificamos que se emite el `print(this.x)` y
+  // que el callback está bien formado.
+  const out = cpp(`
+    class Mod { kind: string; v: i8; constructor(k: string, x: i8) { this.kind = k; this.v = x } }
+    class Reader {
+      x: i8
+      constructor() { this.x = 7 }
+      apply(m: Mod): void {
+        match(m, "kind", [
+          when("a", (_x: Mod): void => print(\`x: \${this.x}\`)),
+        ])
+      }
+    }
+  `);
+  // El callback usa `[&, this]` por el fix.
+  assert.match(out, /\[&,\s*this\]/);
+  // El acceso a this.x se compila a `(*this).x` (el dialecto estica
+  // desreferencia el `this` capturado por referencia y emite el operador
+  // `.` para mantener la semántica de campo directo de la clase).
+  assert.match(out, /\(\*this\)\.x/);
+});
+
+test("codegen V30.12.1: match en función libre (no método) NO se ve afectado por el flag", () => {
+  // Si match se usa fuera de un método de clase, `inClassMethod` es false
+  // y la captura por defecto aplica: el callback se emite con `[]` (no
+  // captura nada del scope exterior) o con la captura basada en
+  // `capturedSymbols` según corresponda. El flag `inMatchCallback` solo
+  // cambia la rama de captura `[=, this]` vs `[&, this]` que SOLO aplica
+  // cuando `inClassMethod` es true. Verificamos que en una función libre
+  // no aparece `[&, this]` (no hay `this` que capturar) y el callback se
+  // emite con la captura correcta.
+  const out = cpp(`
+    function libre(n: number): string {
+      return match(n, [
+        when(0, (v: number): string => "cero"),
+        otherwise((): string => "otro"),
+      ]);
+    }
+  `);
+  // En función libre NO debe haber captura de `this`.
+  assert.doesNotMatch(out, /\[&,\s*this\]/);
+  assert.doesNotMatch(out, /\[=,\s*this\]/);
+});
+
