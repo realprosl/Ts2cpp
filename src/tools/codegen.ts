@@ -35,6 +35,7 @@ try {
     expression => checker.typeOf(expression),
     expression => checker.isVariadic(expression),
     expression => checker.typeArgumentsOf(expression),
+    name => checker.resolveTypeAlias(name),
   ).generate(program);
   process.stdout.write(cpp);
   if (!cpp.endsWith("\n")) process.stdout.write("\n");
