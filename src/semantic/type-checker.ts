@@ -1332,8 +1332,14 @@ export class TypeChecker {
     }
     if (isArrayType(type)) {
       const element = arrayElement(type);
-      if (element === "void" || this.interfaces.has(element)) this.report(node, `El array necesita un tipo de elemento concreto, no '${element}'`);
-      this.validateType(element, node, false, primitiveOnly, scope);
+      // V30.12.2: Array<Interface> se acepta a nivel de type-checker.
+      // El codegen genera un union automatico con las clases concretas
+      // que tengan campo `kind: string` y emiten `std::vector<I_AutoUnion>`.
+      // Si no hay clases concretas, el codegen emite un error claro.
+      // Permitimos `interfaceAllowed=true` para que el elemento (que puede
+      // ser una interface) no se rechace en la recursion.
+      if (element === "void") this.report(node, `El array necesita un tipo de elemento concreto, no 'void'`);
+      this.validateType(element, node, true, primitiveOnly, scope);
       return type;
     }
     // V4: arrays de tamaño fijo `T[N]`. Validamos que T es concreto y N
