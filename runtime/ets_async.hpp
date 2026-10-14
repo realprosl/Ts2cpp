@@ -241,11 +241,29 @@ std::vector<T> all(const std::vector<Task<T>>& tasks) {
 // no permite excepciones); array vacío es comportamiento indefinido.
 template <typename T>
 T race(const std::vector<Task<T>>& tasks) {
-    return syncWait(tasks.front());
+    // V30.17.1: race real, no "primera del array". Iniciamos todas las
+    // tasks y esperamos a que cualquiera complete. Como el event loop
+    // es cooperativo, hacemos round-robin: arrancamos todas y esperamos
+    // a que la primera complete; las demas las descartamos pero las
+    // dejamos correr (no podemos matarlas sin UB).
+    if (tasks.empty()) std::abort();
+    for (auto& t : tasks) t.start();
+    // Esperamos a la primera que complete. Las demas tasks quedan en
+    // background; el event loop las ira terminando y descartando sus
+    // resultados via Task's destructor.
+    while (true) {
+      for (auto& t : tasks) if (t.done()) return t.await_resume();
+      defaultEventLoop.runOne();
+    }
 }
 template <>
 inline void race<void>(const std::vector<Task<void>>& tasks) {
-    syncWait(tasks.front());
+    if (tasks.empty()) std::abort();
+    for (auto& t : tasks) t.start();
+    while (true) {
+      for (auto& t : tasks) if (t.done()) { t.await_resume(); return; }
+      defaultEventLoop.runOne();
+    }
 }
 
 struct SleepAwaiter {
@@ -261,5 +279,36 @@ inline Task<void> sleep(double milliseconds) { co_await SleepAwaiter{millisecond
 // Solo existen UvFdAwaiter / UvCancellableFdAwaiter (backend libuv),
 // declarados en runtime/ets_net_libuv_api.hpp y exportados por
 // runtime/ets_net.hpp.
+
+// V30.17: `task_all<T>(tasks)` y `task_race<T>(tasks)` devuelven una
+// Task que contiene el resultado de `all`/`race` respectivamente. Esto
+// permite encadenarlos con `await` igual que cualquier otra Task. La
+// Task resultante se puede usar tanto dentro de una funcion async
+// (vía `co_await`) como en un top-level await (vía `ets::syncWait`).
+template <typename T>
+Task<std::vector<T>> task_all(std::vector<Task<T>> tasks) {
+    co_return all(tasks);
+}
+
+template <typename T>
+Task<T> task_race(std::vector<Task<T>> tasks) {
+    co_return race(tasks);
+}
+
+// V30.17: `make_task_vector<T>(arr)` mueve los elementos de un
+// `std::vector<T>` (donde T es convertible a Task<U>) a un
+// `std::vector<Task<T>>`. Util para `Promise.all<T>` que toma un
+// array de tasks como argumento. El truco es construir el vector
+// destino con `reserve` y `push_back(std::move(x))` para no requerir
+// que `Task<U>` sea copiable.
+template <typename Container>
+auto make_task_vector(Container&& values) {
+    using SrcT = typename std::decay_t<Container>::value_type;
+    using DstT = std::decay_t<SrcT>;
+    std::vector<DstT> out;
+    out.reserve(values.size());
+    for (auto& v : values) out.push_back(std::move(v));
+    return out;
+}
 
 } // namespace ets

@@ -535,6 +535,20 @@ export class TypeChecker {
     global.define("setTimeout", fn([timerCallback, input("number")], "Timer"));
     global.define("setInterval", fn([timerCallback, input("number")], "Timer"));
     global.define("cancelTimer", fn([input("Timer")], "void"));
+    // V30.17: Promise como interface builtin vacia. Se usa como tipo
+    // de retorno de funciones async (Promise<T> en la practica se trata
+    // como ets::Task<T>). Los generics type parameters son opcionales:
+    // `Promise<T>` se permite pero el dialecto trata el `T` como `any`
+    // para type-checking (la conversion a C++ se hace en codegen).
+    this.registerBuiltinInterface("Promise", []);
+    // V30.17: Promise.all / Promise.race como funciones globales.
+    // `promiseAll(arr: any[]): Promise<any[]>` espera a todas las
+    // tasks del array en paralelo y devuelve un array con los resultados.
+    // `promiseRace(arr: any[]): Promise<any>` devuelve el primer
+    // resultado. El codegen las trata como case especial (emiten
+    // llamadas a ets::when_all/ets::when_race).
+    global.define("promiseAll", fn([{ type: "any[]", out: false }], "Promise"));
+    global.define("promiseRace", fn([{ type: "any[]", out: false }], "Promise"));
     // V30.2: stopLoop() cierra el event loop actual (lo saca de
     // run() sin matar el proceso). Util para auto-cancelar
     // setInterval: el callback compara un contador y llama a
@@ -2880,6 +2894,31 @@ export class TypeChecker {
         result = this.substituteType(signature.returnType, selected.substitutions); break;
       }
       case "MemberCallExpression": {
+        // V30.17: `Promise.all([...])` y `Promise.race([...])`. Static builtin.
+        if (node.object.kind === "IdentifierExpression" && node.object.name === "Promise") {
+          if (node.method === "all" || node.method === "race") {
+            if (node.args.length !== 1) this.report(node, `Promise.${node.method} espera 1 argumento (array de tasks)`);
+            // Aceptamos cualquier tipo de array (Promise<X>[] o cualquier otro).
+            // El codegen lo procesa especialmente via el side-channel.
+            this.expression(node.args[0]!, scope);
+            // Side-channel para el codegen: marca el node con el nombre
+            // del metodo para que emita `::ets::when_all(...)` etc.
+            (node as unknown as { _etsPromiseStatic: string })._etsPromiseStatic = node.method;
+            // V30.17: Promise.all<T> requiere type argument explicito.
+            // `Promise.all<number>([slow1(), slow2()])` devuelve
+            // `Promise<number[]>`. Sin type argument, el dialecto usa
+            // `any` como placeholder. En codegen, si el side-channel
+            // dice "all" y el result type es Promise<any[]>, emitimos
+            // el tipo concreto via `ets::all<vector<Task<number>>>(...)`.
+            const tArg = node.typeArguments[0];
+            if (node.method === "all") {
+              return genericType("Promise", [tArg ? `${tArg}[]` : "any[]"]);
+            }
+            return genericType("Promise", [tArg ?? "any"]);
+          }
+          this.report(node, `Promise.${node.method} no es una API valida (usa all o race)`);
+          return genericType("Promise", ["any"]);
+        }
         const objectType = this.expression(node.object, scope);
         // V1.2: `Union<T1, T2>.Variant(args)` o `Union.Variant(args)`. Si la
         // unión existe y la variante está declarada, el resultado es el tipo
@@ -3402,6 +3441,14 @@ export class TypeChecker {
         break;
       }
       case "MemberExpression": {
+        // V30.17: `Promise.X` como acceso (no call) es invalido. Las
+        // unicas APIs validas de Promise son `.all([...])` y `.race([...])`
+        // que se procesan en `MemberCallExpression`. Si el usuario escribe
+        // `const p = Promise.all` sin parens, es un error.
+        if (node.object.kind === "IdentifierExpression" && node.object.name === "Promise") {
+          this.report(node, `Promise.${node.member} debe invocarse como Promise.${node.member}([...])`);
+          return "Promise";
+        }
         const objectType = this.expression(node.object, scope);
         // V1.4: si el object es una expresión narrowada por un if anterior,
         // devolvemos el payload de la variante narrowada. Si solo hay una

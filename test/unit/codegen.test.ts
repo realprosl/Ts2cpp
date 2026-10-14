@@ -1020,3 +1020,31 @@ test("V30.16: type parameter constraint permite acceder a miembros del constrain
   assert.match(out, /a\.length/, "debe emitir a.length");
   assert.match(out, /b\.length/, "debe emitir b.length");
 });
+
+test("V30.17: Promise.all<T>(tasks) emite ::ets::task_all<T>(make_task_vector(...))", () => {
+  const src = `
+    async function slow1(): Promise<number> { return 10 }
+    async function slow2(): Promise<number> { return 20 }
+    const r: number[] = await Promise.all<number>([slow1(), slow2()])
+    print(r.length)
+    print(r[0])
+  `;
+  const out = compile(src).cpp;
+  // V30.17: Promise.all<T> debe emitir `::ets::task_all<T>(...)` para
+  // que el `await` funcione via co_await o syncWait. El helper
+  // `make_task_vector` mueve los tasks del array de usuario al
+  // vector de Task<T> (Task no es copiable).
+  assert.match(out, /::ets::task_all<[^>]+>/, "debe emitir ::ets::task_all<T>");
+  assert.match(out, /::ets::make_task_vector\(/, "debe usar make_task_vector para mover tasks");
+});
+
+test("V30.17.1: Promise.race<T>(tasks) emite ::ets::task_race<T>", () => {
+  const src = `
+    async function slow1(): Promise<number> { return 10 }
+    async function slow2(): Promise<number> { return 20 }
+    const r: number = await Promise.race<number>([slow1(), slow2()])
+    print(r)
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /::ets::task_race<[^>]+>/, "debe emitir ::ets::task_race<T>");
+});
