@@ -113,6 +113,7 @@ export class CppGenerator {
     visit(stmt);
   }
   private inClassMethod = false;
+  private currentClassMethodParams: string[] = [];
   private inStaticInit = false;
   private inAsyncFunction = false;
   // V30.12.1: true mientras se emite el callback de un `when`/`whenType`/`otherwise`
@@ -1058,7 +1059,11 @@ export class CppGenerator {
     this.currentProgram = program;
     this.prepare(program);
     const functions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration" && !!statement.exported);
-    const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration" && !!statement.exported);
+    // V30.13.4: las interfaces privadas tambien van al header porque
+    // un metodo de clase exportada puede tener un parametro de tipo
+    // `Interface` (no exportada) y el codegen emite `requires I<T0>`
+    // en la declaracion del metodo, que debe resolverse en el header.
+    const interfaces = program.statements.filter((statement): statement is InterfaceDeclaration => statement.kind === "InterfaceDeclaration");
     const classes = program.statements.filter((statement): statement is ClassDeclaration => statement.kind === "ClassDeclaration" && !!statement.exported);
     const variables = program.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.exported);
     // V15: el header debe contener TODAS las definiciones de tipos que
@@ -1157,7 +1162,9 @@ export class CppGenerator {
     const topLevel = unwrappedProgram.statements.filter(statement => statement.kind !== "FunctionDeclaration" && statement.kind !== "InterfaceDeclaration" && statement.kind !== "ClassDeclaration" && statement.kind !== "VariableDeclaration" && statement.kind !== "ExportNamedDeclaration");
     const destructuringTopLevel = unwrappedProgram.statements.filter((statement): statement is VariableDeclaration => statement.kind === "VariableDeclaration" && !!statement.arrayBindings && statement.arrayBindings.length > 0);
     const lines = ["// Generated module. Do not edit.", `#include ${JSON.stringify(headerName)}`, ""];
-    for (const contract of privateInterfaces) lines.push(this.interfaceConcept(contract), "");
+    // V30.13.4: el header ya tiene los `interfaceConcept` para todas
+    // las interfaces (incluidas las privadas). Aqui no los
+    // re-emitimos para evitar redefinicion.
     // V30.12.3: orden topológico para las forward decls de clases privadas.
     const privateTopoResult = this.topoSortClasses(privateClasses);
     if (privateTopoResult.cyclicNames.length) this.reportClassCycle(privateTopoResult.cyclicNames);
@@ -1332,10 +1339,23 @@ export class CppGenerator {
       // adelantada; el cuerpo de la función los omite (igual que los defaults de los
       // parámetros de valor). El flag `includeDefaults` controla ambos.
       return includeDefaults && parameter.default ? `${base} = ${cppType(parameter.default)}` : base;
-    }), ...constrained.map(({ p, i }) => `${p.type} T${i}`), ...functionParams.map(({ i }) => `typename F${i}`)];
+    }), ...constrained.map(({ p, i }) => {
+      // V30.13.4: en C++ un concept como `template <SvgChild T0>` no
+      // compila porque `SvgChild` no es typename. Hay que anteponer
+      // `typename` y dejar que la deducción del concept se haga en el
+      // `requires SvgChild<T0>` posterior. Asi el codegen queda:
+      //   template <typename T0> requires SvgChild<T0>
+      //   void add(T0 child) const
+      return `typename T${i}`;
+    }), ...functionParams.map(({ i }) => `typename F${i}`)];
     const template = templateParts.length ? `template <${templateParts.join(", ")}>\n` : "";
     const requiresClauses = fn.typeParameters.filter(parameter => parameter.constraint).map(parameter => `requires ${cppRequires(parameter.constraint!, parameter.name)}`);
-    const requires = requiresClauses.length ? `${requiresClauses.join("\n")}\n` : "";
+    // V30.13.4: añadir `requires I<T0>` para cada parametro constrained
+    // (el codegen ya añade `requires ...` para typeParameters con constraint,
+    // pero los `constrained` derivan de `fn.params` y necesitan lo mismo).
+    const constrainedRequires = constrained.map(({ p, i }) => `requires ${p.type}<T${i}>`);
+    const allRequires = [...requiresClauses, ...constrainedRequires];
+    const requires = allRequires.length ? `${allRequires.join("\n")}\n` : "";
     // C++ no permite defaults en la definición si ya están en la declaración;
     // pasamos `false` al emitir el cuerpo.
     // `p?: T` se traduce a `Optional<T>` en C++. Si el user ya escribió
@@ -1467,6 +1487,8 @@ export class CppGenerator {
       declaration.returnType = `${classDecl.name}&`;
     }
     const previous = this.inClassMethod; this.inClassMethod = true;
+    const previousParams = this.currentClassMethodParams;
+    this.currentClassMethodParams = method.params.map(p => p.name);
     let body = this.emitBlock(method.body);
     // V30.13: si el constructor ahora devuelve `ClassName&` (no void),
     // hay que añadir `return *this;` al final del body para que el
@@ -1507,10 +1529,13 @@ export class CppGenerator {
     // mutable. El analisis inter-procedimental de mutacion (#187) puede
     // incorrectamente reportar que un constructor vacio no muta, lo que
     // pone `const` en la firma y rompe el `return *this`.
+    // V30.13.4: tracking de `currentClassMethodParams` para que las
+    // lambdas generadas dentro del metodo (e.g. ...spread) puedan
+    // capturar los parametros por referencia.
     const isConstructorRef = method.name === "constructor" && declaration.returnType === `${classDecl.name}&`;
     const mutates = isConstructorRef || this.methodMutates(method, classDecl, new Set<string>());
     const result = `${this.signature(declaration)}${mutates ? "" : " const"} ${bodyWithWarning}`;
-    this.inClassMethod = previous; return result;
+    this.inClassMethod = previous; this.currentClassMethodParams = previousParams; return result;
   }
 
   /**
@@ -1576,6 +1601,29 @@ export class CppGenerator {
       while (target.kind === "MemberExpression") target = target.object;
       return target.kind === "IdentifierExpression" && target.name === "this";
     }
+    // V30.13.4: `this.field.method()` puede mutar `this` (side-effect sobre
+    // un sub-objeto de this). Sin embargo, marcar TODO `this.algo()` como
+    // mutacion rompe el caso V30.11.1 (sum() llama a getX()/getY() const y
+    // debe seguir siendo const). La heuristica correcta: solo marcar como
+    // mutacion si el metodo llamado es uno de los que mutan in-place en
+    // el runtime (`push`, `pop`, `insert`, `clear`, `remove`, etc.).
+    if (node.kind === "MemberCallExpression") {
+      // Detectar `this.<algo>.method(...)` o `this.method(...)`
+      const startsFromThis = (e: Expression): boolean => {
+        if (e.kind === "IdentifierExpression") return e.name === "this";
+        if (e.kind === "MemberExpression") return startsFromThis(e.object);
+        return false;
+      };
+      // Metodos del runtime que mutan el receptor in-place.
+      const MUTATING_RUNTIME_METHODS = new Set([
+        "push", "pop", "insert", "erase", "clear", "remove", "removeKey",
+        "resize", "reserve", "shrink_to_fit", "swap", "assign", "append",
+        "set", "setChildren", "addChildren", "removeAll",
+      ]);
+      if (startsFromThis(node.object) && MUTATING_RUNTIME_METHODS.has(node.method)) {
+        return true;
+      }
+    }
     if (node.kind === "BinaryExpression") return this.expressionMutatesThis(node.left, classDecl, visited) || this.expressionMutatesThis(node.right, classDecl, visited);
     if (node.kind === "UnaryExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
     if (node.kind === "AwaitExpression") return this.expressionMutatesThis(node.operand, classDecl, visited);
@@ -1605,6 +1653,14 @@ export class CppGenerator {
     return false;
   }
   private interfaceConcept(node: InterfaceDeclaration): string {
+    // V30.13.4: si la interface no tiene metodos, no podemos emitir
+    // un concept C++ valido (`concept X = requires(T) {};` no compila
+    // porque requires no acepta cuerpo vacio). En ese caso, emitimos
+    // un concept trivial con `true` que siempre se cumple, y los
+    // callers no rompen.
+    if (node.methods.length === 0) {
+      return [`template <typename T>`, `concept ${node.name} = true;`].join("\n");
+    }
     const requirements = node.methods.map(method => {
       const args = method.params.map(p => `std::declval<${cppType(p.type)}${p.out ? "&" : ""}>()`).join(", ");
       return `    { value.${method.name}(${args}) } -> std::same_as<${cppType(method.returnType)}>;`;
@@ -2587,18 +2643,49 @@ export class CppGenerator {
           // Spread en array literal: generamos un lambda inmediato que toma
           // el vector destino por valor (RVO al final) y va `push_back` para
           // cada elemento y `insert(end, src.begin(), src.end())` para cada
-          // spread. La sintaxis `[](auto dst) -> decltype(dst) { ... return dst; }(T{})`
+          // spread. La sintaxis `[capture](auto dst) -> decltype(dst) { ... return dst; }(T{})`
           // deja el resultado como una expresión de tipo T (copy elision).
+          // V30.13.4: si los spreads o elementos usan `this` o variables
+          // locales del metodo, hay que capturarlas.
+          // V30.13.4 (match callback): si estamos dentro de un metodo de
+          // clase, capturamos `this` por defecto (igual que en match
+          // callbacks, ver V30.12.1). Tambien capturamos cualquier
+          // parametro o variable local que el type-checker reporte.
+          const captureSet = new Set<string>();
+          if (this.inClassMethod) {
+            captureSet.add("this");
+            // Capturar tambien los parametros del metodo actual
+            // (necesarios para spread que los use, e.g.
+            // `this.children = [...this.children, ...more]`).
+            for (const param of this.currentClassMethodParams) captureSet.add(param);
+          }
+          const collectCaptures = (e: import("../ast/nodes.ts").Expression): void => {
+            for (const symbol of (e as { capturedSymbols?: string[] }).capturedSymbols ?? []) {
+              captureSet.add(symbol);
+            }
+          };
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") collectCaptures(item.expression);
+            else collectCaptures(item);
+          }
           const cpp = cppArrayType(type ?? "void[]");
           const items: string[] = [];
           for (const item of node.elements) {
             if (item.kind === "SpreadElement") {
               items.push(`dst.insert(dst.end(), (${this.emitExpression(item.expression)}).begin(), (${this.emitExpression(item.expression)}).end());`);
             } else {
-              items.push(`dst.push_back(${this.emitExpression(item)});`);
+              items.push(`dst.push_back(${this.emitExpression(item as import("../ast/nodes.ts").Expression)});`);
             }
           }
-          return `([](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; })(${cpp}{})`;
+          // Construir el lambda con su captura. La sintaxis C++ requiere
+          // que los corchetes esten siempre: `[]` para captura vacia,
+          // `[this, x]` para captura con valores. No se puede tener
+          // `[this][]` ni nada parecido.
+          const captureList = Array.from(captureSet).join(", ");
+          const lambda = captureList
+            ? `[${captureList}](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; }`
+            : `[](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; }`;
+          return `(${lambda})(${cpp}{})`;
         }
         // Para arrays con tipos move-only (Task<T>, Optional<T>, Result<T>), el
         // initializer_list de std::vector siempre copia, así que generamos un

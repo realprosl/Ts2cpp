@@ -143,6 +143,21 @@ test("codegen V30.13.2: arr.find(p) se emite como ets_find_vec<T>", () => {
   assert.match(out, /ets_find_vec<double>\(/);
 });
 
+test("codegen V30.13.4: interface sin metodos emite concept trivial", () => {
+  const out = cpp("interface I { kind: string; }");
+  assert.match(out, /concept I = true;/);
+});
+
+test("codegen V30.13.4: array literal con spread se emite como lambda + insert", () => {
+  const out = cpp("let a: number[] = [1, 2]; let b: number[] = [3, 4]; let c: number[] = [...a, ...b, 5];");
+  // V30.13.4: la captura esta vacia porque no estamos en un class method.
+  // El codegen emite el lambda con captura vacia seguido de los argumentos.
+  assert.match(out, /\[\]\(std::vector<double> dst\)/);
+  assert.match(out, /dst\.insert\(dst\.end\(\), \(a\)\.begin\(\), \(a\)\.end\(\)\)/);
+  assert.match(out, /dst\.insert\(dst\.end\(\), \(b\)\.begin\(\), \(b\)\.end\(\)\)/);
+  assert.match(out, /dst\.push_back\(5\.0\)/);
+});
+
 test("codegen V7: arr.filter se emite como ets_filter_vec<T>", () => {
   const out = cpp("let arr: number[] = [1, 2, 3]; let r = arr.filter((x: number): boolean => x > 0);");
   assert.match(out, /ets_filter_vec<double>\(/);
