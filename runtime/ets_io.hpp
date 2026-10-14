@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -76,7 +77,28 @@ struct ets_math {
     static double pow(const double base, const double exponent) noexcept { return std::pow(base, exponent); }
     static double min(const double left, const double right) noexcept { return left < right ? left : right; }
     static double max(const double left, const double right) noexcept { return left > right ? left : right; }
+    // V30.22.2: `random()` devuelve un double en [0, 1). Usa el Mersenne
+    // Twister via <random> para mejor calidad que `std::rand()`.
+    static double random() noexcept {
+        // Seeding: solo una vez al primer call (thread-safe via static).
+        static std::mt19937 generator{std::random_device{}()};
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        return dist(generator);
+    }
 };
+
+// V30.22.2: constantes matematicas como funciones (`PI()` y `E()` devuelven
+// el valor). El dialecto no tiene propiedades estaticas no-funcion, asi
+// que se modelan como funciones que devuelven el valor constante. El
+// codegen se encarga de emitir `Math.PI` → `ets::math_pi()` automaticamente.
+namespace ets_math_consts {
+    inline double math_pi() noexcept { return 3.14159265358979323846; }
+    inline double math_e() noexcept { return 2.71828182845904523536; }
+}
+namespace ets {
+    inline double math_pi() noexcept { return ets_math_consts::math_pi(); }
+    inline double math_e() noexcept { return ets_math_consts::math_e(); }
+}
 
 inline ets_math Math{};
 

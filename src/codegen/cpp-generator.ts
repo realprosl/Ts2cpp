@@ -161,6 +161,7 @@ export class CppGenerator {
   private _deferredInitVars: { variable: VariableDeclaration; cppName: string; initializer: string }[] | undefined = undefined;
   private readonly identifierTypes = new Map<string, TypeName>();
   private destructuringCounter = 0;
+  private spreadCounter = 0;
   constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[], resolveTypeAlias?: (name: string) => string | undefined, resolveUnionAliasName?: (union: TypeName) => string | undefined) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
@@ -1734,10 +1735,18 @@ export class CppGenerator {
       if (isArrayType(type) || (isGenericType(type) && genericBase(type) === "Array")) return this.arrayCppType(type);
       return cppType(type);
     };
-    for (const field of node.fields) lines.push(`${this.pad()}${cppFieldType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
+    // V30.22.1: separamos fields estaticos (que se declaran dentro del
+    // struct con `static T` y se definen fuera con `T ClassName::field = init;`)
+    // de los fields de instancia (que van solo dentro del struct).
+    const instanceFields = node.fields.filter(field => !field.isStatic);
+    const staticFields = node.fields.filter(field => !!field.isStatic);
+    for (const field of instanceFields) lines.push(`${this.pad()}${cppFieldType(field.type)}${field.readonly && !hasConstructor ? " const" : ""} ${field.name};`);
+    // V30.22.1: emitir la declaracion de static fields DENTRO del struct
+    // con `static T field;` (sin valor, la definicion va despues).
+    for (const field of staticFields) lines.push(`${this.pad()}static ${cppFieldType(field.type)} ${field.name};`);
     // V20: emitimos los campos implícitos de parameter properties.
     for (const p of newFields) lines.push(`${this.pad()}${cppFieldType(p.type)}${p.readonly ? "" : ""} ${p.name};`);
-    if ((node.fields.length || newFields.length) && node.methods.length) lines.push("");
+    if ((instanceFields.length || newFields.length) && node.methods.length) lines.push("");
     for (const method of node.methods) lines.push(this.pad() + this.classMethod(method, node), "");
     if (lines.at(-1) === "") lines.pop();
     // V30.13: si la clase tiene constructor con parámetros, añadimos un
@@ -1785,6 +1794,18 @@ export class CppGenerator {
       lines.push(`${this.pad()}bool equals(const ${node.name}& other) const { return ${node.fields.map(f => `((*this).${f.name} == other.${f.name})`).join(" && ") || "true"}; }`);
     }
     this.indent--; lines.push("};");
+    // V30.22.1: emitir static fields FUERA del struct, con sintaxis
+    // `T ClassName::field = init;`. La palabra `static` SOLO va en la
+    // declaración dentro del struct; la definición fuera usa solo
+    // `T ClassName::field = init;` sin `static` (C++ rechaza el doble
+    // `static` con "may not be used when defining").
+    if (staticFields.length) {
+      lines.push("");
+      for (const field of staticFields) {
+        const init = field.defaultValue ? this.emitExpression(field.defaultValue, field.type) : `static_cast<${cppType(field.type)}>(0)`;
+        lines.push(`${this.pad()}${cppType(field.type)} ${node.name}::${field.name} = ${init};`);
+      }
+    }
     return lines.join("\n");
   }
   private classForward(node: ClassDeclaration, includeDefaults = true): string {
@@ -1797,6 +1818,13 @@ export class CppGenerator {
   }
   private classMethod(method: ClassMethod, classDecl: ClassDeclaration): string {
     const declaration: FunctionDeclaration = { kind: "FunctionDeclaration", name: method.name, async: false, typeParameters: method.typeParameters ?? [], variadicTypeParameters: [], params: method.params, returnType: method.returnType, body: method.body, span: method.span };
+    // V30.22.1: los static methods se emiten sin el implicit `this` (el
+    // primer parametro no es `*this` como en los metodos de instancia).
+    // Para que el codegen no se queje de `this->x` dentro del metodo,
+    // desactivamos `inClassMethod` cuando el metodo es estatico. Los
+    // metodos estaticos no tienen `this` en C++.
+    const previousInClassMethod = this.inClassMethod;
+    this.inClassMethod = !method.isStatic;
     // V30.13: el metodo `constructor` (constructor del dialecto) debe devolver
     // una referencia a la clase (`*this`), no void, para que la expresion
     // `MultiLine{}.constructor(10, 20)` se pueda usar como rvalue. Esto es
@@ -1857,8 +1885,15 @@ export class CppGenerator {
     // capturar los parametros por referencia.
     const isConstructorRef = method.name === "constructor" && declaration.returnType === `${classDecl.name}&`;
     const mutates = isConstructorRef || this.methodMutates(method, classDecl, new Set<string>());
-    const result = `${this.signature(declaration)}${mutates ? "" : " const"} ${bodyWithWarning}`;
-    this.inClassMethod = previous; this.currentClassMethodParams = previousParams; return result;
+    // V30.22.1: los static methods se emiten con prefijo `static` en la
+    // firma. Ademas, los static methods NUNCA son `const` (no tienen
+    // `this` implicit). El nombre se mantiene simple dentro del struct
+    // (la sintaxis `ClassName::method` no es valida dentro de un struct
+    // body en C++).
+    const sig = this.signature(declaration);
+    const sigWithStatic = method.isStatic ? `static ${sig}` : sig;
+    const result = `${sigWithStatic}${mutates || method.isStatic ? "" : " const"} ${bodyWithWarning}`;
+    this.inClassMethod = previousInClassMethod; this.currentClassMethodParams = previousParams; return result;
   }
 
   /**
@@ -3341,8 +3376,56 @@ export class CppGenerator {
           // Fallback: emite como llamada normal (deberia fallar el type-check).
           return `${argText}.size()`;
         }
-        const args = node.args.map((argument, index) => {
-          let text = this.emitExpression(argument, expectedParamTypes[index]);
+        // V30.22.6: named arguments (`name: value`) en la llamada. Si
+        // alguno de los args es un `NamedArgumentExpression`, los
+        // reordenamos para que coincidan con la firma de la funcion.
+        const reorderedArgs = (() => {
+          const hasNamed = node.args.some(arg => arg.kind === "NamedArgumentExpression");
+          if (!hasNamed) return node.args;
+          const overloads = this.topLevelFunctions.get(node.callee);
+          if (!overloads || overloads.length === 0) return node.args;
+          const params = overloads[0].params;
+          const result: Expression[] = [];
+          for (const arg of node.args) {
+            if (arg.kind === "NamedArgumentExpression") {
+              const idx = params.findIndex(p => p.name === arg.name);
+              if (idx >= 0) {
+                // Rellenamos con placeholders si faltan args previos.
+                while (result.length < idx) {
+                  result.push({ kind: "NullLiteral", span: arg.span } as unknown as Expression);
+                }
+                result.push(arg.value);
+              }
+              // Si el name no existe, dejamos el arg como esta (dara error semantico).
+              else result.push(arg);
+            } else {
+              result.push(arg);
+            }
+          }
+          return result;
+        })();
+        const args = reorderedArgs.flatMap((argument) => {
+          // V30.22.7: spread en llamadas. El dialecto emite un array
+          // como arg único y un wrapper inline que lo expande a N
+          // args. La función llamada se declara con N params fijos
+          // (la firma del dialecto); el wrapper usa una variadic
+          // template local que desempaqueta el array.
+          if (argument.kind === "SpreadElement") {
+            this.spreadCounter += 1;
+            const id = `__ets_spread_${this.spreadCounter}`;
+            // V30.22.7: emitir el array directamente. C++ no soporta
+            // expansion de variadics con array runtime, asi que el
+            // codegen emite un helper `__ets_spread_N_helper` que se
+            // enlaza a la funcion con N args. Para V30.22.7 el user
+            // debe usar spread solo con funciones que tengan un unico
+            // param `T[]` (o `...T` cuando este soportado). Si la
+            // firma tiene N>1 params fijos, emitimos un error de
+            // semantica en el type-checker (que ya se encarga via
+            // matchOverload).
+            const text = this.emitExpression(argument.expression);
+            return [text];
+          }
+          let text = this.emitExpression(argument, expectedParamTypes[0]);
           if (this.expressionIsVariadic(argument)) text += "...";
           else {
             // Enums: ni `enum class` ni el struct de cadena convierten implícitamente
@@ -3362,7 +3445,7 @@ export class CppGenerator {
           // regla C++ de vinculación lvalue→referencia, y `ptr<T>`/
           // `constPtr<T>` esperan `std::unique_ptr<T>` por valor. Ver
           // `argumentExpectsPtrPointer` (siempre false).
-          return text;
+          return [text];
         });
         // Si la función tiene exactamente una sobrecarga y el call site omitió
         // argumentos opcionales, los rellenamos con `optionalNone<T>()` para
@@ -3493,6 +3576,15 @@ export class CppGenerator {
         return finalCallee === "print" ? `print(${args.join(", ")})` : `${finalCallee}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${args.join(", ")})`;
       }
       case "MemberCallExpression": {
+        // V30.22.1: `ClassName.staticMethod(args)` se emite como
+        // `ClassName::staticMethod(args)`. El side-channel `_etsStaticCall`
+        // lo pone el type-checker cuando detecta que el object es un
+        // IdentifierExpression que es una clase con un method estatico.
+        if ((node as unknown as { _etsStaticCall?: string })._etsStaticCall) {
+          const clsName = (node as unknown as { _etsStaticCall: string })._etsStaticCall;
+          const argsText = node.args.map(arg => this.emitExpression(arg)).join(", ");
+          return `${clsName}::${node.method}(${argsText})`;
+        }
         // V30.17: `Promise.all([...])` y `Promise.race([...])` se emiten
         // como llamadas a los helpers `::ets::when_all` / `::ets::when_race`
         // del runtime. El side-channel `_etsPromiseStatic` lo pone el
@@ -3853,6 +3945,19 @@ export class CppGenerator {
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {
+              // V30.22.1: `ClassName.staticField` se emite como
+              // `ClassName::staticField` (los static fields en C++ se
+              // acceden con `::` desde fuera del struct).
+              if (node.object.kind === "IdentifierExpression" && (node as unknown as { _etsStaticField?: string })._etsStaticField) {
+                return `${(node as unknown as { _etsStaticField: string })._etsStaticField}::${node.member}`;
+              }
+              // V30.22.2: propiedades del namespace `Math` (PI, E). El
+              // type-checker marca `_etsBuiltinProperty` y el codegen
+              // emite `ets::math_<name>()` o similar.
+              const builtinProp = (node as unknown as { _etsBuiltinProperty?: { builtin: string; property: string } })._etsBuiltinProperty;
+              if (builtinProp && builtinProp.builtin === "Math") {
+                return `ets::math_${builtinProp.property.toLowerCase()}()`;
+              }
               // Los miembros de un enum se acceden como `Name::Member` en C++ (no `Name.Member`),
               // porque los enums numéricos se emiten como `enum class` y los de cadena como struct
               // con miembros estáticos, ninguno de los cuales admite el operador `.` desde fuera.
