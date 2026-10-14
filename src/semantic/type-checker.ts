@@ -355,6 +355,12 @@ export class TypeChecker {
   private readonly aliases = new Map<string, TypeAliasDeclaration>();
   private readonly enums = new Map<string, EnumDeclaration>();
   private readonly unions = new Map<string, UnionDeclaration>();
+  // V30.14.2: expansion cache para type aliases (`type X = A | B` -> "A | B").
+  private readonly aliasExpansions = new Map<string, TypeName>();
+  // V30.14.2: mapa inverso de union expandida a nombre de type alias.
+  // "A | B" -> "X". Usado por el codegen para saber que un type literal
+  // `A | B` realmente es `X` (y emitir `X_Union` en vez de `std::variant<A,B>`).
+  public readonly unionAliasReverseMap = new Map<string, string>();
   // V30.12.0: forward declarations. Cuando un tipo se referencia antes de
   // su declaracion (p.ej. `class A { b: B }` antes de `class B { ... }`),
   // validateType lo encola aqui en vez de reportar error inmediato. Al
@@ -991,6 +997,12 @@ export class TypeChecker {
     // V30.14.1: guardar en el mapa para que el codegen pueda expandir
     // el alias en generic types.
     this.typeAliasMap.set(node.name, node.type);
+    // V30.14.2: guardar la expansion y el mapa inverso (de union
+    // expandida -> nombre de type alias) para que el codegen pueda
+    // resolver `A | B` (expandido) a `X` (alias original) y emitir
+    // `X_Union` en vez de `std::variant<A, B>`.
+    this.aliasExpansions.set(node.name, node.type);
+    if (isUnionType(node.type)) this.unionAliasReverseMap.set(node.type, node.name);
     // V0.4: pre-computa el ResolvedRuntimeType del RHS del alias. Esto
     // permite que el codegen consuma directamente la forma resuelta sin
     // tener que parsear `node.type` cada vez.
@@ -3291,6 +3303,31 @@ export class TypeChecker {
         }
         const resolvedClass = this.resolveClass(objectType);
         const constrainedInterface = this.activeTypeConstraints.get(objectType);
+        // V30.14.2: si el tipo del object es un union expandido de un
+        // type alias (registrado en `unionAliasReverseMap`), resolvemos
+        // el metodo consultando cada variante. Si TODAS las clases lo
+        // tienen, devolvemos un sentinel `union_alias::X::method` que
+        // el codegen traduce a la llamada despachada.
+        if (isUnionType(objectType) && this.unionAliasReverseMap.has(objectType)) {
+          const aliasName = this.unionAliasReverseMap.get(objectType)!;
+          const expansion = this.aliasExpansions.get(aliasName);
+          if (expansion && isUnionType(expansion)) {
+            const allClasses = expansion.split("|").map(s => s.trim());
+            const firstCls = this.classes.get(allClasses[0]!);
+            const method = firstCls?.methods.find(candidate => candidate.name === node.method);
+            if (method) {
+              const allHave = allClasses.every(cls => {
+                const c = this.classes.get(cls);
+                return c?.methods.some(m => m.name === node.method);
+              });
+              if (allHave) {
+                const retType = this.substituteType(method.returnType ?? "void", resolvedClass?.substitutions ?? new Map());
+                result = `union_alias::${aliasName}::${node.method}::${retType}` as TypeName;
+                break;
+              }
+            }
+          }
+        }
         const owner = this.interfaces.get(constrainedInterface ?? objectType) ?? resolvedClass?.owner;
         const methods = owner?.methods.filter(candidate => candidate.name === node.method) ?? [];
         if (!owner) this.report(node.object, `El tipo '${objectType}' no tiene métodos`);
@@ -3497,6 +3534,42 @@ export class TypeChecker {
         }
         const resolved = this.resolveClass(classLookupType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
+        // V30.14.2: `c.kind` / `c.method()` donde `c: X` (X es un type
+        // alias para union de clases). El type-checker ya expandio el
+        // alias a `Line | Circle`; lo reescribimos a un sentinel
+        // `union_alias::X::*` que el codegen traduce.
+        if (!owner && isUnionType(objectType) && this.unionAliasReverseMap?.has(objectType)) {
+          const aliasName = this.unionAliasReverseMap.get(objectType)!;
+          if (aliasName) {
+            const expansion = this.aliasExpansions.get(aliasName);
+            if (expansion && isUnionType(expansion)) {
+              // Verifica que TODAS las clases del union tienen el member.
+              const allMembers = expansion.split("|").map(s => s.trim());
+              const ok = allMembers.every(cls => {
+                const c = this.classes.get(cls);
+                if (!c) return false;
+                return c.fields.some(f => f.name === node.member) || c.methods.some(m => m.name === node.member);
+              });
+              if (ok) {
+                // Si es un field de la primera variante, devolvemos su tipo
+                // (o string para `kind`, que es el caso comun).
+                const firstCls = this.classes.get(allMembers[0]!);
+                if (firstCls) {
+                  const f = firstCls.fields.find(candidate => candidate.name === node.member);
+                  if (f) { result = f.type; break; }
+                  // Es un metodo: devolvemos un sentinel.
+                  const m = firstCls.methods.find(candidate => candidate.name === node.member);
+                  if (m) {
+                    result = `union_alias::${aliasName}::${node.member}::${m.returnType ?? "void"}` as TypeName;
+                    break;
+                  }
+                }
+                // El member es `kind` (string, comun a todos los payload).
+                if (node.member === "kind") { result = "string"; break; }
+              }
+            }
+          }
+        }
         // V30.11: resolución de campos/métodos de interface. Si el tipo del
         // objeto es una interface (nombrada o genérica como `Foo<T>`),
         // buscamos el miembro como campo o metodo de la shape. Esto cubre
@@ -3982,6 +4055,11 @@ export class TypeChecker {
   // donde `SvgChild` es un alias de `Line | MultiLine`).
   public resolveTypeAliasFromAst(name: string): string | undefined {
     return this.typeAliasMap.get(name);
+  }
+  // V30.14.2: devuelve el nombre del type alias si la expansion es un union
+  // registrado en `unionAliasReverseMap`. Usado por el codegen.
+  public resolveUnionAliasNameFromAst(union: TypeName): string | undefined {
+    return this.unionAliasReverseMap.get(union);
   }
 
   private expandType(type: TypeName, scope?: Scope): TypeName {
