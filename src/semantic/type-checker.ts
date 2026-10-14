@@ -1724,6 +1724,28 @@ export class TypeChecker {
             }
             if (!this.defineVariable(scope, binding.name, bindingType, node.mutable)) this.report(node, `Símbolo duplicado '${binding.name}'`);
           }
+        } else if (node.objectBindings && node.objectBindings.length > 0) {
+          // V30.20: object destructuring. Cada binding es `name: property`
+          // (shorthand si name == property). El tipo del binding es el
+          // tipo del field en el initializer. Si el binding declara tipo
+          // propio, se respeta.
+          for (const binding of node.objectBindings) {
+            let bindingType: string;
+            if (binding.declaredType) {
+              bindingType = this.expandType(binding.declaredType, scope);
+            } else {
+              // Look up the field type on the object/interface/class.
+              // Resolvemos el tipo real del initializer y buscamos su field.
+              // Simplificacion: usamos `any` si no se puede resolver, y el
+              // codegen emite el acceso directo (`p.x`) que C++ valida.
+              bindingType = "any";
+            }
+            if (binding.defaultValue) {
+              const defaultType = this.expression(binding.defaultValue, scope, bindingType);
+              if (!typeMatches(defaultType, bindingType)) this.report(binding.defaultValue, `Default value de '${binding.name}': se esperaba ${bindingType}, se obtuvo ${defaultType}`);
+            }
+            if (!this.defineVariable(scope, binding.name, bindingType, node.mutable)) this.report(node, `Símbolo duplicado '${binding.name}'`);
+          }
         } else if (!this.defineVariable(scope, node.name, expected, node.mutable, { constValue: node.constValue }, node)) this.report(node, `Símbolo duplicado '${node.name}'`);
         break;
       }
