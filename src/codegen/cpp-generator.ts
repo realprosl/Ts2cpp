@@ -1502,7 +1502,14 @@ export class CppGenerator {
       const afterBrace = body.indexOf("\n", openBrace) + 1;
       bodyWithWarning = body.slice(0, afterBrace) + deprecated + body.slice(afterBrace);
     }
-    const result = `${this.signature(declaration)}${this.methodMutates(method, classDecl, new Set<string>()) ? "" : " const"} ${bodyWithWarning}`;
+    // V30.13.1: si es constructor que devuelve `ClassName&` (auto-union),
+    // NUNCA puede ser `const` porque `return *this` requiere una referencia
+    // mutable. El analisis inter-procedimental de mutacion (#187) puede
+    // incorrectamente reportar que un constructor vacio no muta, lo que
+    // pone `const` en la firma y rompe el `return *this`.
+    const isConstructorRef = method.name === "constructor" && declaration.returnType === `${classDecl.name}&`;
+    const mutates = isConstructorRef || this.methodMutates(method, classDecl, new Set<string>());
+    const result = `${this.signature(declaration)}${mutates ? "" : " const"} ${bodyWithWarning}`;
     this.inClassMethod = previous; return result;
   }
 
@@ -3369,7 +3376,14 @@ export class CppGenerator {
         // `MultiLine&`). Ver `classMethodDeclaration` que aplica este
         // truco.
         const ctor = cls ? cls.methods.find(m => m.name === "constructor") : undefined;
-        if (ctor && ctor.params.length > 0 && cls) {
+        if (ctor && cls) {
+          // V30.13.3: el constructor del dialecto SIEMPRE debe invocarse
+          // explicito, aunque no tenga parametros. Aggregate-init (Foo{})
+          // deja los miembros sin inicializar (kind, name, etc. quedan
+          // como default-construct de std::string que es vacio, no como
+          // lo que el constructor del dialecto les asigna). El `constructor`
+          // del dialecto devuelve `*this` (V30.13) para que la
+          // expresion sea usable como rvalue.
           const callExpr = `${cppType(node.className)}{}`;
           if (inAutoUnion) return `make_${node.className}(${callExpr}.constructor(${args.join(", ")}))`;
           return `${callExpr}.constructor(${args.join(", ")})`;
