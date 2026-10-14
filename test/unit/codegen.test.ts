@@ -903,3 +903,32 @@ test("V30.14.2: type alias union genera SvgChild_Union struct con dispatch + kin
   assert.match(out, /build\(\) const \{ switch \(_kindIndex\)/, "build() dispatch via _kindIndex");
   assert.match(out, /make_Line/, "make_Line constructor del union");
 });
+
+test("V30.14.3: add(SvgChild) enveuelve el call site con make_X", () => {
+  const src = `
+    class Line {
+      kind: string
+      constructor() { this.kind = "line" }
+    }
+    class Circle {
+      kind: string
+      constructor() { this.kind = "circle" }
+    }
+    interface SvgChild {
+      kind: string
+    }
+    class Svg {
+      children: Array<SvgChild>
+      constructor() { this.children = [] }
+      add(child: SvgChild): void { this.children.push(child) }
+    }
+    let svg: Svg = new Svg()
+    svg.add(new Line())
+    svg.add(new Circle())
+    print(svg.children.length)
+  `;
+  const out = compile(src).cpp;
+  // El call site de svg.add(new Line()) debe envolver con make_Line.
+  assert.match(out, /svg\.add\(make_Line\(/, "svg.add(new Line()) debe envolver con make_Line");
+  assert.match(out, /svg\.add\(make_Circle\(/, "svg.add(new Circle()) debe envolver con make_Circle");
+});

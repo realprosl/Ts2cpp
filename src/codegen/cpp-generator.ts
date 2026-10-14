@@ -3624,6 +3624,33 @@ export class CppGenerator {
             return `${objStr}.push_back(${argStrs[0]})`;
           }
         }
+        // V30.14.3: si el método es de una clase y tiene un param con tipo
+        // interface auto-union (no array), envolvemos el arg con `make_X`
+        // en el call site. Sin esto, el signature genera un template
+        // `<typename T0> requires I<T0> void add(T0 child)` y el call site
+        // pasa el tipo crudo (T0 deduce como Line), lo que produce UB
+        // cuando el codegen mete un Line en un std::variant<SvgChild_AutoUnion>.
+        const objClass = objectType ? this.classesByName.get(objectType) : undefined;
+        if (objClass) {
+          const method_ = objClass.methods.find(m => m.name === method);
+          if (method_) {
+            const argTexts = node.args.map((arg, index) => {
+              const param = method_.params[index];
+              if (param && this.interfaceNames.has(param.type) && this.interfacesNeedingAutoUnion.has(param.type)) {
+                // V30.14.3: envolver con make_X. El arg es un nombre
+                // de clase directa (Line, Circle, etc.) — el user lo
+                // construyó con `new Line()` y se lo pasa al método.
+                const argType = this.expressionType(arg);
+                if (argType && typeof argType === "string" && !this.aliasNames.has(argType)) {
+                  const argClass = this.classesByName.get(argType);
+                  if (argClass) return `make_${argClass.name}(${this.emitExpression(arg)})`;
+                }
+              }
+              return this.emitExpression(arg);
+            });
+            return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${argTexts.join(", ")})`;
+          }
+        }
         return `${this.emitExpression(node.object)}.${method}${typeArguments.length ? `<${typeArguments.map(cppType).join(", ")}>` : ""}(${node.args.map(a => this.emitExpression(a)).join(", ")})`;
       }
       case "MemberExpression": {
