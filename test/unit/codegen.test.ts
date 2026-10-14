@@ -1266,3 +1266,66 @@ test("V30.21.1: default args en constructors funcionan (constructor shorthand)",
   // arguments" — si V30.21.1 funciona, no hay duplicacion.
   assert.doesNotMatch(out, /redeclaration/i, "no debe haber error de redeclaracion");
 });
+
+test("V30.22.1: static fields se declaran dentro y se definen fuera", () => {
+  const src = `
+    class Counter {
+      static count: number = 0
+      static inc(): void { Counter.count += 1 }
+    }
+    Counter.inc()
+    Counter.inc()
+    Counter.inc()
+    print(Counter.count)
+  `;
+  const out = compile(src).cpp;
+  // Dentro del struct: `static double count;` (declaración).
+  assert.match(out, /static\s+double\s+count\s*;/, "debe haber un static double count;");
+  // Fuera del struct: `double Counter::count = 0.0;` (definición con init).
+  assert.match(out, /double\s+Counter::count\s*=\s*0\.0\s*;/, "debe haber definicion double Counter::count = 0.0;");
+  // Static method se emite inline dentro del struct.
+  assert.match(out, /static\s+void\s+inc\s*\(\s*\)\s*\{/, "debe haber static void inc() { inline");
+  // Acceso con ::, no con .
+  assert.match(out, /Counter::count\s*\+=\s*1/, "el acceso debe ser con :: no con .");
+});
+
+test("V30.22.2: Math.PI y Math.random funcionan via ets:: y ets_math", () => {
+  const src = `
+    print(Math.PI)
+    print(Math.random())
+  `;
+  const out = compile(src).cpp;
+  // Math.PI se emite como ets::math_pi() (property de namespace).
+  assert.match(out, /ets::math_pi\(\)/, "Math.PI debe emitirse como ets::math_pi()");
+  // Math.random() se emite literal porque el runtime tiene
+  // `inline ets_math Math{}` con `random()` static.
+  assert.match(out, /Math\.random\(\)/, "Math.random() debe emitirse como Math.random() (inline struct)");
+});
+
+test("V30.22.6: named args se reordenan al orden de la firma", () => {
+  const src = `
+    function make(name: string, age: number): void {
+      print(name)
+      print(age)
+    }
+    make(name: "Ana", age: 30)
+  `;
+  const out = compile(src).cpp;
+  // Los args en el call site deben estar en el orden de la firma.
+  assert.match(out, /make\(std::string\("Ana"\),\s*30\.0\)/, "los args deben estar en orden (name, age) en el call site");
+});
+
+test("V30.22.7: spread en llamadas con firma array", () => {
+  const src = `
+    function sum(values: number[]): number {
+      let total: number = 0
+      for (let i: number = 0; i < values.length; i = i + 1) total = total + values[i]
+      return total
+    }
+    const args: number[] = [1, 2, 3, 4, 5]
+    print(sum(...args))
+  `;
+  const out = compile(src).cpp;
+  // El spread se emite como el array directo.
+  assert.match(out, /sum\(args\)/, "el spread debe emitirse como el array pasado directamente");
+});

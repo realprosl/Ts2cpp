@@ -47,8 +47,8 @@ export type Decorator = { name: string; args: Expression[] };
 
 // V19: modificador de encapsulación. "public" es el default si se omite.
 export type AccessModifier = "public" | "private" | "protected";
-export interface ClassField { name: string; type: TypeName; readonly?: boolean; /** V19 */ access?: AccessModifier; decorators?: Decorator[]; span: Span }
-export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; decorators?: Decorator[]; /** V19 */ access?: AccessModifier; span: Span }
+export interface ClassField { name: string; type: TypeName; readonly?: boolean; /** V19 */ access?: AccessModifier; /** V30.22.1 */ isStatic?: boolean; /** V30.22.1 */ defaultValue?: Expression; decorators?: Decorator[]; span: Span }
+export interface ClassMethod { name: string; typeParameters?: TypeParameter[]; params: Parameter[]; returnType: TypeName; /** V0.3 */ resolvedSignature?: import("../types/type-system.ts").ResolvedSignature; body: BlockStatement; decorators?: Decorator[]; /** V19 */ access?: AccessModifier; /** V30.22.1 */ isStatic?: boolean; span: Span }
 export interface ClassDeclaration { kind: "ClassDeclaration"; exported?: boolean; name: string; typeParameters: TypeParameter[]; variadicTypeParameters: string[]; fields: ClassField[]; methods: ClassMethod[]; decorators?: Decorator[]; /** V0.4 */ resolvedRuntimeType?: import("../types/type-system.ts").ResolvedRuntimeType; span: Span }
 export interface BlockStatement { kind: "BlockStatement"; statements: Statement[]; span: Span }
 export interface ExpressionStatement { kind: "ExpressionStatement"; expression: Expression; span: Span }
@@ -91,7 +91,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression) & {
+export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression | NamedArgumentExpression | SpreadElement) & {
   /**
    * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
    * El codegen consume este campo directamente en lugar de parsear
@@ -149,6 +149,10 @@ export interface MemberCallExpression { kind: "MemberCallExpression"; object: Ex
 export interface IndexExpression { kind: "IndexExpression"; object: Expression; index: Expression; span: Span }
 export interface NewExpression { kind: "NewExpression"; className: string; args: Expression[]; span: Span }
 export interface AssignmentExpression { kind: "AssignmentExpression"; target: IdentifierExpression | MemberExpression | IndexExpression; value: Expression; span: Span }
+// V30.22.6: named argument en un CallExpression. `name: value` en la
+// posicion de un argumento. El type-checker y codegen resuelven el
+// nombre a la posicion del parametro segun la firma de la funcion.
+export interface NamedArgumentExpression { kind: "NamedArgumentExpression"; name: string; value: Expression; span: Span }
 // V30.19: operadores compuestos (`x += y`, `x -= y`, etc.). Azucar sobre
 // `x = x op y` pero emitido como una sola expresión en C++ (e.g.
 // `x += y;` en lugar de `x = x + y;`). Esto evita leer y reescribir el

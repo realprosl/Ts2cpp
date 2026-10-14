@@ -355,11 +355,20 @@ export class Parser {
         : this.match("protected") ? "protected"
         : undefined;
       const readonly = this.match("readonly");
+      // V30.22.1: modificador `static` para fields y methods. Aplica
+      // a fields (static fields) y methods (static methods).
+      const isStatic = this.match("static");
       const member = this.consume("identifier", "Se esperaba un campo o método");
       if (this.match(":")) {
         const type = this.typeName();
+        // V30.22.1: default value para fields. `static count: number = 0`
+        // se compila a `static double ClassName::count = 0.0;` (los
+        // static fields se inicializan fuera del struct). Para fields
+        // de instancia, el default value se aplica en el constructor
+        // generado (V30.13).
+        const defaultValue = this.match("=") ? this.expression() : undefined;
         const end = this.consumeStatementTerminator("Se esperaba ';' después del campo");
-        fields.push({ name: member.lexeme, type, readonly, access, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
+        fields.push({ name: member.lexeme, type, readonly, access, isStatic, defaultValue, decorators: memberDecorators, span: span(member.span.start, end.span.end) });
       } else {
         const generics = this.typeParameterNames();
         this.consume("(", "Se esperaba '(' en el método");
@@ -399,7 +408,7 @@ export class Parser {
         const returnType: TypeName = isConstructor ? "void" : (this.match(":") ? this.typeName() : (this.error(this.peek(), "El método necesita un tipo de retorno"), "void"));
         const open = this.consume("{", "Se esperaba el cuerpo del método");
         const body = this.block(open);
-        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, access, span: span(member.span.start, body.span.end) });
+        methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, access, isStatic, span: span(member.span.start, body.span.end) });
       }
     }
     const close = this.consume("}", "Se esperaba '}' después de la clase");
@@ -1026,7 +1035,25 @@ export class Parser {
     for (;;) {
       if (this.match("(")) {
         const open = this.previous(); const args: Expression[] = [];
-        if (!this.check(")")) do { args.push(this.expression()); } while (this.match(","));
+        if (!this.check(")")) do {
+          // V30.22.6: argumentos con nombre (`name: value`).
+          // Diferenciamos de un `ObjectLiteralExpression` standalone: en
+          // el call context, `{` no es valido como argumento, asi que
+          // `{x: 1}` se trataria como object literal. Aqui solo
+          // manejamos `identifier: value`.
+          if (this.check("identifier") && this.peekAt(1).kind === ":") {
+            const nameTok = this.advance();
+            this.advance(); // consume ':'
+            const value = this.expression();
+            args.push({ kind: "NamedArgumentExpression", name: nameTok.lexeme, value, span: value.span });
+          } else if (this.check("...")) {
+            this.advance(); // consume '...'
+            const expression = this.expression();
+            args.push({ kind: "SpreadElement", expression, span: expression.span });
+          } else {
+            args.push(this.expression());
+          }
+        } while (this.match(","));
         const close = this.consume(")", "Se esperaba ')' después de los argumentos");
         if (expr.kind !== "IdentifierExpression") this.error(open, "Solo se pueden invocar funciones por nombre");
         expr = { kind: "CallExpression", callee: expr.kind === "IdentifierExpression" ? expr.name : "<error>", typeArguments: [], args, span: span(expr.span.start, close.span.end) };

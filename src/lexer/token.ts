@@ -3,7 +3,7 @@ import type { Span } from "../core/span.ts";
 export type TokenKind =
   | "identifier" | "number" | "string" | "template" | "let" | "const" | "function" | "interface" | "class" | "new" | "return"
   | "if" | "else" | "while" | "for" | "break" | "continue" | "extends" | "export" | "true" | "false" | "out" | "async" | "await" | "using" | "type"
-  | "enum" | "switch" | "case" | "default" | "of" | "in" | "delete" | "instanceof" | "typeof" | "readonly" | "match" | "when" | "union"
+  | "enum" | "switch" | "case" | "default" | "of" | "in" | "delete" | "instanceof" | "typeof" | "readonly" | "match" | "when" | "union" | "static"
   | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?" | "@"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
   | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "eof"
@@ -30,4 +30,6 @@ export const KEYWORDS: Readonly<Record<string, TokenKind>> = Object.assign(Objec
   import: "import",
   // V19: modificadores de encapsulación.
   private: "private", public: "public", protected: "protected",
+  // V30.22.1: static modifier para class fields y methods.
+  static: "static",
 });

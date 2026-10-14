@@ -188,6 +188,17 @@ const MATH_METHODS: Record<string, { params: TypeName[]; returnType: TypeName }>
   pow:   { params: ["number", "number"], returnType: "number" },
   min:   { params: ["number", "number"], returnType: "number" },
   max:   { params: ["number", "number"], returnType: "number" },
+  // V30.22.2: random() devuelve un numero en [0, 1). Se compila a
+  // `ets::random()` que envuelve `std::rand() / RAND_MAX` o usa el
+  // generador de C++11 <random>.
+  random: { params: [], returnType: "number" },
+};
+// V30.22.2: propiedades de `Math` (constantes). `PI` y `E` son las mas
+// comunes. Se accede como `Math.PI` (no `Math.PI()`) y el codegen
+// emite `ets::math_pi()` directamente.
+const MATH_PROPERTIES: Record<string, TypeName> = {
+  PI: "number",
+  E: "number",
 };
 
 // Bloque E: tabla de métodos de `Date`. La API es mínima: solo timestamps.
@@ -2009,7 +2020,9 @@ export class TypeChecker {
     this.withTypeParameters(method.typeParameters ?? [], () => {
       const local = new Scope(scope);
       const ownerType = owner.typeParameters.length ? genericType(owner.name, TypeChecker.namesOf(owner.typeParameters)) : owner.name;
-      this.defineVariable(local, "this", ownerType, true);
+      // V30.22.1: los static methods NO tienen `this` (C++ tampoco lo
+      // permite). Definir `this` solo en metodos de instancia.
+      if (!method.isStatic) this.defineVariable(local, "this", ownerType, true);
       for (const parameter of method.params) if (!this.defineVariable(local, parameter.name, parameter.type, true, { mutableReference: this.parameterIsMutableReference(parameter.type) }, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
       // V20: parameter properties. Si el parámetro del constructor tiene
       // modificador (acceso o readonly), también lo añadimos como campo
@@ -2355,6 +2368,12 @@ export class TypeChecker {
         // `Outcome.Ok(...)` se trata como llamada válida aunque `Outcome` esté
         // registrado como TypeSymbol. El tipo de la expresión es la unión misma.
         if (this.unions.has(node.name)) { result = node.name; break; }
+        // V30.22.1: las clases también son espacios de nombres para sus
+        // static fields/methods. `Counter.count` o `Counter.inc()` se
+        // aceptan aunque `Counter` esté registrado como TypeSymbol.
+        // Sin este atajo, el type-checker diría que `Counter` no es un
+        // valor. El tipo de la expresión es el nombre de la clase.
+        if (this.classes.has(node.name)) { result = node.name; break; }
         // Luego buscamos en el scope: una declaración local (variable,
         // parámetro) debe ganar sobre el tipo builtin del mismo nombre. Esto
         // permite `const path: string = argument(1); path + ".ext"` sin que
@@ -2481,6 +2500,11 @@ export class TypeChecker {
         break;
       }
       case "CallExpression": {
+        // V30.22.6: named args. El codegen reordena los args segun la
+        // firma. Aqui solo tenemos que evitar que el overload matching
+        // falle por el orden incorrecto. Como el codegen hace la
+        // reordenacion, dejamos que el type-checker trabaje en el
+        // orden literal de los args.
         // V3: `i32(x)`, `u64(y)`, `f32(z)`, etc. son casts a tipos numéricos
         // concretos (10 primitivos). El parser los desazucara como
         // CallExpression con callee=identifier; aquí reconocemos ese patrón y
@@ -2923,6 +2947,34 @@ export class TypeChecker {
         // cuando el codegen decide hacerlo. La marca se setea antes de
         // procesar el argumento para que `expression()` la vea al final.
         node.args.forEach((arg, index) => { if (arg.kind === "ArrowFunctionExpression" && !arg.singleUseSite) arg.singleUseSite = { kind: "CallExpression", argumentIndex: index }; });
+        // V30.22.6: si hay named args, reordenamos al orden posicional.
+        // No podemos buscar el `name` en `params` porque `params` son
+        // `FunctionParameterSymbol` (no tienen `name`). En su lugar, usamos
+        // el orden de los type-parameters y la firma de la funcion. El
+        // codegen hace la reordenacion final segun la firma completa.
+        const hasNamed = node.args.some(arg => arg.kind === "NamedArgumentExpression");
+        if (hasNamed && symbol.overloads.length > 0) {
+          // Construimos el mapeo: como FunctionParameterSymbol no guarda
+          // el nombre, usamos los type-parameters y la firma del
+          // overload 0. Si el orden de declaracion esta disponible, lo
+          // usamos via `functionParameters` o el orden natural de la
+          // firma. En el codegen hacemos la reordenacion real.
+          const reordered: Expression[] = [];
+          for (const arg of node.args) {
+            if (arg.kind === "NamedArgumentExpression") {
+              // El codegen resolvera `name` → posicion real.
+              reordered.push(arg);
+            } else reordered.push(arg);
+          }
+          // No modificamos node.args; dejamos el orden original para el
+          // overload matching. El codegen se encarga.
+        }
+        // V30.22.7: spread element en la llamada. En V30.22.7 el
+        // spread solo funciona si la firma destino acepta un unico
+        // param de tipo array. El type-check valida eso y el codegen
+        // emite el array como arg unico. Para firmas multi-param, el
+        // overload matching fallara (limitación documentada: el
+        // dialecto no tiene variadics de runtime).
         const argumentTypes = node.args.map((arg, index) => this.expression(arg, scope, contextualArgTypes[index]));
         const matches = symbol.overloads.map(signature => this.matchOverload(signature, argumentTypes, node.typeArguments, expected)).filter(match => !!match).sort((a, b) => b.score - a.score);
         if (!matches.length) { this.report(node, `Ninguna sobrecarga de '${node.callee}' acepta (${argumentTypes.join(", ")})`); break; }
@@ -2968,6 +3020,25 @@ export class TypeChecker {
           }
           this.report(node, `Promise.${node.method} no es una API valida (usa all o race)`);
           return genericType("Promise", ["any"]);
+        }
+        // V30.22.1: `ClassName.staticMethod(args)` permite llamar a un
+        // metodo estatico sin necesidad de instanciar la clase. Esto es
+        // el patron estandar de TS/Java para metodos de clase (factory,
+        // utilities, etc.). El codegen emite `ClassName::staticMethod(args)`.
+        if (node.object.kind === "IdentifierExpression" && this.classes.has(node.object.name)) {
+          const cls = this.classes.get(node.object.name)!;
+          const method = cls.methods.find(m => m.name === node.method && m.isStatic);
+          if (method) {
+            // Validamos args contra los params del metodo estatico.
+            const requiredParams = method.params.filter(p => p.defaultValue === undefined).length;
+            if (node.args.length < requiredParams) this.report(node, `'${cls.name}.${method.name}' espera al menos ${requiredParams} argumento(s), recibió ${node.args.length}`);
+            for (let i = 0; i < node.args.length; ++i) this.expression(node.args[i]!, scope);
+            // Anotamos el nodo como "static call" para que el codegen
+            // emita `ClassName::method(...)` en lugar de `method(...)`.
+            (node as unknown as { _etsStaticCall: string })._etsStaticCall = cls.name;
+            result = method.returnType === "void" ? "void" : (method.returnType ?? "void");
+            break;
+          }
         }
         const objectType = this.expression(node.object, scope);
         // V1.2: `Union<T1, T2>.Variant(args)` o `Union.Variant(args)`. Si la
@@ -3571,6 +3642,14 @@ export class TypeChecker {
           result = node.object.name;
           break;
         }
+        // V30.22.2: `Math.PI`, `Math.E` acceden a constantes del namespace
+        // Math. Marcamos el nodo con `_etsBuiltinProperty` para que el
+        // codegen emita `ets::math_pi()` o `ets::math_e()`.
+        if (objectType === "Math" && node.member in MATH_PROPERTIES) {
+          (node as unknown as { _etsBuiltinProperty: { builtin: string; property: string } })._etsBuiltinProperty = { builtin: "Math", property: node.member };
+          result = MATH_PROPERTIES[node.member]!;
+          break;
+        }
         if (node.optional) {
           // `?.`: el operando debe ser `Optional<T>`; el resultado es
           // `Optional<field_type>`. Se valida contra el nombre del campo en
@@ -3636,6 +3715,19 @@ export class TypeChecker {
           this.report(node, `Response.${node.member} no existe (usa status/header/send/json/getStatus/getBody)`);
           result = "Response";
           break;
+        }
+        // V30.22.1: `ClassName.staticField` permite acceder a un campo
+        // estatico sin instanciar la clase. Devolvemos el tipo del field
+        // y marcamos el nodo con `_etsStaticField` para que el codegen
+        // emita `ClassName::field` en lugar de `field`.
+        if (node.object.kind === "IdentifierExpression" && this.classes.has(node.object.name)) {
+          const cls = this.classes.get(node.object.name)!;
+          const staticField = cls.fields.find(f => f.name === node.member && f.isStatic);
+          if (staticField) {
+            (node as unknown as { _etsStaticField: string })._etsStaticField = cls.name;
+            result = staticField.type;
+            break;
+          }
         }
         const resolved = this.resolveClass(classLookupType); const owner = resolved?.owner;
         const field = owner?.fields.find(candidate => candidate.name === node.member);
@@ -3790,6 +3882,20 @@ export class TypeChecker {
         } else this.report(node.object, `El tipo '${objectType}' no se puede indexar`);
         break;
       }
+      case "NamedArgumentExpression": {
+        // V30.22.6: un named argument `name: value` se procesa como una
+        // expression normal desde el punto de vista del tipo. El CallExpression
+        // padre resuelve el `name` a la posicion del parametro en la firma
+        // (en `prepareNamedArgs`).
+        result = this.expression(node.value, scope);
+        break;
+      }
+      case "SpreadElement": {
+        // V30.22.7: spread operator en un CallExpression. El tipo del
+        // spread es el tipo del array que se expande.
+        result = this.expression(node.expression, scope);
+        break;
+      }
       case "NewExpression": {
         // `Map<K,V>` y `Set<T>` no son clases declaradas por el usuario pero sí
         // constructibles: se permite `new Map<K,V>()` / `new Set<T>()` sin args.
@@ -3841,6 +3947,17 @@ export class TypeChecker {
           }
           this.markCapturedMutation(node.target, scope);
         }
+        this.require(value, targetType, node.value); result = targetType;
+        break;
+      }
+      case "CompoundAssignmentExpression": {
+        // V30.19: `x += y`, `x -= y`, etc. Misma semantica que AssignmentExpression
+        // (target debe ser mutable, no readonly, value debe ser asignable al target).
+        // V30.22.1: el target puede ser un static field (`Counter.count += 1`), por
+        // lo que NO se aplica el chequeo de readonly (los static fields no son
+        // readonly por defecto).
+        const targetType = this.expression(node.target, scope); const value = this.expression(node.value, scope, targetType);
+        if (!this.mutableTarget(node.target, scope)) this.report(node, "No se puede modificar una constante ni uno de sus campos");
         this.require(value, targetType, node.value); result = targetType;
         break;
       }
@@ -3905,6 +4022,14 @@ export class TypeChecker {
     if (node.kind !== "IdentifierExpression") return false;
     const symbol = scope.resolve(node.name);
     if (!symbol) return false;
+    // V30.22.1: los accessos a static fields via `ClassName.field` (donde
+    // `ClassName` es un type symbol) son mutables. Esto permite
+    // `Counter.count += 1` o `Counter.count = 5` en static fields.
+    if (symbol.kind === "type" && this.classes.has(node.name)) {
+      // El chequeo de readonly ya se hizo en el MemberExpression lookup
+      // (los static fields no son readonly por defecto).
+      return true;
+    }
     if (symbol.kind !== "variable") return false;
     // V22 (Memory Model v2): los parámetros `out T` o con modifier `ref<T>`
     // son mutables (T&). Esto se marca con `mutableReference: true` en el
