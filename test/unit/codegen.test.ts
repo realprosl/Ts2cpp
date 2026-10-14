@@ -113,6 +113,36 @@ test("codegen: int main retorna 0", () => {
 // cuando el programa usa al menos uno de los tres métodos.
 // ---------------------------------------------------------------------------
 
+test("codegen V30.13.2: arr.length se emite como size()", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let n: number = arr.length;");
+  assert.match(out, /arr\.size\(\)/);
+});
+
+test("codegen V30.13.2: arr.push(x) se emite como ets_push_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; arr.push(4);");
+  assert.match(out, /ets_push_vec<double>\(/);
+});
+
+test("codegen V30.13.2: arr.pop() se emite como ets_pop_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; arr.pop();");
+  assert.match(out, /ets_pop_vec<double>\(/);
+});
+
+test("codegen V30.13.2: arr.slice(start, end) se emite como ets_slice_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r: number[] = arr.slice(0, 2);");
+  assert.match(out, /ets_slice_vec<double>\(/);
+});
+
+test("codegen V30.13.2: arr.includes(v) se emite como ets_includes_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let b: boolean = arr.includes(2);");
+  assert.match(out, /ets_includes_vec<double>\(/);
+});
+
+test("codegen V30.13.2: arr.find(p) se emite como ets_find_vec<T>", () => {
+  const out = cpp("let arr: number[] = [1, 2, 3]; let r: number = arr.find((x: number): boolean => x > 1).value();");
+  assert.match(out, /ets_find_vec<double>\(/);
+});
+
 test("codegen V7: arr.filter se emite como ets_filter_vec<T>", () => {
   const out = cpp("let arr: number[] = [1, 2, 3]; let r = arr.filter((x: number): boolean => x > 0);");
   assert.match(out, /ets_filter_vec<double>\(/);

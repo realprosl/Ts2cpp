@@ -195,3 +195,20 @@ inline std::vector<T> ets_concat_vec(std::initializer_list<std::vector<T>> array
     }
     return out;
 }
+
+// V30.13.2: `ets_push_vec<T>(vec, value)` — añade un elemento al final
+// de un vector. Acepta `std::vector<T>&` (no const) y hace `push_back`.
+// Equivalente a `arr.push(x)` en el dialecto. Devuelve void (no
+// devolvemos el nuevo length porque el dialecto no lo usa).
+template <typename T>
+inline void ets_push_vec(std::vector<T>& vec, const T& value) {
+    vec.push_back(value);
+}
+
+// V30.13.2: `ets_pop_vec<T>(vec)` — elimina el último elemento del
+// vector. No devuelve el valor (el dialecto no lo necesita; los usuarios
+// que necesiten el valor usan `arr[arr.length - 1]` antes de pop).
+template <typename T>
+inline void ets_pop_vec(std::vector<T>& vec) {
+    if (!vec.empty()) vec.pop_back();
+}
