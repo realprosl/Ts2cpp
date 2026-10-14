@@ -3511,6 +3511,14 @@ export class TypeChecker {
             if (innerArg) classLookupType = innerArg;
           }
         }
+        // V30.16: si `classLookupType` es un type parameter con un
+        // constraint (e.g. `T extends HasLength`), usamos el constraint
+        // como tipo concreto para buscar fields/methods. Esto permite
+        // que `function longest<T extends HasLength>(a: T, b: T) { return
+        // a.length > b.length ? a : b }` acceda a `length` del constraint.
+        if (this.activeTypeConstraints && this.activeTypeConstraints.has(classLookupType)) {
+          classLookupType = this.activeTypeConstraints.get(classLookupType)!;
+        }
         // Request: campos pre-parseados del request HTTP.
         if (objectType === "Request") {
           const reqFields: Record<string, string> = {
@@ -3575,7 +3583,10 @@ export class TypeChecker {
         // buscamos el miembro como campo o metodo de la shape. Esto cubre
         // tanto `const m: Mod = ...; m.kind` (cliente) como llamadas del
         // estilo `const r: I = ...; r.metodo()` (futuro).
-        const interfaceBase = isGenericType(objectType) ? genericBase(objectType) : objectType;
+        // V30.16: usamos `classLookupType` (que ya resuelve type-param
+        // constraints) en lugar de `objectType` para que `T extends I`
+        // acceda a los miembros de `I`.
+        const interfaceBase = isGenericType(classLookupType) ? genericBase(classLookupType) : classLookupType;
         if (!owner && this.interfaces.has(interfaceBase)) {
           const iface = this.interfaces.get(interfaceBase)!;
           const fieldMember = iface.fields.find(f => f.name === node.member);
