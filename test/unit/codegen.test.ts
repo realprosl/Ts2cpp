@@ -148,6 +148,20 @@ test("codegen V30.13.4: interface sin metodos emite concept trivial", () => {
   assert.match(out, /concept I = true;/);
 });
 
+test("codegen V30.14.1: type alias para union en Array<...> se traduce a std::variant<...>", () => {
+  // V30.14.1: `type SvgChild = Line | MultiLine` + `Array<SvgChild>`
+  // debe generar `std::vector<std::variant<Line, MultiLine>>`, igual
+  // que la union directa `Array<Line | MultiLine>`.
+  const out = cpp(`
+    class Line { kind: string; constructor() { this.kind = "line" } }
+    class MultiLine { kind: string; constructor() { this.kind = "ml" } }
+    type SvgChild = Line | MultiLine
+    class Svg { children: Array<SvgChild>; constructor() { this.children = [] } }
+  `);
+  assert.match(out, /std::vector<std::variant<Line, MultiLine>>/);
+  assert.doesNotMatch(out, /std::vector<SvgChild>/);
+});
+
 test("codegen V30.13.4: array literal con spread se emite como lambda + insert", () => {
   const out = cpp("let a: number[] = [1, 2]; let b: number[] = [3, 4]; let c: number[] = [...a, ...b, 5];");
   // V30.13.4: la captura esta vacia porque no estamos en un class method.

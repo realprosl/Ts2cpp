@@ -318,6 +318,11 @@ function levenshtein(a: string, b: string): number {
 }
 
 export class TypeChecker {
+  // V30.14.1: programa actual + mapa de type aliases post-check.
+  // El codegen usa esto para expandir type arguments en generic types
+  // (e.g. `Array<SvgChild>` -> `Array<Line | MultiLine>`).
+  private currentProgram: Program | undefined = undefined;
+  private typeAliasMap = new Map<string, string>();
   private readonly diagnostics: Diagnostic[] = [];
   private readonly types = new WeakMap<Expression, TypeName>();
   // V22: mapa de variables locales `ptr<T>` que han sido movidas (`moved` o
@@ -443,6 +448,7 @@ export class TypeChecker {
   }
 
   check(program: Program): void {
+    this.currentProgram = program;
     const global = new Scope();
     const input = (type: TypeName) => ({ type, out: false });
     const output = (type: TypeName) => ({ type, out: true });
@@ -982,6 +988,9 @@ export class TypeChecker {
       this.report(node, `Símbolo duplicado '${node.name}'`); return;
     }
     this.aliases.set(node.name, node);
+    // V30.14.1: guardar en el mapa para que el codegen pueda expandir
+    // el alias en generic types.
+    this.typeAliasMap.set(node.name, node.type);
     // V0.4: pre-computa el ResolvedRuntimeType del RHS del alias. Esto
     // permite que el codegen consuma directamente la forma resuelta sin
     // tener que parsear `node.type` cada vez.
@@ -3968,6 +3977,13 @@ export class TypeChecker {
   // trabaje contra tipos reales. `scope` es opcional: sin él, las marcas
   // `typeof X` se devuelven tal cual (p.ej. durante `expandAliasesInProgram`,
   // antes de entrar a un ámbito).
+  // V30.14.1: lookup de type alias post-check. Usado por el codegen
+  // para expandir type arguments en generic types (e.g. `Array<SvgChild>`
+  // donde `SvgChild` es un alias de `Line | MultiLine`).
+  public resolveTypeAliasFromAst(name: string): string | undefined {
+    return this.typeAliasMap.get(name);
+  }
+
   private expandType(type: TypeName, scope?: Scope): TypeName {
     const visited = new Set<string>();
     let current = type;
@@ -3998,6 +4014,16 @@ export class TypeChecker {
           current = this.substituteType(aliasInstance.type, subs);
           continue;
         }
+        // V30.14.1: descender en generic types (`Array<T>`, `Optional<T>`)
+        // y expandir los type arguments que sean alias. Asi,
+        // `Array<SvgChild>` se convierte en `Array<Line | MultiLine>`,
+        // que el codegen de arrays (arrayCppType) traduce a
+        // `std::vector<std::variant<Line, MultiLine>>`.
+        // NOTA: el type-checker no modifica el AST en este punto para
+        // evitar problemas de re-validacion; la expansion de aliases
+        // en generic types se hace en el codegen (cpp-generator)
+        // mediante `expandTypeInCodegen`.
+        // if (isGenericType(current)) { ... } -> no hacer nada aquí
       }
       if (isTypeofType(current) && scope) {
         const name = typeofTarget(current);

@@ -29,5 +29,5 @@ export function analyze(programs: Program[]): { program: Program; checker: TypeC
 export function compile(source: string): CompilationResult {
   const ast = parse(source);
   const { checker } = analyze([ast]);
-  return { ast, cpp: new CppGenerator(expression => checker.typeOf(expression), expression => checker.isVariadic(expression), expression => checker.typeArgumentsOf(expression)).generate(ast) };
+  return { ast, cpp: new CppGenerator(expression => checker.typeOf(expression), expression => checker.isVariadic(expression), expression => checker.typeArgumentsOf(expression), name => checker.resolveTypeAliasFromAst(name)).generate(ast) };
 }

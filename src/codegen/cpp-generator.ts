@@ -146,11 +146,15 @@ export class CppGenerator {
   // V22: tipos inferidos de los identificadores locales (nombre → TypeName).
   // Permite al codegen decidir entre `.` y `->` en member access cuando el
   // tipo es `ptr<T>`.
+  // V30.14.1: resolver de type aliases (pasado por el TypeChecker).
+  // Usado para expandir type arguments en generic types.
+  private resolveTypeAlias: ((name: string) => string | undefined) | undefined;
   private readonly identifierTypes = new Map<string, TypeName>();
   private destructuringCounter = 0;
-  constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[]) {
+  constructor(expressionType?: (node: Expression) => TypeName | undefined, expressionIsVariadic?: (node: Expression) => boolean, callTypeArguments?: (node: Expression) => TypeName[], resolveTypeAlias?: (name: string) => string | undefined) {
     this.expressionType = expressionType ?? (() => undefined); this.expressionIsVariadic = expressionIsVariadic ?? (() => false);
     this.callTypeArguments = callTypeArguments ?? (() => []);
+    this.resolveTypeAlias = resolveTypeAlias;
   }
   // Devuelve el nombre C++ para un identificador del programa. Si fue renombrado
   // por colisión con un global del runtime, devuelve el nombre prefijado.
@@ -734,23 +738,70 @@ export class CppGenerator {
   // interface registrada con auto-union, devuelve el nombre del
   // auto-union. Si es una interface sin auto-union, lanza error claro.
   private arrayElementCppType(elementType: TypeName): string {
-    if (this.interfaceNames.has(elementType)) {
-      const union = this.autoUnions.get(elementType);
-      if (!union) throw new Error(`Array<${elementType}>: la interface ${elementType} no tiene clases concretas con campo \`kind: string\` para generar el auto-union. Define una clase \`class ${elementType}_Impl { kind: string; ... }\` o usa un tipo concreto.`);
-      if (union.variants.length === 0) throw new Error(`Array<${elementType}>: la interface ${elementType} no tiene variantes en su auto-union (ninguna clase concreta con campo \`kind: string\`).`);
-      return this.autoUnionName(elementType);
+    // V30.14.1: expandir type aliases primero (e.g. `SvgChild` -> `Line | MultiLine`).
+    const expanded = this.expandTypeInCodegen(elementType);
+    // V30.14.1: union types (provenientes de `type X = A | B` o `A | B` directo)
+    // se traducen a `std::variant<...>` directamente, sin auto-union. Es
+    // mas simple que la interface, pero funciona end-to-end.
+    if (isUnionType(expanded)) return cppType(expanded);
+    if (this.interfaceNames.has(expanded)) {
+      const union = this.autoUnions.get(expanded);
+      if (!union) throw new Error(`Array<${expanded}>: la interface ${expanded} no tiene clases concretas con campo \`kind: string\` para generar el auto-union. Define una clase \`class ${expanded}_Impl { kind: string; ... }\` o usa un tipo concreto.`);
+      if (union.variants.length === 0) throw new Error(`Array<${expanded}>: la interface ${expanded} no tiene variantes en su auto-union (ninguna clase concreta con campo \`kind: string\`).`);
+      return this.autoUnionName(expanded);
     }
-    return cppType(elementType);
+    return cppType(expanded);
   }
   // V30.12.2: tipo C++ de un array, sustituyendo el elemento si es
   // una interface registrada.
   private arrayCppType(type: TypeName): string {
-    if (isArrayType(type)) return `std::vector<${this.arrayElementCppType(arrayElement(type))}>`;
+    // V30.14.1: expandir aliases en el type argument (e.g. `Array<SvgChild>`
+    // donde `type SvgChild = Line | MultiLine`).
+    if (isArrayType(type)) {
+      const elem = arrayElement(type);
+      const expanded = this.expandTypeInCodegen(elem);
+      return `std::vector<${this.arrayElementCppType(expanded)}>`;
+    }
     if (isGenericType(type) && genericBase(type) === "Array") {
       const arg = genericArguments(type)[0];
-      if (arg) return `std::vector<${this.arrayElementCppType(arg)}>`;
+      if (arg) {
+        const expanded = this.expandTypeInCodegen(arg);
+        return `std::vector<${this.arrayElementCppType(expanded)}>`;
+      }
     }
     return cppType(type);
+  }
+  // V30.14.1: helper para expandir type aliases en el codegen. Si el
+  // tipo es un alias conocido, lo expande recursivamente. Esto es
+  // necesario porque `expandAliasesInProgram` del type-checker no
+  // desciende en generic types (e.g. `Array<SvgChild>` queda como
+  // `Array<SvgChild>`, no `Array<Line | MultiLine>`).
+  private expandTypeInCodegen(type: TypeName): TypeName {
+    if (!this.resolveTypeAlias) return type;
+    // Expansion recursiva con deteccion de ciclos.
+    const visited = new Set<string>();
+    let current = type;
+    while (true) {
+      // Si es un generic type, expandir el type argument
+      if (isGenericType(current)) {
+        const base = genericBase(current);
+        const args = genericArguments(current);
+        if (args.length > 0) {
+          const expandedArgs = args.map(arg => this.expandTypeInCodegen(arg));
+          current = `${base}<${expandedArgs.join(", ")}>`;
+          // break despues de reconstruir para evitar bucle infinito
+          // (e.g. `Array<number>` -> `Array<number>`).
+          break;
+        }
+      }
+      // Si es un tipo simple, ver si es un alias
+      if (visited.has(current)) break;
+      visited.add(current);
+      const resolved = this.resolveTypeAlias(current);
+      if (!resolved) break;
+      current = resolved;
+    }
+    return current;
   }
   // V1.3: dado un TypeName resuelto por el type-checker, devuelve la
   // UnionDeclaration si representa una tagged union declarada en el
