@@ -212,3 +212,18 @@ template <typename T>
 inline void ets_pop_vec(std::vector<T>& vec) {
     if (!vec.empty()) vec.pop_back();
 }
+
+// V30.24: `ets_join_vec<T>(vec, separator)` — une los elementos del
+// vector `vec` en un `std::string`, separados por `separator`. Equivalente
+// a `arr.join(sep)` en el dialecto. Para `T = std::string` se usa
+// `operator+`; para otros tipos el usuario debe asegurarse de que
+// `operator<<` este definido (limitation documentada: el type-checker
+// solo valida `T = string`; el codegen no fuerza el tipo en el template).
+inline std::string ets_join_vec(const std::vector<std::string>& vec, const std::string& separator) {
+    std::string out;
+    for (std::size_t i = 0; i < vec.size(); ++i) {
+        if (i > 0) out += separator;
+        out += vec[i];
+    }
+    return out;
+}

@@ -1413,3 +1413,40 @@ test("V30.23: type alias en param de arrow function se expande", () => {
   // El forEach debe emitir el lambda con el tipo expandido.
   assert.match(out, /std::variant<Line, MultiLine>/, "el forEach debe usar el union expandido en el lambda");
 });
+
+test("V30.24: array.join(separator) une elementos string[]", () => {
+  // Feature nueva: `arr.join(sep)` estilo JS, equivalente a Python
+  // `sep.join(arr)`. Solo valido para `string[]`.
+  const src = `
+    const parts: string[] = ["a", "b", "c"]
+    print(parts.join(","))
+  `;
+  const out = compile(src).cpp;
+  // El codegen emite `ets_join_vec(arr, sep)`.
+  assert.match(out, /ets_join_vec\(parts, std::string\(\",\"\)\)/, "el join debe emitirse como ets_join_vec");
+});
+
+test("V30.24: array.join sobre number[] debe fallar type-check", () => {
+  // El type-checker rechaza `join` sobre arrays que no son `string[]`.
+  const src = `
+    const nums: number[] = [1, 2, 3]
+    print(nums.join(","))
+  `;
+  // El compile() lanza DiagnosticError porque el type-checker reporta
+  // el error antes de la generacion de codigo.
+  assert.throws(() => compile(src), /Array\.join solo se permite sobre string\[\]/, "el type-checker debe rechazar join sobre number[]");
+});
+
+test("V30.24: array.join con split encadenado funciona", () => {
+  // Caso de uso real: `str.split(sep).join(otherSep)` permite reemplazar
+  // separadores en un string. Verifica que ambos métodos coexisten.
+  const src = `
+    const csv: string = "a,b,c,d"
+    const parts: string[] = csv.split(",")
+    print(parts.join("-"))
+  `;
+  const out = compile(src).cpp;
+  // split emite `::ets::string_split` (helper del namespace ets).
+  assert.match(out, /::ets::string_split\(csv, std::string\(\",\"\)\)/, "el split debe emitirse como ::ets::string_split");
+  assert.match(out, /ets_join_vec\(/, "el join debe emitirse como ets_join_vec");
+});

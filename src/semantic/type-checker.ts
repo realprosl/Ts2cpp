@@ -275,6 +275,10 @@ const ARRAY_METHODS: Record<string, { arity: number; paramKinds: ("array" | "fn"
   // V30.13.2: `pop` elimina el último elemento del array (muta in-place).
   // Devuelve `void` (estilo JS, aunque TS lo tipa como `T | undefined`).
   pop:     { arity: 0, paramKinds: [], returnType: () => "void" },
+  // V30.24: `join(separator)` une los elementos del array en un string,
+  // separados por el separator. Solo valido para arrays de strings
+  // (`T = string`); el codegen emite un error claro si T no es string.
+  join:    { arity: 1, paramKinds: ["value"], returnType: () => "string" },
 };
 
 // V28: metodos de la API de string estilo TypeScript. El dialecto los
@@ -3427,6 +3431,15 @@ export class TypeChecker {
           if (node.method === "includes") {
             if (node.args[0]) this.require(this.expression(node.args[0], scope, T), T, node.args[0]);
             result = "boolean";
+            break;
+          }
+          // V30.24: `join(separator)` une los elementos del array en un
+          // string. Solo valido para arrays de strings (T = string). Si
+          // T no es string, reporta error claro.
+          if (node.method === "join") {
+            if (T !== "string") this.report(node, `Array.join solo se permite sobre string[] (se obtuvo ${T}[])`);
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, "string"), "string", node.args[0]);
+            result = "string";
             break;
           }
           break;
