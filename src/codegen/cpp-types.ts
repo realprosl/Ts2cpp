@@ -77,6 +77,10 @@ function cppTypeFromString(type: TypeName): string {
   if (type === "HttpClientResponse") return "ets::HttpClientResponse";
   if (["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "FileReader", "Server", "Timer", "FsWatcher", "FsEvent"].includes(type)) return `ets::${type}`;
   if (type === "JsonValue") return "ets_json::Value";
+  // V30.25: el tipo opaco `Regex` se mapea al struct `ets::ets_regex`
+  // (envuelve `std::regex`). El header `ets_regex.hpp` lo declara en
+  // el namespace `ets`.
+  if (type === "Regex") return "ets::ets_regex";
   return type;
 }
 

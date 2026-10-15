@@ -1603,7 +1603,7 @@ export class TypeChecker {
       return type;
     }
     const primitive = isPrimitive(type);
-    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server", "HttpClientResponse", "Timer", "FsWatcher", "FsEvent"].includes(type);
+    const concrete = this.classes.has(type) || this.aliases.has(type) || this.enums.has(type) || ["TcpListener", "TcpConnection", "TlsContext", "TlsConnection", "CancellationSource", "CancellationToken", "JsonValue", "FileReader", "Request", "Response", "Server", "HttpClientResponse", "Timer", "FsWatcher", "FsEvent", "Regex"].includes(type);
     const contract = interfaceAllowed && this.interfaces.has(type);
     // Los tipos genéricos `Promise<T>`, `Result<T, E>`, `Map<K, V>`, `Set<T>`,
     // `Optional<T>` se aceptan siempre (son tipos del runtime).
@@ -2437,6 +2437,11 @@ export class TypeChecker {
         if (node.name === "Math") { result = "Math"; break; }
         if (node.name === "Date") { result = "Date"; break; }
         if (node.name === "http") { result = "http"; break; }
+        // V30.25: `regex` es un builtin global que crea un Regex (envuelve
+        // std::regex). Lo declaramos aca para que el type-checker no se
+        // queje de "simbolo no definido". El CallExpression posterior
+        // valida los args y emite el codigo.
+        if (node.name === "regex") { result = "Regex"; break; }
         this.report(node, `Símbolo no definido '${node.name}'`, this.suggestSimilar(node.name, scope.names()));
         break;
       }
@@ -2545,6 +2550,16 @@ export class TypeChecker {
           if (node.args.length !== signature.params.length) this.report(node, `'${node.callee}' espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
           node.args.forEach((arg, index) => { const expectedType = signature.params[index]; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
           result = signature.returnType; break;
+        }
+        // V30.25: `regex(pattern)` y `regex(pattern, flags)` crean un
+        // Regex (envuelve std::regex). El primer arg es el pattern, el
+        // segundo opcional son flags (string con chars 'i', 'm').
+        if (node.callee === "regex") {
+          if (node.args.length < 1 || node.args.length > 2) this.report(node, `regex espera 1 o 2 argumentos, recibió ${node.args.length}`);
+          if (node.args[0]) this.require(this.expression(node.args[0], scope, "string"), "string", node.args[0]);
+          if (node.args[1]) this.require(this.expression(node.args[1], scope, "string"), "string", node.args[1]);
+          result = "Regex";
+          break;
         }
         if (FILE_HELPERS[node.callee]) {
           const helper = FILE_HELPERS[node.callee];
@@ -3111,6 +3126,33 @@ export class TypeChecker {
         }
         if (objectType === "Json") {
           result = this.dispatchBuiltin("JSON", JSON_METHODS, node, scope);
+          break;
+        }
+        // V30.25: Regex.test/match/replace. El tipo Regex es opaco (envuelve
+        // std::regex en runtime/ets_regex.hpp). Los métodos se modelan
+        // inline porque la API es pequeña y queremos tipos especificos.
+        if (objectType === "Regex") {
+          if (node.method === "test") {
+            if (node.args.length !== 1) this.report(node, `Regex.test espera 1 argumento, recibió ${node.args.length}`);
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, "string"), "string", node.args[0]);
+            result = "boolean";
+            break;
+          }
+          if (node.method === "match") {
+            if (node.args.length !== 1) this.report(node, `Regex.match espera 1 argumento, recibió ${node.args.length}`);
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, "string"), "string", node.args[0]);
+            result = "string[]";
+            break;
+          }
+          if (node.method === "replace") {
+            if (node.args.length !== 2) this.report(node, `Regex.replace espera 2 argumentos, recibió ${node.args.length}`);
+            if (node.args[0]) this.require(this.expression(node.args[0], scope, "string"), "string", node.args[0]);
+            if (node.args[1]) this.require(this.expression(node.args[1], scope, "string"), "string", node.args[1]);
+            result = "string";
+            break;
+          }
+          this.report(node, `Regex.${node.method} no es un metodo valido (usa test/match/replace)`);
+          result = "void";
           break;
         }
         // FileReader: lector streaming por descriptor. Los metodos se
