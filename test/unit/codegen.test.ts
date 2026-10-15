@@ -1551,3 +1551,53 @@ test("V30.27: for...of sobre array numerico itera correctamente", () => {
   // Debe compilar y el output debe ser "6".
   assert.doesNotThrow(() => compile(src));
 });
+
+
+test("V30.28: clase puede llamar funcion top-level en metodo inline", () => {
+  // Caso del user: `MultiLine::newLine` llama `drawLine(...)` (funcion
+  // top-level). El codegen del header emite la forward decl de las
+  // funciones ANTES de las clases, asi el metodo inline ve la
+  // declaracion y compila. Sin el fix, g++ daba
+  // "drawLine was not declared in this scope" en el metodo.
+  const src = `
+    function helper(n: i16): i16 { return n * 2 }
+    class Container {
+      private values: i16[]
+      constructor() { this.values = [] }
+      addDoubled(n: i16): void {
+        const d = helper(n)
+        this.values = this.values.concat([d])
+      }
+      count(): i32 { return this.values.length }
+    }
+    let c = new Container()
+    c.addDoubled(5)
+    c.addDoubled(10)
+    print(numberToString(c.count()))
+  `;
+  // El test funcional: el codegen debe producir un .cpp que g++
+  // acepta. El e2e real se hace en test/runner.ts.
+  assert.doesNotThrow(() => compile(src));
+});
+
+test("V30.28: clase puede llamar funcion top-level desde un spread", () => {
+  // Caso del user: `[...this.lines, drawLine(...)]` con drawLine
+  // top-level. El lambda del IIFE del spread ya captura los locales
+  // (V30.27) y la forward decl esta visible (V30.28).
+  const src = `
+    function makeItem(n: i16): string { return "item" + numberToString(n) }
+    class Bag {
+      items: string[]
+      constructor() { this.items = [] }
+      addWithSpread(n: i16): void {
+        this.items = [...this.items, makeItem(n)]
+      }
+    }
+    let b = new Bag()
+    b.addWithSpread(1)
+    b.addWithSpread(2)
+    print(numberToString(b.items.length))
+  `;
+  // No debe lanzar DiagnosticError ni error de compilacion C++.
+  assert.doesNotThrow(() => compile(src));
+});
