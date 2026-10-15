@@ -1450,3 +1450,45 @@ test("V30.24: array.join con split encadenado funciona", () => {
   assert.match(out, /::ets::string_split\(csv, std::string\(\",\"\)\)/, "el split debe emitirse como ::ets::string_split");
   assert.match(out, /ets_join_vec\(/, "el join debe emitirse como ets_join_vec");
 });
+
+
+test("V30.26: number como tipo numerico acepta i8 en numberToString", () => {
+  // numberToString(number) acepta tipos numericos concretos (i8, i16, etc.)
+  // porque number es alias de f64 y typeMatches trata number como
+  // intercambiable con los primitivos numericos. Antes del fix esto
+  // fallaba con "Ninguna sobrecarga acepta (i8)".
+  const src = `
+    function toStr(n: number): string { return numberToString(n) }
+    print(toStr(i8(5)))
+    print(toStr(i32(42)))
+  `;
+  // No debe lanzar DiagnosticError.
+  const out = compile(src).cpp;
+  assert.match(out, /toStr\(/, "debe compilar la llamada toStr");
+});
+
+test("V30.26: number como tipo numerico acepta i16 en funciones con param number", () => {
+  const src = `
+    function twice(n: number): number { return n + n }
+    print(twice(i16(10)))
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /twice\(/, "debe compilar la llamada twice");
+});
+
+test("V30.26: number como tipo numerico acepta f32 en numberToString", () => {
+  const src = `
+    function toStr(n: number): string { return numberToString(n) }
+    print(toStr(f32(3.14)))
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /toStr\(/, "debe compilar toStr con f32");
+});
+
+test("V30.26: number NO es intercambiable con string", () => {
+  const src = `
+    function toStr(n: number): string { return numberToString(n) }
+    print(toStr("hola"))
+  `;
+  assert.throws(() => compile(src), /Ninguna sobrecarga/, "number no acepta string");
+});
