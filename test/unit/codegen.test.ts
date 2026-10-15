@@ -1492,3 +1492,27 @@ test("V30.26: number NO es intercambiable con string", () => {
   `;
   assert.throws(() => compile(src), /Ninguna sobrecarga/, "number no acepta string");
 });
+
+
+test("V30.27: spread captura variables locales declaradas con const en el body", () => {
+  const src = `
+    class Counter {
+      private xs: i32[]
+      constructor() { this.xs = [] }
+      add(x: i32, n: i32): void {
+        const offset = x * 2
+        const doubled = n + offset
+        this.xs = [...this.xs, doubled]
+      }
+      get(): i32[] { return this.xs }
+    }
+    let c = new Counter()
+    c.add(1, 10)
+    c.add(2, 20)
+    print(c.get().length)
+  `;
+  const out = compile(src).cpp;
+  assert.match(out, /\boffset\b/, "debe capturar `offset`");
+  assert.match(out, /\bdoubled\b/, "debe capturar `doubled`");
+  assert.match(out, /\[this, x, n, offset, doubled\]/, "el lambda debe listar todas las capturas");
+});
