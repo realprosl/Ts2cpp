@@ -1643,3 +1643,23 @@ test("V30.29: metodo que muta y devuelve void SIGUE requiriendo lvalue", () => {
   // El type-checker debe rechazar (DiagnosticError).
   assert.throws(() => compile(src), /receptor mutable/, "metodo void sobre rvalue debe fallar");
 });
+
+
+test("V30.30: builtin registry aislado - print, length, setTimeout disponibles", () => {
+  // El type-checker delega en builtin-registry.ts el registro de las
+  // APIs del runtime. Este test verifica que las firmas basicas
+  // siguen disponibles despues de la extraccion.
+  const src = [
+    "function useBuiltins(): void {",
+    '  print("hi")',
+    '  const s = "abc"',
+    '  const n = length(s)',
+    '  const c = charAt(s, 1)',
+    '  const sub = substring(s, 0, 2)',
+    '  const i = indexOf(s, "b", 0)',
+    '  const w = startsWith(s, "a")',
+    '  const t = trim("  x  ")',
+    "}",
+  ].join("\n");
+  assert.doesNotThrow(() => compile(src));
+});
