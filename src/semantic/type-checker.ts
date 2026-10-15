@@ -3619,8 +3619,27 @@ export class TypeChecker {
         if (matches.length) {
           const selected = matches[0].match;
           if (resolvedClass && this.methodMutates(matches[0].method)) {
-            if (!this.mutableTarget(node.object, scope)) this.report(node.object, `El método '${node.method}' modifica el objeto y necesita un receptor mutable`);
-            else this.markCapturedMutation(node.object, scope);
+            // V30.29: si el metodo devuelve el tipo de la clase
+            // (fluent setter / constructor-like), el receptor puede ser
+            // un rvalue (e.g. `new MultiLine().newLine(30, 0)`). El
+            // metodo muta `this` y devuelve un nuevo estado del
+            // mismo tipo, que es exactamente el patron "fluent
+            // interface" usado para encadenar llamadas. El codegen
+            // traduce el receptor rvalue a un temporal mutable
+            // (V30.29) y el lvalue resultante tiene el metodo
+            // aplicado.
+            const className = resolvedClass.owner.name;
+            const methodReturnType = selected.signature.returnType;
+            const returnsOwnType = methodReturnType === className;
+            if (!this.mutableTarget(node.object, scope) && !returnsOwnType) this.report(node.object, `El método '${node.method}' modifica el objeto y necesita un receptor mutable`);
+            else if (returnsOwnType && !this.mutableTarget(node.object, scope)) {
+              // V30.29: el receptor rvalue + metodo que muta + devuelve
+              // `T` se permite. Marcamos la expresion como
+              // "fluent" para que el codegen la trate especialmente
+              // (crea un temporal mutable en lugar de emitir el rvalue
+              // directamente).
+              (node as unknown as { _etsFluentChain?: boolean })._etsFluentChain = true;
+            } else this.markCapturedMutation(node.object, scope);
           }
           node.typeArguments.forEach(argument => this.validateType(argument, node, false, false, scope));
           node.args.forEach((argument, index) => {

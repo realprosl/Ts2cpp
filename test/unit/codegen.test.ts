@@ -1601,3 +1601,45 @@ test("V30.28: clase puede llamar funcion top-level desde un spread", () => {
   // No debe lanzar DiagnosticError ni error de compilacion C++.
   assert.doesNotThrow(() => compile(src));
 });
+
+
+test("V30.29: metodo que muta y devuelve T permite receptor rvalue (fluent chain)", () => {
+  // Caso del user: `new MultiLine().newLine(30, 0).newLine(0, 30)`.
+  // Antes del fix, el type-checker rechazaba con
+  // "necesita un receptor mutable" porque `new MultiLine()` es un
+  // rvalue y `newLine` muta `this`. Con V30.29, si el metodo
+  // devuelve `T` (el tipo de la clase), se permite el patron
+  // fluent-chain.
+  const src = `
+    class Counter {
+      value: i32
+      constructor() { this.value = 0 }
+      add(n: i32): Counter {
+        this.value = this.value + n
+        return this
+      }
+    }
+    let c = new Counter().add(5).add(10)
+    print(numberToString(c.value))
+  `;
+  // El type-checker debe aceptar (no DiagnosticError).
+  assert.doesNotThrow(() => compile(src));
+});
+
+test("V30.29: metodo que muta y devuelve void SIGUE requiriendo lvalue", () => {
+  // El fix V30.29 es específico para metodos que devuelven `T`
+  // (fluent setter). Los metodos que devuelven `void` siguen
+  // requiriendo un lvalue (no se permite rvalue).
+  const src = `
+    class Box {
+      value: i32
+      constructor() { this.value = 0 }
+      add(n: i32): void {
+        this.value = this.value + n
+      }
+    }
+    new Box().add(5)
+  `;
+  // El type-checker debe rechazar (DiagnosticError).
+  assert.throws(() => compile(src), /receptor mutable/, "metodo void sobre rvalue debe fallar");
+});
