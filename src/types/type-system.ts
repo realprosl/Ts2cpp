@@ -163,6 +163,14 @@ export function typeMatches(actual: TypeName, expected: TypeName): boolean {
   // (el C++ emite el static_cast correcto en narrowing). Esto permite
   // `let y: i64 = i32(42);` y similares.
   if (isNumericType(actual) && isNumericType(expected)) return true;
+  // V30.26: `number` es un alias de `f64` (C++ double) pero el type-checker
+  // no lo incluye en `NUMERIC_TYPES` (que es solo para los primitivos
+  // concretos i8/u8/.../f32/f64). Sin este parche, una llamada como
+  // `numberToString(ix)` con `ix: i8` falla con "Ninguna sobrecarga
+  // acepta (i8)" porque el param espera `number` y el matchOverload no
+  // los trata como intercambiables. Aceptamos `number` como
+  // numérico para que la conversion sea posible.
+  if ((actual === "number" && isNumericType(expected)) || (isNumericType(actual) && expected === "number")) return true;
   // V5: readonly<T> acepta un argumento T (covarianza: T es más fuerte que
   // readonly<T> porque puede mutar). Pero readonly<T> NO acepta T porque
   // entonces no podríamos garantizar la inmutabilidad.

@@ -74,7 +74,20 @@ try {
     // En CI / pipes (no TTY) cae a un unico mensaje "Compilando..."
     // y luego al resumen final.
     const buildSpinner = ui.spinner({ message: "Compilando proyecto..." });
-    const result = await buildIncremental(config, compilerRoot, { verbose });
+    let result;
+    try {
+      result = await buildIncremental(config, compilerRoot, { verbose });
+    } catch (error) {
+      // V30.26: si el build incremental falla (típicamente por un
+      // DiagnosticError del type-checker), paramos el spinner con el
+      // estado "err" para que el usuario vea el cambio de estado
+      // (antes el spinner quedaba en "Compilando..." sin más, lo
+      // que confundía sobre si el proceso seguía vivo o estaba
+      // colgado). El catch exterior del main ya formatea el
+      // error y sale con código 1; aquí solo paramos el spinner.
+      buildSpinner.stop("error", "Build abortado por error de compilación");
+      throw error;
+    }
     const cacheColor = result.cacheResult === "hit"
       ? (ui.useColors(process.stderr) ? "\x1b[32mhit\x1b[0m" : "hit")
       : (ui.useColors(process.stderr) ? "\x1b[33m" + result.cacheResult + "\x1b[0m" : result.cacheResult);
