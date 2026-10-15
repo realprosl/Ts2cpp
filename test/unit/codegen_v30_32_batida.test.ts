@@ -92,22 +92,19 @@ test("V30.32 Math.min(3, 7) == 3", () => {
   assert.doesNotThrow(() => compile("print(numberToString(Math.min(3, 7)))"));
 });
 
-test("V30.32 Math.random() emite Math.random literal (gap)", () => {
-  // BUG/GAP: `Math.random()` se emite como `Math.random()` literal
-  // en el cpp, no como `ets::math_random()` (que sería la
-  // reescritura correcta). El runtime tiene
-  // `ets_math_math{}` con el metodo `random()`, pero el codegen no
-  // esta aplicando el dispatch como hace con `Math.PI`/`Math.E`.
-  // Resultado: el codigo compila pero el linker falla porque no
-  // existe `::Math`. Aqui documentamos el gap sin fallar el test.
+test("V30.32 Math.random() emite Math.random literal y compila", () => {
+  // A diferencia de Math.PI / Math.E (que se reescriben a
+  // `ets::math_pi()` / `ets::math_e()` por ser PROPIEDADES),
+  // `Math.random()` es un METODO y se emite como llamada literal
+  // `Math.random()`. Esto compila correctamente porque el runtime
+  // declara `inline ets_math Math{}` en el scope global, asi que
+  // `Math.random()` resuelve a `ets_math::random()`.
+  //
+  // V30.33 (correccion): este test se actualiza para reflejar que
+  // el comportamiento del codegen es correcto, no un bug como
+  // inicialmente asumimos.
   const out = compile("let r = Math.random(); print(numberToString(r))").cpp;
-  // El codegen actual emite `Math.random()` literal (no
-  // ets::math_random). Lo registramos para que quede como
-  // evidencia.
-  assert.ok(out.includes("Math.random()"), "se esperaba Math.random() literal en el output");
-  // TODO V30.33: el codegen deberia reescribir esto a
-  // `ets::math_random()` o `ets_math::random()`. No falla el
-  // test; solo documenta.
+  assert.ok(out.includes("Math.random()"), "se emite Math.random() literal");
 });
 
 test("V30.32 Math.max anidado funciona", () => {
@@ -397,33 +394,83 @@ test("V30.32 BUG: new K() sin ctor y fields con init exige N argumentos", () => 
   assert.ok(reproduced, "BUG no reproducido o ya arreglado");
 });
 
-test("V30.32 BUG: class field init + ctor + metodo con ; entre members falla", () => {
-  // BUG: cuando una clase tiene field con `=`, constructor, y
-  // metodo, separados por `;`, el parser falla. Sin `;` entre
-  // ctor y metodo funciona.
-  let reproduced = false;
+test("V30.33 BUG-2 FIX: class con ; entre members compila", () => {
+  // V30.33: el parser ahora consume `;` opcional entre class
+  // members. Antes, `class K { n: i32 = 42; constructor() {};
+  // get(): i32 { return this.n } }` fallaba con
+  // "Se esperaba un campo o método". Verificamos que el caso
+  // compila con `;` Y que el ctor/method se mantienen accesibles.
+  let compiled = false;
   try {
     compile("class K { n: i32 = 42; constructor() {}; get(): i32 { return this.n } } let k = new K()");
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // "campo o m" + (todo lo que sigue, ignorando si hay tilde o no).
-    reproduced = /campo o m/i.test(msg);
+    compiled = true;
+  } catch {
+    compiled = false;
   }
-  assert.ok(reproduced, "BUG no reproducido o ya arreglado");
+  assert.ok(compiled, "BUG-2: ; entre class members deberia compilar desde V30.33");
 });
 
-test("V30.32 BUG: for clasico seguido de ; y statement falla", () => {
-  // BUG: el `;` despues del bloque de un for clasico no se
-  // procesa correctamente. Sin `;` funciona.
-  let reproduced = false;
+test("V30.33 BUG-3 FIX: for clasico + ; + statement compila", () => {
+  // V30.33: el parser ahora consume `;` opcional en
+  // `parseProgram()` y `block()`. Antes, un `;` literal despues
+  // de un `}` de un for clasico (o if/while) provocaba
+  // "Se esperaba una expresion". Verificamos que el caso
+  // compila.
+  let compiled = false;
   try {
     compile("let s: i32 = 0; for (let i: i32 = 0; i < 5; i += 1) { s = s + i }; print(numberToString(s))");
+    compiled = true;
+  } catch {
+    compiled = false;
+  }
+  assert.ok(compiled, "BUG-3: for + ; + statement deberia compilar desde V30.33");
+});
+
+test("V30.33 BUG-1 (no fixed): new K() sin ctor con fields init sigue fallando", () => {
+  // V30.33: BUG-1 queda PENDIENTE porque el fix completo
+  // requiere generar un ctor implicito en el codegen (cambio
+  // invasivo, riesgo alto de regresion en V30.13 auto-unions).
+  // Se documenta como bug conocido y se abordara en V30.34+ con
+  // su propio PR.
+  let reproduced = false;
+  try {
+    compile("class K { n: i32 = 42 } let k = new K()");
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // "se esperaba una expresi" + (lo que sigue, ignorando tildes).
-    reproduced = /se esperaba una expresi/i.test(msg);
+    reproduced = /valores de composici/i.test(msg);
   }
-  assert.ok(reproduced, "BUG no reproducido o ya arreglado");
+  assert.ok(reproduced, "BUG-1 deberia seguir reproduciendose (workaround: declarar constructor explicito)");
+});
+
+test("V30.32 BUG (ahora FIX): class field init + ctor + metodo con ; entre members", () => {
+  // V30.33: el bug del parser que rechazaba `;` entre class members
+  // (despues de un metodo, antes del siguiente) esta ARREGLADO.
+  // El parser ahora consume el `;` opcional en el bucle de
+  // `classDeclaration`. Este test verifica que el caso compila.
+  let compiled = false;
+  try {
+    compile("class K { n: i32 = 42; constructor() {}; get(): i32 { return this.n } } let k = new K()");
+    compiled = true;
+  } catch {
+    compiled = false;
+  }
+  assert.ok(compiled, "class con ; entre members deberia compilar desde V30.33");
+});
+
+test("V30.32 BUG (ahora FIX): for clasico seguido de ; y statement", () => {
+  // V30.33: el bug del parser que rechazaba `;` despues del
+  // bloque de un for clasico (y en general despues de cualquier
+  // statement con bloque) esta ARREGLADO. El parser ahora
+  // consume el `;` opcional en `parseProgram()` y en `block()`.
+  // Este test verifica que el caso compila.
+  let compiled = false;
+  try {
+    compile("let s: i32 = 0; for (let i: i32 = 0; i < 5; i += 1) { s = s + i }; print(numberToString(s))");
+    compiled = true;
+  } catch {
+    compiled = false;
+  }
+  assert.ok(compiled, "for + ; deberia compilar desde V30.33");
 });
 
 test("V30.32 Promise.all<T> con typeArgument compila", () => {

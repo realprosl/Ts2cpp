@@ -3806,6 +3806,20 @@ export class TypeChecker {
           result = node.className;
           break;
         }
+        // V30.33 (no aplicado todavia, ver #224): el bug
+        // original era que `new K()` con `class K { n: i32 = 42 }`
+        // exigia 1 "valor de composicion". El fix completo
+        // requiere:
+        // 1. Generar un ctor implicito en el codegen del struct
+        //    cuando hay fields con defaults.
+        // 2. Cambiar el NewExpression para que use ese ctor
+        //    (`K{}.constructor()`) en lugar de `K{}` aggregate
+        //    init.
+        // 3. Aceptar `new K()` en el type-checker.
+        // El cambio 1+2 es invasivo (afecta V30.13 default_ctor,
+        // auto-unions, parameter properties) y tiene riesgo alto
+        // de regresion. Se documenta en `test/unit/codegen_v30_32_batida.test.ts`
+        // como BUG-1 y se abordara en V30.34+ con su propio PR.
         if (node.args.length !== owner.fields.length) this.report(node, `'${node.className}' espera ${owner.fields.length} valores de composición, recibió ${node.args.length}`);
         node.args.forEach((arg, i) => { const field = owner.fields[i]; const expectedType = field ? this.substituteType(field.type, resolved?.substitutions ?? new Map()) : undefined; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
         result = node.className; break;
