@@ -1418,6 +1418,34 @@ export class CppGenerator {
     }
     const headerClassesPre = headerTopoResult.ordered.filter(node => !headerUsesAutoUnion.has(node.name));
     const headerClassesPost = headerTopoResult.ordered.filter(node => headerUsesAutoUnion.has(node.name));
+    // V30.28: emitir las FORWARD DECLARATIONS de las funciones ANTES
+    // de las clases. Si una clase usa una funcion top-level (e.g.
+    // `drawLine`) en uno de sus metodos, la forward decl debe estar
+    // visible cuando el cuerpo del metodo se compila dentro del
+    // `struct`. Sin esto, g++ se queja con "'drawLine' was not
+    // declared in this scope" en el metodo de la clase.
+    // V30.28: incluimos TODAS las funciones (exportadas y no), no solo
+    // las exportadas, porque una clase puede llamar una funcion
+    // privada del modulo.
+    // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
+    // externamente). El cpp emite `extern "C" <sig>;` y el linker las
+    // resuelve contra la librería.
+    const allFunctions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
+    const headerFunctions = allFunctions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
+    for (const fn of headerFunctions) {
+      // V30.4: renombrar `main` -> `ets_user_main` en la forward
+      // declaration para evitar colision con la funcion global.
+      // V30.28: NO añadir `static` a la forward decl. La def va en
+      // el .cpp del módulo con linkage externo (no static), así que
+      // la forward decl debe ser consistente.
+      if (fn.name === "main") {
+        const renamed = { ...fn, name: "ets_user_main" };
+        lines.push(this.signature(renamed) + ";");
+      } else {
+        lines.push(this.signature(fn) + ";");
+      }
+    }
+    if (headerFunctions.length) lines.push("");
     for (const node of headerClassesPre) lines.push(this.classDeclaration(node), "");
     // V30.12.2: auto-unions en el header. Van DESPUÉS de las definiciones
     // de clase que NO los necesitan (los payloads son tipos de clase
@@ -1427,33 +1455,20 @@ export class CppGenerator {
     // auto-unions (sus campos `Array<I>` se traducen a
     // `std::vector<I_AutoUnion>` que requiere la definición completa).
     for (const node of headerClassesPost) lines.push(this.classDeclaration(node), "");
-    // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
-    // externamente). El cpp emite `extern "C" <sig>;` y el linker las
-    // resuelve contra la librería.
-    const headerFunctions = functions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
-    for (const fn of headerFunctions) {
-      // V30.4: renombrar `main` -> `ets_user_main` en la forward
-      // declaration para evitar colision con la funcion global.
-      if (fn.name === "main") {
-        const renamed = { ...fn, name: "ets_user_main" };
-        lines.push(this.signature(renamed) + ";");
-      } else {
-        lines.push(this.signature(fn) + ";");
-      }
-    }
-    if (headerFunctions.length) lines.push("");
-    for (const fn of headerFunctions.filter(candidate => candidate.typeParameters.length > 0)) lines.push(this.function(fn), "");
+    // V30.28: las forward decls de funciones ya se emitieron ANTES
+    // de las clases (arriba). Aqui no las re-emitimos. La def va en
+    // el .cpp del módulo.
     // V15: si la variable es `const` con initializer literal, el header
-      // usa `extern const` (no `extern constexpr` — eso requiere definición
-      // inline). La definición en el .cpp usa `constexpr`. Para tipos no
-      // literales usamos solo `extern`.
-      for (const variable of variables) {
-        const isLiteralConst = !variable.mutable && variable.constValue !== undefined && typeof variable.constValue !== "string";
-        // V30.12.2: usar `arrayCppType` para `Array<Interface>`.
-        const varType = variable.declaredType ?? this.expressionType(variable.initializer) ?? "void";
-        const cppT = (isArrayType(varType) || (isGenericType(varType) && genericBase(varType) === "Array")) ? this.arrayCppType(varType) : cppType(varType);
-        lines.push(`extern${isLiteralConst ? " const" : ""} ${cppT} ${variable.name};`);
-      }
+    // usa `extern const` (no `extern constexpr` — eso requiere definición
+    // inline). La definición en el .cpp usa `constexpr`. Para tipos no
+    // literales usamos solo `extern`.
+    for (const variable of variables) {
+      const isLiteralConst = !variable.mutable && variable.constValue !== undefined && typeof variable.constValue !== "string";
+      // V30.12.2: usar `arrayCppType` para `Array<Interface>`.
+      const varType = variable.declaredType ?? this.expressionType(variable.initializer) ?? "void";
+      const cppT = (isArrayType(varType) || (isGenericType(varType) && genericBase(varType) === "Array")) ? this.arrayCppType(varType) : cppType(varType);
+      lines.push(`extern${isLiteralConst ? " const" : ""} ${cppT} ${variable.name};`);
+    }
     if (variables.length) lines.push("");
     for (const initializer of moduleInitializers) lines.push(`void ${initializer}();`);
     lines.push("");
@@ -1489,25 +1504,11 @@ export class CppGenerator {
     if (privateClasses.length) lines.push("");
     // V30.12.2: auto-unions en el module. Van DESPUES de los forward decls.
     for (const line of this.emitAutoUnionDeclarations()) lines.push(line);
-    // V15: el forward decl va SIN defaults (los defaults solo pueden aparecer
-    // una vez en C++; van en la definición, no en la forward).
-    for (const fn of privateFunctions) {
-      // V30.4: renombrar `main` -> `ets_user_main` en las forward
-      // declarations static.
-      // V30.21.1: en C++ los defaults de parametros de valor SOLO pueden
-      // aparecer en la primera declaracion (forward / header). Si los
-      // ponemos tambien en la definicion, C++ se queja con
-      // `redeclaration ... may not have default arguments`. Por eso
-      // emitimos `includeValueDefaults=true` aqui (forward) y
-      // `includeValueDefaults=false` en la def (funcion `function`).
-      if (fn.name === "main") {
-        const renamed = { ...fn, name: "ets_user_main" };
-        lines.push(this.signature(renamed, true, false, true) + ";");
-      } else {
-        lines.push(this.signature(fn, true, false, true) + ";");
-      }
-    }
-    if (privateFunctions.length) lines.push("");
+    // V30.28: las forward decls de las funciones ya se emitieron en
+    // el header (generateHeader, ANTES de las clases). Aqui en el
+    // module NO las re-emitimos para evitar "extern and later static"
+    // con la def. La def va más abajo (en el bucle de `regularFunctions`
+    // o de funciones no-exportadas) con linkage consistente.
     // V15: las clases NO se redeclaran en el cpp si ya están en el header
     // (sería "redefinition"). Solo emitimos las definiciones de clases en el
     // header y omitimos aquí.
@@ -1573,11 +1574,17 @@ export class CppGenerator {
       const exported = fn.exported;
       // V30.4: renombrar `main` -> `ets_user_main` para evitar
       // colision con la funcion global.
+      // V30.28: pasar `internal=false` (sin `static`) en TODAS las
+      // funciones regulares. La forward decl en el header ya es sin
+      // `static`, así que la def debe coincidir. Esto cambia el
+      // linkage de las funciones no-exportadas de `static` a extern,
+      // pero como el dialecto es single-TU, el linker las resuelve
+      // internamente sin conflicto.
       if (fn.name === "main") {
         const renamed = { ...fn, name: "ets_user_main" };
-        lines.push(this.function(renamed, !exported), "");
+        lines.push(this.function(renamed, false), "");
       } else {
-        lines.push(this.function(fn, !exported), "");
+        lines.push(this.function(fn, false), "");
       }
     }
     lines.push(`void ${initializer}() {`); this.indent++;
