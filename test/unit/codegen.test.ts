@@ -361,7 +361,9 @@ test("codegen: new T(1.0) emite static_cast para los 10 numéricos concretos (ag
   for (const t of NUMERIC_TYPES) {
     const src = `class B { x: ${t}; } const b: B = new B(1.0); print(b.x);`;
     const out = cpp(src);
-    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(1.0)`;
+    // V30.27: el target es numérico concreto, el literal se emite
+    // sin `.0` (1) en vez de (1.0) para evitar narrowing.
+    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(1)`;
     assert.match(out, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       `falta ${expected} para tipo ${t}. Output:\n${out}`);
   }
@@ -371,7 +373,7 @@ test("codegen: new T(1.0) emite static_cast también con constructor explícito"
   for (const t of NUMERIC_TYPES) {
     const src = `class C { v: ${t}; constructor(n: ${t}) { this.v = n; } } const c: C = new C(2.0); print(c.v);`;
     const out = cpp(src);
-    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(2.0)`;
+    const expected = `static_cast<${NUMERIC_TO_CPP[t]}>(2)`;
     assert.match(out, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       `falta ${expected} para tipo ${t} (constructor explícito). Output:\n${out}`);
   }
@@ -379,9 +381,11 @@ test("codegen: new T(1.0) emite static_cast también con constructor explícito"
 
 test("codegen: new T() con varios campos numéricos mezcla casts correctamente", () => {
   const out = cpp("class P { x: i32; y: u8; z: f32; } const p: P = new P(1.0, 2.0, 3.0); print(p.x);");
-  assert.match(out, /static_cast<int32_t>\(1\.0\)/);
-  assert.match(out, /static_cast<uint8_t>\(2\.0\)/);
-  assert.match(out, /static_cast<float>\(3\.0\)/);
+  // V30.27: el target es numérico concreto, por lo que el literal se
+  // emite sin `.0` (1, 2, 3) en vez de (1.0, 2.0, 3.0).
+  assert.match(out, /static_cast<int32_t>\(1\)/);
+  assert.match(out, /static_cast<uint8_t>\(2\)/);
+  assert.match(out, /static_cast<float>\(3\)/);
 });
 
 test("codegen: new T(number) NO añade cast si el target es `number` (sin narrowing)", () => {
@@ -1515,4 +1519,35 @@ test("V30.27: spread captura variables locales declaradas con const en el body",
   assert.match(out, /\boffset\b/, "debe capturar `offset`");
   assert.match(out, /\bdoubled\b/, "debe capturar `doubled`");
   assert.match(out, /\[this, x, n, offset, doubled\]/, "el lambda debe listar todas las capturas");
+});
+
+
+test("V30.27: array literal con tipos numericos no produce narrowing", () => {
+  // Antes del fix, `std::vector<i32>{10, 20, 30}` se emitia como
+  // `std::vector<i32>{10.0, 20.0, 30.0}` (todos los literales como
+  // double por defecto), causando "narrowing conversion" error.
+  // El fix usa el elementType para emitir el literal sin `.0` cuando
+  // el target es un numerico concreto.
+  const src = `
+    const xs: i32[] = [10, 20, 30]
+    print(numberToString(xs[0]))
+    print(numberToString(xs[1]))
+    print(numberToString(xs[2]))
+  `;
+  const out = compile(src).cpp;
+  // No debe haber `10.0` (sin narrowing).
+  assert.doesNotMatch(out, /std::vector<int32_t>\{10\.0/, "no debe haber literal 10.0 en vector<i32>");
+});
+
+test("V30.27: for...of sobre array numerico itera correctamente", () => {
+  const src = `
+    const xs: i32[] = [1, 2, 3]
+    let sum: i32 = 0
+    for (const x of xs) {
+      sum = sum + x
+    }
+    print(numberToString(sum))
+  `;
+  // Debe compilar y el output debe ser "6".
+  assert.doesNotThrow(() => compile(src));
 });

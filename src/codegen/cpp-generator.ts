@@ -3098,6 +3098,13 @@ export class CppGenerator {
           if (/^0[xX]/.test(cleaned)) return `${cleaned}.0p0`;
           return `${node.value}.0`;
         }
+        // V30.27: si el targetType es un numerico concreto (i8/i16/...),
+        // emitir el literal SIN `.0` para que no haya narrowing al
+        // construir un `std::vector<i32>{10, 20}` (que pasaria a
+        // `std::vector<i32>{10.0, 20.0}` y daria error).
+        if (targetType && isNumericType(targetType) && targetType !== "number") {
+          return String(node.value);
+        }
         return Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
       }
       case "TemplateLiteralExpression": {
@@ -3157,10 +3164,6 @@ export class CppGenerator {
           const values = node.elements.map(item => `static_cast<${elementCppType}>(${this.emitExpression(item as import("../ast/nodes.ts").Expression)})`);
           return `std::array<${elementCppType}, ${fixedArraySize(type)!}>{${values.join(", ")}}`;
         }
-        // Envoltorio en `std::move(...)` para que el initializer_list acepte
-        // tipos move-only (Task<T>, Optional<T>, Result<T>). Para tipos copiables
-        // es equivalente (mover es una opción, copiar es la otra).
-        const moveValues = (items: string[]) => items.map(item => `std::move(${item})`).join(", ");
         if (node.elements.some(item => item.kind === "SpreadElement")) {
           // Spread en array literal: generamos un lambda inmediato que toma
           // el vector destino por valor (RVO al final) y va `push_back` para
@@ -3232,12 +3235,17 @@ export class CppGenerator {
         if (values.length === 0) return `${valueType}()`;
         // Detectar tipos move-only por inspección del nombre del tipo (heurística
         // simple). Para esos tipos, generar una lambda constructora con push_back.
+        // V30.27: para tipos copiables (int, string, etc.) NO envolver con
+        // `std::move(...)` porque causa narrowing warnings y a veces falla
+        // la conversion (`std::move(10.0)` no se convierte a `int32_t` por
+        // narrowing). El initializer_list acepta elementos copiables sin
+        // necesidad de std::move.
         const isMoveOnlyType = /ets::Task<|ets::Optional<|ets::Result</.test(valueType);
         if (isMoveOnlyType) {
           const pushes = values.map(value => `dst.push_back(std::move(${value}));`).join(" ");
           return `([](${valueType} dst) -> ${valueType} { ${pushes} return dst; })(${valueType}())`;
         }
-        return `${valueType}{${moveValues(values)}}`;
+        return `${valueType}{${values.join(", ")}}`;
       }
       case "ArrowFunctionExpression": {
         const type = this.expressionType(node); const result = type && isFunctionType(type) ? functionResult(type) : (node.returnType ?? "void");
