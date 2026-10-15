@@ -1315,6 +1315,37 @@ test("V30.22.6: named args se reordenan al orden de la firma", () => {
   assert.match(out, /make\(std::string\("Ana"\),\s*30\.0\)/, "los args deben estar en orden (name, age) en el call site");
 });
 
+test("V30.22.6: named args con defaults omitidos se rellenan con default", () => {
+  const src = `
+    function greet(name: string, greeting: string = "Hello", loud: boolean = false): void {
+      print(greeting)
+      print(name)
+    }
+    greet(name: "Ana", loud: true)
+    greet(greeting: "Hi", name: "Bob")
+    greet(name: "Cris")
+  `;
+  const out = compile(src).cpp;
+  // Cada call site debe tener 3 args (el slot omitido usa el default).
+  assert.match(out, /greet\(std::string\("Ana"\),\s*std::string\("Hello"\),\s*true\)/, "el call site debe rellenar el slot omitido con el default del param");
+  assert.match(out, /greet\(std::string\("Bob"\),\s*std::string\("Hi"\),\s*false\)/, "el call site debe usar el default del slot omitido");
+  assert.match(out, /greet\(std::string\("Cris"\),\s*std::string\("Hello"\),\s*false\)/, "el call site debe rellenar dos slots omitidos con sus defaults");
+});
+
+test("V30.22.6: named args con param que no existe reporta error", () => {
+  const src = `
+    function make(name: string, age: number): void { print(name); print(age) }
+    make(nonexistent: 1)
+  `;
+  // El type-checker debe reportar error de parametro inexistente.
+  // `compile()` lanza DiagnosticError si hay errores de tipo.
+  let threw = false;
+  let message = "";
+  try { compile(src); } catch (e: any) { threw = true; message = String(e); }
+  assert.ok(threw, "compile() debe lanzar error con parametro inexistente");
+  assert.ok(message.includes("nonexistent") || message.includes("no tiene un parámetro"), "el error debe mencionar el parametro inexistente");
+});
+
 test("V30.22.7: spread en llamadas con firma array", () => {
   const src = `
     function sum(values: number[]): number {

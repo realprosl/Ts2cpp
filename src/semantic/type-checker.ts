@@ -889,7 +889,7 @@ export class TypeChecker {
       variadicTypeParameters: node.variadicTypeParameters,
       typeConstraints: TypeChecker.constraintsOf(node.typeParameters),
       defaults: TypeChecker.defaultsOf(node.typeParameters),
-      params: node.params.map(p => ({ type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue, optional: p.optional })),
+      params: node.params.map(p => ({ name: p.name, type: p.type, out: p.out, mutableReference: p.passing === "mut", variadic: p.variadic, defaultValue: p.defaultValue, optional: p.optional })),
       returnType: node.returnType
     };
     // V0.3: huella estructural resuelta sobre el nodo. Permite al codegen
@@ -2342,6 +2342,13 @@ export class TypeChecker {
         break;
       }
       case "IdentifierExpression": {
+        // V30.22.6: marker interno para argumentos posicionales que
+        // NO fueron provistos (named args sin todos los params). El
+        // overload matching los acepta como `any` (lo que permite
+        // que el parametro tenga default value o sea opcional) y el
+        // codegen no los emite (los cubre el default value o
+        // `optionalNone<T>()`).
+        if (node.name === "_ets_omitted") { result = "any"; break; }
         // V30.7 NLL: si este identifier es el NOMBRE DE UN BORROW
         // (e.g. `a` en `const a: ref<User> = ref(u)`), actualizamos su
         // `lastUseLine` en todos los scopes del borrowStack donde
@@ -2947,27 +2954,35 @@ export class TypeChecker {
         // cuando el codegen decide hacerlo. La marca se setea antes de
         // procesar el argumento para que `expression()` la vea al final.
         node.args.forEach((arg, index) => { if (arg.kind === "ArrowFunctionExpression" && !arg.singleUseSite) arg.singleUseSite = { kind: "CallExpression", argumentIndex: index }; });
-        // V30.22.6: si hay named args, reordenamos al orden posicional.
-        // No podemos buscar el `name` en `params` porque `params` son
-        // `FunctionParameterSymbol` (no tienen `name`). En su lugar, usamos
-        // el orden de los type-parameters y la firma de la funcion. El
-        // codegen hace la reordenacion final segun la firma completa.
+        // V30.22.6: si hay named args, los reordenamos al orden
+        // posicional segun la firma. Los `FunctionParameterSymbol`
+        // ahora guardan `name` (V30.22.6) asi que podemos buscar el
+        // indice del parametro por nombre.
+        //
+        // Estrategia: para cada param de la firma, si fue provisto
+        // por nombre, se usa su `value`. Si no, se deja un marker
+        // `_ets_omitted` que el type-checker trata como `any` (asi el
+        // overload matching acepta el parametro cuando tiene default
+        // value o es opcional). El codegen tambien lo trata como
+        // `any` y no emite el arg, dejando que el default value o
+        // `optionalNone<T>()` cubra el slot.
         const hasNamed = node.args.some(arg => arg.kind === "NamedArgumentExpression");
         if (hasNamed && symbol.overloads.length > 0) {
-          // Construimos el mapeo: como FunctionParameterSymbol no guarda
-          // el nombre, usamos los type-parameters y la firma del
-          // overload 0. Si el orden de declaracion esta disponible, lo
-          // usamos via `functionParameters` o el orden natural de la
-          // firma. En el codegen hacemos la reordenacion real.
-          const reordered: Expression[] = [];
+          const params = symbol.overloads[0].params;
+          const provided = new Map<string, Expression>();
           for (const arg of node.args) {
             if (arg.kind === "NamedArgumentExpression") {
-              // El codegen resolvera `name` → posicion real.
-              reordered.push(arg);
-            } else reordered.push(arg);
+              const idx = params.findIndex(p => p.name === arg.name);
+              if (idx >= 0) provided.set(arg.name, arg.value);
+              else this.report(arg, `La función '${node.callee}' no tiene un parámetro llamado '${arg.name}'`);
+            }
           }
-          // No modificamos node.args; dejamos el orden original para el
-          // overload matching. El codegen se encarga.
+          // node.args mantiene el orden de la firma. Slots no
+          // provistos usan `_ets_omitted` (tipo `any`).
+          node.args = params.map(p => {
+            if (provided.has(p.name)) return provided.get(p.name)!;
+            return { kind: "IdentifierExpression", name: "_ets_omitted", span: node.span } as unknown as Expression;
+          });
         }
         // V30.22.7: spread element en la llamada. En V30.22.7 el
         // spread solo funciona si la firma destino acepta un unico
@@ -4161,6 +4176,12 @@ export class TypeChecker {
       const parameter = index < fixedCount ? signature.params[index] : rest;
       if (!parameter) return undefined;
       if (rest && signature.variadicTypeParameters.includes(parameter.type)) { score += 1; continue; }
+      // V30.22.6: un arg con tipo `any` (proveniente de `_ets_omitted`,
+      // un named arg no provisto) se acepta como match cuando el
+      // param tiene default value o es opcional. Si el param es
+      // requerido, el error semantico ya se reportara via el flujo
+      // normal.
+      if (actuals[index] === "any" && (parameter.defaultValue || parameter.optional || parameter.variadic)) { score += 4; continue; }
       if (!this.tryInferType(parameter.type, actuals[index], parameters, substitutions)) return undefined;
       const expected = this.substituteType(parameter.type, substitutions);
       // V30.18: `any` acepta cualquier actual (incluyendo Promise<number>).

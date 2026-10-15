@@ -3404,7 +3404,32 @@ export class CppGenerator {
           }
           return result;
         })();
-        const args = reorderedArgs.flatMap((argument) => {
+        // V30.22.6: named args. El codegen necesita acceso a la firma
+        // para emitir el default value del param en los slots
+        // omitidos (marcados con `_ets_omitted` por el type-checker).
+        // Si la firma tiene N params y el call site omite K, el call
+        // site emite N args: los provistos en orden + los defaults
+        // de los omitidos.
+        const argDefaults = (() => {
+          if (node.callee) {
+            const overloads = this.topLevelFunctions.get(node.callee);
+            if (overloads && overloads.length === 1) {
+              return overloads[0].params.map(p => p.defaultValue);
+            }
+          }
+          return [];
+        })();
+        const args = reorderedArgs.flatMap((argument, index) => {
+          // V30.22.6: slot omitido. Emitimos el default value del
+          // param si existe; si no, lo omitimos (el forward C++
+          // tendra el default y C++ lo aplicara).
+          if (argument.kind === "IdentifierExpression" && argument.name === "_ets_omitted") {
+            const defaultExpr = argDefaults[index];
+            if (defaultExpr) {
+              return [this.emitExpression(defaultExpr)];
+            }
+            return [];
+          }
           // V30.22.7: spread en llamadas. El dialecto emite un array
           // como arg único y un wrapper inline que lo expande a N
           // args. La función llamada se declara con N params fijos
@@ -3413,15 +3438,6 @@ export class CppGenerator {
           if (argument.kind === "SpreadElement") {
             this.spreadCounter += 1;
             const id = `__ets_spread_${this.spreadCounter}`;
-            // V30.22.7: emitir el array directamente. C++ no soporta
-            // expansion de variadics con array runtime, asi que el
-            // codegen emite un helper `__ets_spread_N_helper` que se
-            // enlaza a la funcion con N args. Para V30.22.7 el user
-            // debe usar spread solo con funciones que tengan un unico
-            // param `T[]` (o `...T` cuando este soportado). Si la
-            // firma tiene N>1 params fijos, emitimos un error de
-            // semantica en el type-checker (que ya se encarga via
-            // matchOverload).
             const text = this.emitExpression(argument.expression);
             return [text];
           }
