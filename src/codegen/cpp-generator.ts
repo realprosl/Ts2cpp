@@ -537,7 +537,7 @@ export class CppGenerator {
   // tiempo de compilación si quedan sin instanciar, pero los headers
   // crecen y el include explícito documenta la dependencia).
   private usesCollections(program: Program): boolean {
-    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "concat", "includes", "push"]);
+    const target = new Set(["filter", "map", "reduce", "forEach", "find", "some", "every", "slice", "sort", "flatMap", "concat", "includes", "push", "join"]);
     const visit = (node: unknown): boolean => {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
@@ -3720,6 +3720,11 @@ export class CppGenerator {
             const elementType = isArrayType(arrayType) ? arrayElement(arrayType) : genericArguments(arrayType)[0];
             const cppElement = this.arrayElementCppType(elementType);
             return `ets_includes_vec<${cppElement}>(${arrayObj}, ${this.emitExpression(node.args[0])})`;
+          }
+          // .join(separator) -> ets_join_vec<T>(arr, separator) (V30.24).
+          // El runtime emite std::string usando un loop sobre el vector.
+          if (method === "join" && node.args.length === 1) {
+            return `ets_join_vec(${arrayObj}, ${this.emitExpression(node.args[0])})`;
           }
           // .concat(other) -> ets_concat_vec<T>({arr, other}) (ya existe)
           if (method === "concat" && node.args.length === 1) {
