@@ -1329,3 +1329,56 @@ test("V30.22.7: spread en llamadas con firma array", () => {
   // El spread se emite como el array directo.
   assert.match(out, /sum\(args\)/, "el spread debe emitirse como el array pasado directamente");
 });
+
+test("V30.23: type alias sobre array se expande en el type-checker", () => {
+  // Bug: `children: SvgChildren[]` donde `SvgChildren = Line | MultiLine`
+  // no se evaluaba al union expandido `Line | MultiLine[]`. Esto rompia
+  // `concat`, `map`, y cualquier operacion sobre el array.
+  const src = `
+    type SvgChildren = Line | MultiLine
+    class Line { build(): string { return "L" } }
+    class MultiLine { build(): string { return "M" } }
+    class Svg {
+      children: SvgChildren[]
+      constructor() { this.children = [] }
+      addChildren(c: SvgChildren[]): void {
+        this.children = this.children.concat(c)
+      }
+      size(): number { return this.children.length }
+    }
+    let l: Line = new Line()
+    let m: MultiLine = new MultiLine()
+    let s: Svg = new Svg()
+    s.addChildren([l, m])
+    print(s.size())
+  `;
+  const out = compile(src).cpp;
+  // El cpp debe compilar y emitir el field con el auto-union.
+  assert.match(out, /std::vector<std::variant<Line, MultiLine>>/, "el field children debe emitirse como std::vector<std::variant<Line, MultiLine>>");
+  // El concat debe usar el union expandido.
+  assert.doesNotMatch(out, /concat\(.*SvgChildren/, "no debe haber referencia literal a SvgChildren en el codigo generado");
+});
+
+test("V30.23: type alias en param de arrow function se expande", () => {
+  // Bug: `(child: SvgChildren) => ...` no expandia el alias del param.
+  // El type-checker comparaba `SvgChildren` vs `Line | MultiLine` y fallaba.
+  const src = `
+    type SvgChildren = Line | MultiLine
+    class Line { build(): string { return "L" } }
+    class MultiLine { build(): string { return "M" } }
+    class Svg {
+      children: SvgChildren[]
+      constructor() { this.children = [] }
+      test(): number {
+        let total: number = 0
+        this.children.forEach((c: SvgChildren): void => { total = total + 1 })
+        return total
+      }
+    }
+    let s: Svg = new Svg()
+    print(s.test())
+  `;
+  const out = compile(src).cpp;
+  // El forEach debe emitir el lambda con el tipo expandido.
+  assert.match(out, /std::variant<Line, MultiLine>/, "el forEach debe usar el union expandido en el lambda");
+});

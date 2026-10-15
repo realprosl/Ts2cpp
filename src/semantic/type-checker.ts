@@ -2235,6 +2235,11 @@ export class TypeChecker {
         if (expectedParameters && expectedParameters.length !== node.params.length) this.report(node, `La closure espera ${expectedParameters.length} parámetros, recibió ${node.params.length}`);
         const local = new Scope(scope);
         node.params.forEach((parameter, index) => {
+          // V30.23: expandir aliases en el tipo del param para que
+          // `child: SvgChildren` (donde `SvgChildren = Line | MultiLine`)
+          // se compare correctamente contra el `expected` que ya esta
+          // expandido.
+          parameter.type = this.expandType(parameter.type);
           this.validateType(parameter.type, parameter, false, false, local);
           if (expectedParameters?.[index]) this.require(parameter.type, expectedParameters[index], parameter);
           if (!this.defineVariable(local, parameter.name, parameter.type, false, {}, parameter)) this.report(parameter, `Parámetro duplicado '${parameter.name}'`);
@@ -4322,6 +4327,23 @@ export class TypeChecker {
         visited.add(current);
         current = alias.type;
         continue;
+      }
+      // V30.23: si el tipo es un array `T[]` y `T` es un alias,
+      // expando el alias del elemento. Asi `SvgChildren[]` donde
+      // `SvgChildren = Line | MultiLine` se evalúa a
+      // `Line | MultiLine[]`. Esto permite que
+      // `this.children.concat(c)` (donde `this.children: SvgChildren[]`)
+      // matchee con el overload de `concat` que espera
+      // `Line[] | MultiLine[]` (el union expandido).
+      if (isArrayType(current)) {
+        const elementType = arrayElement(current);
+        if (this.aliases.has(elementType)) {
+          const expanded = this.expandType(elementType, scope);
+          if (expanded !== elementType) {
+            current = arrayType(expanded);
+            continue;
+          }
+        }
       }
       if (isGenericType(current)) {
         const base = genericBase(current);
