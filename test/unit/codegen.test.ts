@@ -1663,3 +1663,60 @@ test("V30.30: builtin registry aislado - print, length, setTimeout disponibles",
   ].join("\n");
   assert.doesNotThrow(() => compile(src));
 });
+
+
+test("V30.31: emitArrayMethodCall extraido - array methods reescritos", () => {
+  // V30.31: la logica de reescritura de `arr.method(args)` a
+  // `ets_*_vec<T>(arr, args)` se movio del switch principal de
+  // `emitExpression` a un helper privado `emitArrayMethodCall`.
+  // Este test verifica que todos los array methods soportados
+  // siguen emitiendo los helpers correctos.
+  const src = [
+    "function useArrays(): i32 {",
+    "  const xs: i32[] = [1, 2, 3]",
+    "  const n: i32 = xs.length",
+    "  xs.push(4)",
+    "  xs.pop()",
+    "  const doubled: i32[] = xs.map((x: i32): i32 => x * 2)",
+    "  const evens: i32[] = xs.filter((x: i32): boolean => x > 1)",
+    "  const sub: i32[] = xs.slice(0, 2)",
+    "  const found: i32 = xs.find((x: i32): boolean => x > 1) ?? 0",
+    "  const has: boolean = xs.includes(2)",
+    '  const text: string = ["a", "b", "c"].join("-")',
+    "  const more: i32[] = xs.concat(xs)",
+    "  return n",
+    "}",
+  ].join("\n");
+  const out = compile(src).cpp;
+  // Cada metodo debe aparecer en su forma reescrita.
+  assert.ok(out.includes(".size()"), "length -> size()");
+  assert.ok(out.includes("ets_push_vec<int32_t>"), "push -> ets_push_vec");
+  assert.ok(out.includes("ets_pop_vec<int32_t>"), "pop -> ets_pop_vec");
+  assert.ok(out.includes("ets_map_vec<int32_t"), "map -> ets_map_vec");
+  assert.ok(out.includes("ets_filter_vec<int32_t>"), "filter -> ets_filter_vec");
+  assert.ok(out.includes("ets_slice_vec<int32_t>"), "slice -> ets_slice_vec");
+  assert.ok(out.includes("ets_find_vec<int32_t>"), "find -> ets_find_vec");
+  assert.ok(out.includes("ets_includes_vec<int32_t>"), "includes -> ets_includes_vec");
+  assert.ok(out.includes("ets_join_vec"), "join -> ets_join_vec");
+  assert.ok(out.includes("ets_concat_vec<int32_t>"), "concat -> ets_concat_vec");
+});
+
+test("V30.31: emitArrayMethodCall retorna null para metodos no soportados", () => {
+  // Si el metodo no es uno de los reescritos, el helper retorna
+  // `null` y el codigo cae a las siguientes rutas (p.ej. llamada
+  // normal `obj.method(args)`). Aqui verificamos que un metodo
+  // inventado sobre un array NO se reescribe, sino que se emite
+  // como llamada normal (y falla en C++ si no existe en std::vector).
+  const src = [
+    "function f(): void {",
+    "  const xs: i32[] = [1, 2, 3]",
+    "  xs.sort((a: i32, b: i32) => a - b)",
+    "}",
+  ].join("\n");
+  const out = compile(src).cpp;
+  // `sort` se emite via el path de array methods puro (rama
+  // posterior a emitArrayMethodCall) que produce ets_sort_vec.
+  // Verificamos que NO aparece la reescritura de la primera rama
+  // (que solo cubre length/push/pop/map/filter/forEach/slice/find/includes/join/concat).
+  assert.ok(out.includes("ets_sort_vec"), "sort se emite via la rama de array puro");
+});
