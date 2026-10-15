@@ -114,6 +114,10 @@ export class CppGenerator {
   }
   private inClassMethod = false;
   private currentClassMethodParams: string[] = [];
+  // V30.27: tracking de variables locales declaradas en el cuerpo del método
+  // actual (const/let, no params). Se usan en el codegen del spread para
+  // que el lambda del IIFE capture las variables libres que el body usa.
+  private currentClassMethodLocals: string[] = [];
   private inStaticInit = false;
   private inAsyncFunction = false;
   // V30.12.1: true mientras se emite el callback de un `when`/`whenType`/`otherwise`
@@ -1865,6 +1869,9 @@ export class CppGenerator {
     const previous = this.inClassMethod; this.inClassMethod = true;
     const previousParams = this.currentClassMethodParams;
     this.currentClassMethodParams = method.params.map(p => p.name);
+    // V30.27: tracking de variables locales del body (const/let).
+    const previousLocals = this.currentClassMethodLocals;
+    this.currentClassMethodLocals = this.collectMethodLocals(method.body);
     let body = this.emitBlock(method.body);
     // V30.13: si el constructor ahora devuelve `ClassName&` (no void),
     // hay que añadir `return *this;` al final del body para que el
@@ -1918,7 +1925,7 @@ export class CppGenerator {
     const sig = this.signature(declaration);
     const sigWithStatic = method.isStatic ? `static ${sig}` : sig;
     const result = `${sigWithStatic}${mutates || method.isStatic ? "" : " const"} ${bodyWithWarning}`;
-    this.inClassMethod = previousInClassMethod; this.currentClassMethodParams = previousParams; return result;
+    this.inClassMethod = previousInClassMethod; this.currentClassMethodParams = previousParams; this.currentClassMethodLocals = previousLocals; return result;
   }
 
   /**
@@ -1959,6 +1966,31 @@ export class CppGenerator {
    * los métodos que se llaman entre sí en una clase suelen ser helpers que
    * sí mutan.
    */
+  // V30.27: devuelve los nombres de las variables locales declaradas en
+  // el body de un método (const/let, no params, no destructuring, no
+  // class members). Se usa para que el codegen del spread pueda
+  // capturarlas en el lambda del IIFE.
+  private collectMethodLocals(body: BlockStatement): string[] {
+    const names: string[] = [];
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const n = node as { kind?: string; name?: string; declarations?: unknown[]; body?: unknown; statements?: unknown; init?: unknown; condition?: unknown; update?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown };
+      if (n.kind === "VariableDeclaration" && typeof n.name === "string") {
+        names.push(n.name);
+      }
+      if (Array.isArray(n.statements)) for (const s of n.statements) visit(s);
+      if (n.body) visit(n.body);
+      if (n.thenBranch) visit(n.thenBranch);
+      if (n.elseBranch) visit(n.elseBranch);
+      if (n.init) visit(n.init);
+      if (n.condition) visit(n.condition);
+      if (n.update) visit(n.update);
+      if (n.expression) visit(n.expression);
+    };
+    if (body && Array.isArray(body.statements)) for (const s of body.statements) visit(s);
+    return names;
+  }
+
   private methodMutates(method: ClassMethod, classDecl: ClassDeclaration, visited: Set<string>): boolean {
     // V20: parameter properties en el constructor implican asignación
     // automática a `this.x`. Eso es una mutación de `this`, así que el
@@ -3066,6 +3098,13 @@ export class CppGenerator {
           if (/^0[xX]/.test(cleaned)) return `${cleaned}.0p0`;
           return `${node.value}.0`;
         }
+        // V30.27: si el targetType es un numerico concreto (i8/i16/...),
+        // emitir el literal SIN `.0` para que no haya narrowing al
+        // construir un `std::vector<i32>{10, 20}` (que pasaria a
+        // `std::vector<i32>{10.0, 20.0}` y daria error).
+        if (targetType && isNumericType(targetType) && targetType !== "number") {
+          return String(node.value);
+        }
         return Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
       }
       case "TemplateLiteralExpression": {
@@ -3125,10 +3164,6 @@ export class CppGenerator {
           const values = node.elements.map(item => `static_cast<${elementCppType}>(${this.emitExpression(item as import("../ast/nodes.ts").Expression)})`);
           return `std::array<${elementCppType}, ${fixedArraySize(type)!}>{${values.join(", ")}}`;
         }
-        // Envoltorio en `std::move(...)` para que el initializer_list acepte
-        // tipos move-only (Task<T>, Optional<T>, Result<T>). Para tipos copiables
-        // es equivalente (mover es una opción, copiar es la otra).
-        const moveValues = (items: string[]) => items.map(item => `std::move(${item})`).join(", ");
         if (node.elements.some(item => item.kind === "SpreadElement")) {
           // Spread en array literal: generamos un lambda inmediato que toma
           // el vector destino por valor (RVO al final) y va `push_back` para
@@ -3148,6 +3183,10 @@ export class CppGenerator {
             // (necesarios para spread que los use, e.g.
             // `this.children = [...this.children, ...more]`).
             for (const param of this.currentClassMethodParams) captureSet.add(param);
+            // V30.27: capturar las variables locales del body (const/let).
+            // Sin esto, `[...this.x, f(nx, ny)]` con nx/ny const locales
+            // genera un lambda que no las captura y el linker falla.
+            for (const local of this.currentClassMethodLocals) captureSet.add(local);
           }
           const collectCaptures = (e: import("../ast/nodes.ts").Expression): void => {
             for (const symbol of (e as { capturedSymbols?: string[] }).capturedSymbols ?? []) {
@@ -3196,12 +3235,17 @@ export class CppGenerator {
         if (values.length === 0) return `${valueType}()`;
         // Detectar tipos move-only por inspección del nombre del tipo (heurística
         // simple). Para esos tipos, generar una lambda constructora con push_back.
+        // V30.27: para tipos copiables (int, string, etc.) NO envolver con
+        // `std::move(...)` porque causa narrowing warnings y a veces falla
+        // la conversion (`std::move(10.0)` no se convierte a `int32_t` por
+        // narrowing). El initializer_list acepta elementos copiables sin
+        // necesidad de std::move.
         const isMoveOnlyType = /ets::Task<|ets::Optional<|ets::Result</.test(valueType);
         if (isMoveOnlyType) {
           const pushes = values.map(value => `dst.push_back(std::move(${value}));`).join(" ");
           return `([](${valueType} dst) -> ${valueType} { ${pushes} return dst; })(${valueType}())`;
         }
-        return `${valueType}{${moveValues(values)}}`;
+        return `${valueType}{${values.join(", ")}}`;
       }
       case "ArrowFunctionExpression": {
         const type = this.expressionType(node); const result = type && isFunctionType(type) ? functionResult(type) : (node.returnType ?? "void");
