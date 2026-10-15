@@ -51,6 +51,12 @@ export class Parser {
     while (true) {
       this.skipNewlines();
       if (this.check("eof")) break;
+      // V30.33: consumir `;` opcional entre statements a nivel
+      // de programa. Antes, un `;` literal despues de un statement
+      // que termina en `}` (e.g. `for (...) { ... }; print(...)`)
+      // se quedaba en el cursor y `statement()` lanzaba
+      // "Se esperaba una expresion" al ver el `;` aislado.
+      if (this.check(";")) { this.advance(); continue; }
       statements.push(this.statement(true));
     }
     if (this.diagnostics.length) throw new DiagnosticError(this.diagnostics);
@@ -410,6 +416,12 @@ export class Parser {
         const body = this.block(open);
         methods.push({ name: member.lexeme, typeParameters: generics.parameters, params, returnType, body, decorators: memberDecorators, access, isStatic, span: span(member.span.start, body.span.end) });
       }
+      // V30.33: aceptar `;` opcional entre members de la clase. Antes,
+      // `class K { constructor() {}; get() {} }` fallaba porque el
+      // `;` quedaba en el cursor y el siguiente member intentaba
+      // parsearlo como identifier.
+      this.skipNewlines();
+      if (this.check(";")) this.advance();
     }
     const close = this.consume("}", "Se esperaba '}' después de la clase");
     return { kind: "ClassDeclaration", exported, name: name.lexeme, typeParameters: generics.parameters, variadicTypeParameters: generics.variadic, fields, methods, decorators, span: span(startSpan, close.span.end) };
@@ -819,7 +831,16 @@ export class Parser {
     while (!this.check("}") && !this.check("eof")) {
       this.skipNewlines();
       if (this.check("}") || this.check("eof")) break;
-      statements.push(this.statement());
+      const st = this.statement();
+      statements.push(st);
+      // V30.33: aceptar `;` opcional entre statements dentro de un
+      // bloque. Antes, un `;` literal despues de un BlockStatement
+      // (e.g. `for (...) { ... }; print(...)`) provocaba
+      // "Se esperaba una expresion" porque la siguiente llamada a
+      // `statement()` veia el `;` sin contexto. Los newlines ya se
+      // manejan via `consumeStatementTerminator` en cada tipo de
+      // statement, asi que solo falta consumir el `;` literal.
+      if (this.check(";")) this.advance();
     }
     const close = this.consume("}", "Se esperaba '}'");
     return { kind: "BlockStatement", statements, span: span(open.span.start, close.span.end) };
