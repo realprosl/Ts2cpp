@@ -599,6 +599,16 @@ export class TypeChecker {
       return "void";
     }
     if (node.args.length !== signature.params.length) this.report(node, `${global}.${node.method} espera ${signature.params.length} argumentos, recibió ${node.args.length}`);
+    // V30.35: si la cantidad no coincide, NO seguimos validando args
+    // individuales (signature.params[index] seria `undefined` y
+    // typeMatches() crashearia con "Cannot read properties of
+    // undefined"). El reporte de cantidad ya se hizo arriba; los
+    // args se typecheckean sin expected para que el usuario pueda
+    // ver otros errores si los hay.
+    if (node.args.length !== signature.params.length) {
+      node.args.forEach(arg => this.expression(arg, scope));
+      return signature.returnType;
+    }
     node.args.forEach((arg, index) => this.require(this.expression(arg, scope, signature.params[index]), signature.params[index], arg));
     return signature.returnType;
   }
@@ -3793,7 +3803,13 @@ export class TypeChecker {
           const ctor = owner.methods.find(m => m.name === "constructor")!;
           // Validamos args contra los params del constructor (sin defaults).
           const requiredParams = ctor.params.filter(p => p.defaultValue === undefined).length;
+          const totalParams = ctor.params.length;
+          // V30.35: validar minimo Y maximo. Antes, `new K(1, 2, 3, 4)` con
+          // ctor de 3 params pasaba la validacion (4 >= 3) pero el codegen
+          // emitia `K{}.constructor(1, 2, 3, 4)` que g++ rechazaba con un
+          // error criptico. Ahora reportamos un error claro en type-check.
           if (node.args.length < requiredParams) this.report(node, `'${node.className}' espera al menos ${requiredParams} argumento(s) en el constructor, recibió ${node.args.length}`);
+          if (node.args.length > totalParams) this.report(node, `'${node.className}' espera como mucho ${totalParams} argumento(s) en el constructor, recibió ${node.args.length}`);
           // Validamos tipos de cada argumento contra el param.
           const classSubstitutions = resolved?.substitutions ?? new Map();
           node.args.forEach((arg, i) => {
