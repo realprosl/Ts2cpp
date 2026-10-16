@@ -3441,7 +3441,30 @@ export class CppGenerator {
           }
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
-        if (node.operator === "+" && this.expressionType(node) === "string") return `ets::concat(${this.stringConcatParts(node).map(part => this.emitExpression(part)).join(", ")})`;
+        if (node.operator === "+" && this.expressionType(node) === "string") {
+          // V30.36: `+` con al menos un operando string es string concat.
+          // Cada parte se convierte a std::string con un helper segun su
+          // tipo (string se emite tal cual, numerico via std::to_string,
+          // boolean via (b ? "true" : "false")). Sin esto, el codegen
+          // emitiria `ets::concat("x", 5)` que no compila en C++.
+          const parts = this.stringConcatParts(node);
+          const stringified = parts.map(part => {
+            const partType = this.expressionType(part);
+            const partText = this.emitExpression(part);
+            if (partType === "string") return partText;
+            if (partType === "boolean") return `(${partText} ? "true" : "false")`;
+            if (partType === undefined || partType === "any") return `ets::stringify_any(${partText})`;
+            // Numericos: number (double), i8..i64, u8..u64, f32, f64.
+            // numberToString (definido en runtime/ets_string.hpp) usa
+            // std::to_chars que NO añade ".000000" para enteros como
+            // std::to_string(double). Asi `"" + 5` produce "5" (no "5.0"),
+            // consistente con el resto del dialecto. Para tipos
+            // numericos concretos hacemos static_cast<double> primero.
+            if (partType === "number") return `ets::string_numberToString(${partText})`;
+            return `ets::string_numberToString(static_cast<double>(${partText}))`;
+          });
+          return `ets::concat(${stringified.join(", ")})`;
+        }
         // V1.3: las tagged unions declaran su propio `operator==` (en
         // `unionDeclaration`) que dispatcha por discriminador, así que
         // C++ resuelve la comparación de forma natural cuando ambos
