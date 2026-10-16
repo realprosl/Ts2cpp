@@ -3806,20 +3806,32 @@ export class TypeChecker {
           result = node.className;
           break;
         }
-        // V30.33 (no aplicado todavia, ver #224): el bug
-        // original era que `new K()` con `class K { n: i32 = 42 }`
-        // exigia 1 "valor de composicion". El fix completo
-        // requiere:
-        // 1. Generar un ctor implicito en el codegen del struct
-        //    cuando hay fields con defaults.
-        // 2. Cambiar el NewExpression para que use ese ctor
-        //    (`K{}.constructor()`) en lugar de `K{}` aggregate
-        //    init.
-        // 3. Aceptar `new K()` en el type-checker.
-        // El cambio 1+2 es invasivo (afecta V30.13 default_ctor,
-        // auto-unions, parameter properties) y tiene riesgo alto
-        // de regresion. Se documenta en `test/unit/codegen_v30_32_batida.test.ts`
-        // como BUG-1 y se abordara en V30.34+ con su propio PR.
+        // V30.34: si NO hay constructor explicito pero hay al
+        // menos un field con `defaultValue`, el codegen del struct
+        // genera un ctor sintetico que aplica los defaults
+        // (`class K { n: i32 = 42 }` -> `constructor() { this.n = 42; }`).
+        // El NewExpression del codegen lo invoca como
+        // `K{}.constructor()` (mismo patron que ctor explicito).
+        // Aceptamos `new K()` con 0 args en este caso para que el
+        // usuario no tenga que escribir un ctor explicito solo
+        // para inicializar fields con defaults.
+        //
+        // Si el usuario pasa args (`new K(7)`) sin ctor explicito,
+        // rechazamos: el ctor sintetico no acepta params, y el
+        // aggregate init que se emita ignoraria los defaults (que
+        // es justo el bug que estamos arreglando).
+        const hasFieldsWithDefaults = owner.fields.some(f => f.defaultValue !== undefined && !f.isStatic);
+        if (!hasConstructor && hasFieldsWithDefaults) {
+          if (node.args.length === 0) {
+            // Caso normal: el codegen sintetiza un ctor que
+            // aplica los defaults, y el NewExpression lo invoca.
+            result = node.className;
+            break;
+          }
+          this.report(node, `'${node.className}' no tiene constructor explícito que acepte ${node.args.length} argumento(s); declara un constructor o usa 'new ${node.className}()'`);
+          result = node.className;
+          break;
+        }
         if (node.args.length !== owner.fields.length) this.report(node, `'${node.className}' espera ${owner.fields.length} valores de composición, recibió ${node.args.length}`);
         node.args.forEach((arg, i) => { const field = owner.fields[i]; const expectedType = field ? this.substituteType(field.type, resolved?.substitutions ?? new Map()) : undefined; const actual = this.expression(arg, scope, expectedType); if (expectedType) this.require(actual, expectedType, arg); });
         result = node.className; break;

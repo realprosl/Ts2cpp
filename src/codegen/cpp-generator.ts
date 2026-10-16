@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, BlockStatement, ExpressionStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, UnionVariant, TypeParameter, CallExpression, MemberCallExpression } from "../ast/nodes.ts";
+import type { Program, Statement, Expression, TypeName, FunctionDeclaration, InterfaceDeclaration, ClassDeclaration, ClassMethod, ClassField, BlockStatement, ExpressionStatement, VariableDeclaration, EnumDeclaration, UnionDeclaration, UnionVariant, TypeParameter, CallExpression, MemberCallExpression, MemberExpression, AssignmentExpression, IdentifierExpression } from "../ast/nodes.ts";
 import { cppType, collectTypeParameterNames, registerExternalType, clearExternalTypes } from "./cpp-types.ts";
 import { cppParameterDeclaration } from "./cpp-parameters.ts";
 import { arrayElement, fixedArrayElement, fixedArraySize, functionParameters, functionResult, genericArguments, genericBase, intersectionMembers, isArrayType, isFixedArrayType, isFunctionType, isGenericType, isIntersectionType, isMapType, isNumericType, isPromiseType, isSetType, isTupleType, isUnionType, promiseResult, tupleElements, unionMembers } from "../types/type-system.ts";
@@ -1746,6 +1746,35 @@ export class CppGenerator {
     }).join(", ");
     return `${template}${requires}${internal ? "static " : ""}${typeFor(fn.returnType)} ${fn.name}(${params})`;
   }
+  // V30.34: genera un `ClassMethod` sintetico para clases SIN
+  // constructor explicito pero CON fields con `defaultValue`. El
+  // body es una secuencia de `this.field = default` por cada
+  // field con default. El classMethod del codegen se encarga de
+  // emitir el metodo en el struct C++ con la firma correcta
+  // (`ClassName& constructor()` y `return *this;` final).
+  //
+  // Esto se inyecta solo en el array de emision de methods
+  // (no en `node.methods` del AST), asi que el type-checker
+  // sigue viendo la clase como "sin ctor". El NewExpression
+  // detecta la condicion (no ctor + hay defaults) y emite
+  // `K{}.constructor()` en lugar de `K{}` aggregate.
+  private synthesizeDefaultConstructor(classDecl: ClassDeclaration, fields: ClassField[]): ClassMethod {
+    const thisExpr: IdentifierExpression = { kind: "IdentifierExpression", name: "this", span: classDecl.span };
+    const statements: ExpressionStatement[] = fields.map(field => {
+      const target: MemberExpression = { kind: "MemberExpression", object: thisExpr, member: field.name, span: field.span };
+      const assignment: AssignmentExpression = { kind: "AssignmentExpression", target, value: field.defaultValue as Expression, span: field.span };
+      return { kind: "ExpressionStatement", expression: assignment, span: field.span };
+    });
+    const body: BlockStatement = { kind: "BlockStatement", statements, span: classDecl.span };
+    return {
+      name: "constructor",
+      typeParameters: [],
+      params: [],
+      returnType: "void",
+      body,
+      span: classDecl.span,
+    };
+  }
   private classDeclaration(node: ClassDeclaration): string {
     const templatePart = node.typeParameters.length ? `template <${node.typeParameters.map(parameter => {
       const base = `typename ${parameter.name}`;
@@ -1783,7 +1812,30 @@ export class CppGenerator {
     // V20: emitimos los campos implícitos de parameter properties.
     for (const p of newFields) lines.push(`${this.pad()}${cppFieldType(p.type)}${p.readonly ? "" : ""} ${p.name};`);
     if ((instanceFields.length || newFields.length) && node.methods.length) lines.push("");
-    for (const method of node.methods) lines.push(this.pad() + this.classMethod(method, node), "");
+    // V30.34: si la clase NO tiene constructor explicito y tiene
+    // al menos un field con `defaultValue`, generamos un
+    // constructor sintetico que aplica los defaults. Asi
+    // `new K()` para `class K { n: i32 = 42 }` produce un objeto
+    // con `n == 42` en lugar de `n == 0` (que es lo que daria
+    // `K{}` aggregate init, que IGNORA los defaults).
+    //
+    // Solo emitimos el ctor sintetico si NO hay ctor explicito
+    // (si lo hay, ese ctor es responsable de inicializar los
+    // fields, y el codegen del ctor del usuario ya emite los
+    // defaults via `defaultFieldInitializers` si quiere).
+    //
+    // No mutamos `node.methods` (es el AST original que ve el
+    // type-checker); usamos un array local `methodsToEmit` para
+    // que el NewExpression detecte la condicion (no ctor + hay
+    // defaults) y emita `K{}.constructor()` correctamente.
+    const fieldsWithDefaults = instanceFields.filter(f => f.defaultValue !== undefined);
+    const syntheticConstructor: ClassMethod | null = (!constructor && fieldsWithDefaults.length > 0)
+      ? this.synthesizeDefaultConstructor(node, fieldsWithDefaults)
+      : null;
+    const methodsToEmit = syntheticConstructor
+      ? [syntheticConstructor, ...node.methods]
+      : node.methods;
+    for (const method of methodsToEmit) lines.push(this.pad() + this.classMethod(method, node), "");
     if (lines.at(-1) === "") lines.pop();
     // V30.13: si la clase tiene constructor con parámetros, añadimos un
     // `default_constructor()` que inicializa todos los campos a sus valores
@@ -4198,7 +4250,17 @@ export class CppGenerator {
         // para variantes de union), sino `isAutoUnionTarget(targetType)`.
         const targetIsAutoUnion = this.isAutoUnionTarget(targetType);
         const ctor = cls ? cls.methods.find(m => m.name === "constructor") : undefined;
-        if (ctor && cls) {
+        // V30.34: si la clase NO tiene constructor explicito pero
+        // tiene fields con `defaultValue`, el codegen del struct
+        // (V30.34 synthesizeDefaultConstructor) genera un ctor
+        // sintetico con `this.field = default` por cada field. Aqui
+        // lo invocamos como `K{}.constructor()` (mismo patron que
+        // ctor explicito). Antes se emitia `K{...args}` aggregate
+        // init, que IGNORA los defaults y deja los fields con
+        // valores indeterminados.
+        const hasFieldsWithDefaults = cls ? cls.fields.some(f => f.defaultValue !== undefined && !f.isStatic) : false;
+        const useImplicitCtor = !ctor && hasFieldsWithDefaults;
+        if ((ctor || useImplicitCtor) && cls) {
           // V30.13.3: el constructor del dialecto SIEMPRE debe invocarse
           // explicito, aunque no tenga parametros. Aggregate-init (Foo{})
           // deja los miembros sin inicializar (kind, name, etc. quedan
@@ -4206,6 +4268,9 @@ export class CppGenerator {
           // lo que el constructor del dialecto les asigna). El `constructor`
           // del dialecto devuelve `*this` (V30.13) para que la
           // expresion sea usable como rvalue.
+          // V30.34: el ctor sintetico (sin ctor explicito + hay
+          // defaults) tampoco acepta args; el type-checker rechaza
+          // `new K(7)` en este caso.
           const callExpr = `${cppType(node.className)}{}`;
           if (targetIsAutoUnion) return `make_${node.className}(${callExpr}.constructor(${args.join(", ")}))`;
           return `${callExpr}.constructor(${args.join(", ")})`;

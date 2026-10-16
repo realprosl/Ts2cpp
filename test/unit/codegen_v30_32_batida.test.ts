@@ -376,22 +376,40 @@ test("V30.32 while con decremento", () => {
 
 // --- Bloque 12: BUGS REALES (reproducen, no fallan) ---
 
-test("V30.32 BUG: new K() sin ctor y fields con init exige N argumentos", () => {
-  // BUG: una clase con fields con `=` inicializados pero sin
-  // constructor explicito deberia generar un constructor implicito
-  // que ejecute los inicializadores. El type-checker exige
-  // actualmente N "valores de composicion" en new K().
-  // Esperado: compilar. Actual: DiagnosticError.
-  let reproduced = false;
+test("V30.34 BUG-1 FIX: new K() sin ctor con fields init compila Y aplica defaults", () => {
+  // V30.34: el bug original era que `new K()` con
+  // `class K { n: i32 = 42 }` exigia 1 "valor de composicion".
+  // El fix completo consiste en:
+  // 1. El codegen del struct genera un ctor sintetico que
+  //    aplica los defaults.
+  // 2. El NewExpression invoca ese ctor (`K{}.constructor()`)
+  //    en lugar de aggregate init.
+  // 3. El type-checker acepta `new K()` con 0 args.
+  //
+  // Verificamos que el caso compila Y que el cpp emite el
+  // ctor sintetico con `this.n = 42`.
+  let compiled = false;
   try {
-    compile("class K { n: i32 = 42 } let k = new K()");
+    const result = compile("class K { n: i32 = 42 } let k = new K()");
+    compiled = result.cpp.includes("(*this).n = 42") || result.cpp.includes("(*this).n = 42.0");
+  } catch {
+    compiled = false;
+  }
+  assert.ok(compiled, "BUG-1 deberia compilar y emitir el ctor sintetico con el default 42");
+});
+
+test("V30.34 BUG-1 FIX: new K(7) sin ctor explicito falla con mensaje claro", () => {
+  // V30.34: si el usuario pasa args a un ctor sintetico (que no
+  // acepta params), el type-checker rechaza con un mensaje
+  // claro en lugar de emitir codigo silenciosamente incorrecto.
+  let reported = false;
+  try {
+    compile("class K { n: i32 = 42 } let k = new K(7)");
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // "valores de composici" + (o tilde o sin tilde, en el mensaje
-    // puede aparecer con tilde o con escape unicode).
-    reproduced = /valores de composici/i.test(msg);
+    reported = /no tiene constructor explícito/i.test(msg);
   }
-  assert.ok(reproduced, "BUG no reproducido o ya arreglado");
+  assert.ok(reported, "BUG-1: new K(7) sin ctor deberia fallar con mensaje claro");
 });
 
 test("V30.33 BUG-2 FIX: class con ; entre members compila", () => {
@@ -424,22 +442,6 @@ test("V30.33 BUG-3 FIX: for clasico + ; + statement compila", () => {
     compiled = false;
   }
   assert.ok(compiled, "BUG-3: for + ; + statement deberia compilar desde V30.33");
-});
-
-test("V30.33 BUG-1 (no fixed): new K() sin ctor con fields init sigue fallando", () => {
-  // V30.33: BUG-1 queda PENDIENTE porque el fix completo
-  // requiere generar un ctor implicito en el codegen (cambio
-  // invasivo, riesgo alto de regresion en V30.13 auto-unions).
-  // Se documenta como bug conocido y se abordara en V30.34+ con
-  // su propio PR.
-  let reproduced = false;
-  try {
-    compile("class K { n: i32 = 42 } let k = new K()");
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    reproduced = /valores de composici/i.test(msg);
-  }
-  assert.ok(reproduced, "BUG-1 deberia seguir reproduciendose (workaround: declarar constructor explicito)");
 });
 
 test("V30.32 BUG (ahora FIX): class field init + ctor + metodo con ; entre members", () => {
