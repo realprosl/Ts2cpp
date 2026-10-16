@@ -3237,6 +3237,12 @@ export class CppGenerator {
         return Number.isInteger(node.value) ? `${node.value}.0` : String(node.value);
       }
       case "TemplateLiteralExpression": {
+        // V30.37: constant folding. Si todas las expressions son
+        // estaticas, emitir el string resultante como literal.
+        // Asi `` `hello ${"world"}` `` se convierte en
+        // `std::string("hello world")` sin llamada runtime.
+        const foldedTpl = this.tryEvaluateAsString(node);
+        if (foldedTpl !== null) return `std::string(${JSON.stringify(foldedTpl)})`;
         // Emitimos cada parte como literal y cada expresión tal cual; `ets::concat`
         // usa `operator<<` para que cualquier tipo (number, boolean, string, etc.)
         // se serialice correctamente.
@@ -3442,6 +3448,22 @@ export class CppGenerator {
           return `true /* instanceof sobre tipo no-union: etsc no tiene herencia */`;
         }
         if (node.operator === "+" && this.expressionType(node) === "string") {
+          // V30.37: constant folding. Si todas las partes son
+          // estaticas (literales, templates con partes estaticas,
+          // composiciones de los anteriores), emitir el string
+          // resultante como literal. Asi `"hello " + "world"` se
+          // convierte en `std::string("hello world")` y el
+          // compilador C++ lo mete en .rodata. Si no, caer al
+          // path dinamico con ets::concat.
+          const folded = this.tryEvaluateAsString(node);
+          if (folded !== null) {
+            // Escapar caracteres especiales para C++. Por seguridad
+            // usamos std::string("...") que acepta cualquier secuencia
+            // sin escapar. Para evitar que el compilador se queje de
+            // caracteres como \ o ", pasamos por un constructor
+            // explicito que toma el tamano.
+            return `std::string(${JSON.stringify(folded)})`;
+          }
           // V30.36: `+` con al menos un operando string es string concat.
           // Cada parte se convierte a std::string con un helper segun su
           // tipo (string se emite tal cual, numerico via std::to_string,
@@ -4307,6 +4329,58 @@ export class CppGenerator {
   private stringConcatParts(node: Expression): Expression[] {
     if (node.kind === "BinaryExpression" && node.operator === "+" && this.expressionType(node) === "string") return [...this.stringConcatParts(node.left), ...this.stringConcatParts(node.right)];
     return [node];
+  }
+  // V30.37: constant folding para `+` con string. Si un nodo es un
+  // literal (o composicion de literales) conocido en tiempo de
+  // compilacion, devuelve su valor como string. Si no, devuelve null
+  // y el codegen cae al path dinamico (ets::concat). Esto evita
+  // llamadas runtime para casos como `"hello " + "world"` que
+  // pueden resolverse en el codegen. Soporta:
+  //   - LiteralExpression (string, number, boolean, i8..u64, f32, f64)
+  //   - UnaryExpression +/- sobre LiteralExpression numerica
+  //   - BinaryExpression + entre nodos stringifiables
+  //   - TemplateLiteralExpression con expressions todas estaticas
+  private tryEvaluateAsString(node: Expression | undefined): string | null {
+    if (!node) return null;
+    if (node.kind === "LiteralExpression") {
+      const lit = node;
+      if (lit.literalType === "string") return String(lit.value);
+      if (lit.literalType === "boolean") return lit.value ? "true" : "false";
+      if (typeof lit.value === "number") {
+        // Reutiliza la misma logica que numberToString del runtime:
+        // std::to_chars no anade ".000000" para enteros.
+        if (Number.isInteger(lit.value)) return lit.value.toString();
+        return lit.value.toString();
+      }
+      return null;
+    }
+    if (node.kind === "UnaryExpression" && (node.operator === "+" || node.operator === "-") && node.operand.kind === "LiteralExpression") {
+      const inner = this.tryEvaluateAsString(node.operand);
+      if (inner === null) return null;
+      const num = Number(inner);
+      if (!Number.isFinite(num)) return null;
+      return (node.operator === "-" ? -num : num).toString();
+    }
+    if (node.kind === "BinaryExpression" && node.operator === "+" && this.expressionType(node) === "string") {
+      const left = this.tryEvaluateAsString(node.left);
+      if (left === null) return null;
+      const right = this.tryEvaluateAsString(node.right);
+      if (right === null) return null;
+      return left + right;
+    }
+    if (node.kind === "TemplateLiteralExpression") {
+      let result = "";
+      for (let i = 0; i < node.parts.length; i++) {
+        result += node.parts[i]!;
+        if (i < node.expressions.length) {
+          const v = this.tryEvaluateAsString(node.expressions[i]);
+          if (v === null) return null;
+          result += v;
+        }
+      }
+      return result;
+    }
+    return null;
   }
   private pad(): string { return "    ".repeat(this.indent); }
 
