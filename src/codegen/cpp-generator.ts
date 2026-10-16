@@ -1193,7 +1193,15 @@ export class CppGenerator {
     // V30.41: comptime() se evalua ANTES del type-checker (en
     // compiler.compile), asi que el AST que llega aqui ya no tiene
     // llamadas a comptime() — han sido sustituidas por literales.
-    const unwrapped = { ...program, statements: program.statements.map(unwrap) };
+    // V30.43: filtramos las funciones `@comptime` que solo se usan
+    // en call sites estaticos (marcadas con `comptimeOnly: true`
+    // por evaluateComptime). El codegen no las emite.
+    const unwrapped = {
+      ...program,
+      statements: program.statements
+        .map(unwrap)
+        .filter((stmt) => !(stmt.kind === "FunctionDeclaration" && stmt.comptimeOnly === true)),
+    };
     const functions = unwrapped.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
     const interfaces = unwrapped.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");
     const classes = unwrapped.statements.filter((s): s is ClassDeclaration => s.kind === "ClassDeclaration");
@@ -1435,7 +1443,11 @@ export class CppGenerator {
     // V18: omitimos del header las funciones con `@cpp_name` (enlazadas
     // externamente). El cpp emite `extern "C" <sig>;` y el linker las
     // resuelve contra la librería.
-    const allFunctions = program.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
+    // V30.43: filtrar funciones `@comptime` comptimeOnly — no
+    // emiten ni forward decl en el header ni definicion en el .cpp.
+    const allFunctions = program.statements.filter((statement): statement is FunctionDeclaration =>
+      statement.kind === "FunctionDeclaration" && statement.comptimeOnly !== true
+    );
     const headerFunctions = allFunctions.filter(fn => !fn.decorators?.some(d => d.name === "cpp_name"));
     for (const fn of headerFunctions) {
       // V30.4: renombrar `main` -> `ets_user_main` en la forward
@@ -1489,7 +1501,14 @@ export class CppGenerator {
     // translation-unit, así que la declaración se procesa como si fuera
     // top-level directa. Unwrap antes del flujo principal.
     const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
-    const unwrappedProgram = { ...program, statements: program.statements.map(unwrap) };
+    // V30.43: filtrar funciones `@comptime` comptimeOnly (ver
+    // generate() para la explicacion).
+    const unwrappedProgram = {
+      ...program,
+      statements: program.statements
+        .map(unwrap)
+        .filter((stmt) => !(stmt.kind === "FunctionDeclaration" && stmt.comptimeOnly === true)),
+    };
     this.prepare(combinedProgram);
     const allFunctions = unwrappedProgram.statements.filter((statement): statement is FunctionDeclaration => statement.kind === "FunctionDeclaration");
     const functions = allFunctions.filter(statement => statement.typeParameters.length === 0);
