@@ -484,3 +484,73 @@ test("@comptime: funcion recursiva con captura", async () => {
     "1024",
   );
 });
+
+// ============================================================
+// 14. V30.43: filtrar funciones @comptime no usadas en runtime
+// ============================================================
+//
+// Cuando una funcion @comptime solo se llama desde call sites
+// estaticos (sustituidos en comptime), el codegen no la emite
+// ni como forward decl ni como definicion. El programa es
+// exactamente igual de correcto, pero el binario es mas limpio.
+
+test("@comptime: la funcion solo-estatica NO se emite (ni forward decl ni def)", () => {
+  const cpp = compile(
+    `@comptime
+    function fib(n: number): number {
+      return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+    }
+    function main(): void { let v: number = fib(5); print(numberToString(v)); }`,
+  ).cpp;
+  // El call site se sustituye por 8.0
+  assert.match(cpp, /double v = 8\.0;/);
+  // La funcion `fib` NO debe aparecer en el cpp
+  assert.doesNotMatch(cpp, /\bfib\b/);
+});
+
+test("@comptime: funcion llamada con parametro runtime SI se emite", () => {
+  // fib(5) se evalua estaticamente y se filtra. Pero fib(n) con
+  // n siendo un parametro de la funcion externa NO se puede
+  // evaluar estaticamente, asi que el codegen mantiene fib.
+  const cpp = compile(
+    `@comptime
+    function fib(n: number): number {
+      return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+    }
+    function caller(x: number): number {
+      return fib(x);  // llamada runtime — x es parametro
+    }
+    function main(): void {
+      let v: number = fib(5);  // llamada estatica — se filtra
+      print(numberToString(v));
+    }`,
+  ).cpp;
+  // fib(5) = 8
+  assert.match(cpp, /double v = 8\.0;/);
+  // fib SI se emite porque caller() la llama con un parametro runtime
+  assert.match(cpp, /\bfib\b/);
+});
+
+test("@comptime: funcion con recursion y captura — solo-estatica NO se emite", () => {
+  const cpp = compile(
+    `@comptime
+    function power(n: number, exp: number): number {
+      return exp == 0 ? 1 : n * power(n, exp - 1);
+    }
+    function main(): void { let v: number = power(2, 10); print(numberToString(v)); }`,
+  ).cpp;
+  assert.match(cpp, /double v = 1024\.0;/);
+  assert.doesNotMatch(cpp, /\bpower\b/);
+});
+
+test("@comptime: comptime() arrow con comptime-function NO emite la funcion", async () => {
+  await runEtsFull(
+    `@comptime
+    function square(x: number): number { return x * x; }
+    function main(): void {
+      let v: number = comptime((): number => square(5));
+      print(numberToString(v));
+    }`,
+    "25",
+  );
+});
