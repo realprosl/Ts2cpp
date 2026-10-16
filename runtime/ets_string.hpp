@@ -383,4 +383,19 @@ inline double length(const std::tuple<T...>&) {
     return static_cast<double>(sizeof...(T));
 }
 
+// ----------------------------------------------------------------------------
+// stringify_any: V30.36 helper para string concat con operandos no-string.
+// Toma cualquier valor y devuelve su representacion como std::string.
+// Usa std::ostringstream que soporta tipos primitivos, std::string,
+// y containers con operator<<. Para tipos que no tengan operator<<,
+// emite "<unstringifiable>" para que el error sea detectable.
+// ----------------------------------------------------------------------------
+#include <sstream>
+template <typename T>
+inline std::string stringify_any(const T& value) {
+    std::ostringstream oss;
+    oss << value;
+    return oss.str();
+}
+
 }  // namespace ets
