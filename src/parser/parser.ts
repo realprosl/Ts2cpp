@@ -130,7 +130,14 @@ export class Parser {
 
   private deleteStatement(keyword: Token): Statement {
     const target = this.expression();
-    if (target.kind !== "IndexExpression") this.error(target.span, "delete requiere un acceso por índice (map[k], set[v], arr[i])");
+    // V30.35: `delete` solo admite acceso por indice (map[k], arr[i]).
+    // Si el target es un MemberExpression (obj.x) u otro tipo, emite
+    // un diagnostic. Antes pasaba `target.span` a `this.error()` que
+    // espera un Token, lo que resultaba en `d.span.start` undefined
+    // y crash en el DiagnosticError constructor.
+    if (target.kind !== "IndexExpression") {
+      this.error(this.peek(), "delete requiere un acceso por índice (map[k], set[v], arr[i])");
+    }
     const end = this.consumeStatementTerminator("Se esperaba ';' después de 'delete'");
     return { kind: "DeleteStatement", target: target as IndexExpression, span: span(keyword.span.start, end.span.end) };
   }
