@@ -175,8 +175,11 @@ export async function compileFile(entry: string, options: ModuleLoaderOptions = 
     // resuelva imports correctamente), pero el codegen emite header + un
     // `.cpp` por módulo (cada uno solo con su código). El header tiene
     // todas las declaraciones que cualquier módulo puede necesitar.
-    const ast = parse(chunks.join("\n"));
-    const { checker } = analyze([ast]);
+    // V30.41: `analyze` devuelve el AST con comptime() ya evaluado.
+    // Usamos ESA versión para el codegen; de lo contrario, las
+    // comptime() calls quedarían en el cpp como `comptime([=]()...)`.
+    const astOriginal = parse(chunks.join("\n"));
+    const { program: ast, checker } = analyze([astOriginal]);
     const generator = new CppGenerator(
       expression => checker.typeOf(expression),
       expression => checker.isVariadic(expression),
