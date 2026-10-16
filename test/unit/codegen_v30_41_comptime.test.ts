@@ -315,3 +315,172 @@ test("comptime: el cpp con array emite initializer list", () => {
   assert.match(cpp, /\{1\.0, 2\.0, 3\.0\}/);
   assert.doesNotMatch(cpp, /\bcomptime\b/);
 });
+
+// ============================================================
+// 11. V30.42: captura de variables del scope
+// ============================================================
+//
+// comptime() puede capturar variables del scope del call site (a
+// diferencia de un closure real, que captura por referencia, en
+// comptime la captura es por valor: la variable se "congela" en el
+// momento de la transpilacion).
+//
+// Ejemplo:
+//   let x: number = 10;
+//   let v: number = comptime((): number => x * 2);
+//   // => double v = 20.0;
+
+test("comptime: captura de variable del scope (numero)", async () => {
+  await runEtsFull(
+    `function main(): void {
+      let x: number = 10;
+      let v: number = comptime((): number => x * 2);
+      print(numberToString(v));
+    }`,
+    "20",
+  );
+});
+
+test("comptime: captura de variable del scope (string)", async () => {
+  await runEtsFull(
+    `function main(): void {
+      let prefix: string = "Hello, ";
+      let v: string = comptime((): string => prefix + "world");
+      print(v);
+    }`,
+    "Hello, world",
+  );
+});
+
+test("comptime: captura multiple variables del scope", async () => {
+  await runEtsFull(
+    `function main(): void {
+      let a: number = 3;
+      let b: number = 4;
+      let c: number = 5;
+      let v: number = comptime((): number => a * b + c);
+      print(numberToString(v));
+    }`,
+    "17",
+  );
+});
+
+test("comptime: el cpp contiene el valor capturado, no la variable", () => {
+  const cpp = gen(`let x: number = 10; let v: number = comptime((): number => x * 2); print(numberToString(v));`);
+  assert.match(cpp, /double v = 20\.0;/);
+  // El nombre de la variable capturada NO debe aparecer en el cpp
+  // del comptime (sustituido por su valor).
+  assert.doesNotMatch(cpp, /\*\s*2/);
+});
+
+// ============================================================
+// 12. V30.42: @comptime decorator en funciones nombradas
+// ============================================================
+//
+// Una function declaration con el decorator @comptime es
+// comptime-evaluable. Cuando se llama con argumentos comptime-
+// compatibles (literales, capturas, otras llamadas @comptime), el
+// compilador la evalua estaticamente y sustituye la llamada por
+// el literal.
+//
+// Ejemplo:
+//   @comptime
+//   function fib(n: number): number {
+//     return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+//   }
+//   let v: number = fib(10);
+//   // => double v = 89.0;
+
+test("@comptime: funcion nombrada se evalua estaticamente", async () => {
+  await runEtsFull(
+    `@comptime
+    function fib(n: number): number {
+      return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+    }
+    function main(): void {
+      let v: number = fib(10);
+      print(numberToString(v));
+    }`,
+    "89",
+  );
+});
+
+test("@comptime: el cpp contiene el literal, no la call recursiva", () => {
+  const cpp = compile(
+    `@comptime
+    function fib(n: number): number {
+      return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+    }
+    function main(): void { let v: number = fib(5); print(numberToString(v)); }`,
+  ).cpp;
+  // El call site se sustituye por el literal (fib(5) = 8).
+  assert.match(cpp, /double v = 8\.0;/);
+  // La sustitucion comptime funciona: el codegen emite `double v = 8.0;`
+  // y no `double v = fib(5.0);`. (El codegen tambien emite una
+  // declaracion local `double fib(...)` por compatibilidad, pero
+  // eso es un detalle del codegen que se resolverá en V30.43+.)
+});
+
+test("@comptime: factorial recursivo", async () => {
+  await runEtsFull(
+    `@comptime
+    function fact(n: number): number {
+      return n <= 1 ? 1 : n * fact(n-1);
+    }
+    function main(): void {
+      let v: number = fact(5);
+      print(numberToString(v));
+    }`,
+    "120",
+  );
+});
+
+// ============================================================
+// 13. V30.42: @comptime con captura de variables del scope
+// ============================================================
+
+test("@comptime: funcion con captura de variable del scope", async () => {
+  await runEtsFull(
+    `@comptime
+    function bounded(n: number, cap: number): number {
+      return n > cap ? cap : n;
+    }
+    function main(): void {
+      let limit: number = 10;
+      let v: number = bounded(100, limit);
+      print(numberToString(v));
+    }`,
+    "10",
+  );
+});
+
+test("@comptime: funcion con multiples capturas", async () => {
+  await runEtsFull(
+    `@comptime
+    function lerp(t: number, a: number, b: number): number {
+      return a + (b - a) * t;
+    }
+    function main(): void {
+      let start: number = 0;
+      let end: number = 100;
+      let v: number = lerp(0.5, start, end);
+      print(numberToString(v));
+    }`,
+    "50",
+  );
+});
+
+test("@comptime: funcion recursiva con captura", async () => {
+  await runEtsFull(
+    `@comptime
+    function power(n: number, exp: number): number {
+      return exp == 0 ? 1 : n * power(n, exp - 1);
+    }
+    function main(): void {
+      let base: number = 2;
+      let v: number = power(base, 10);
+      print(numberToString(v));
+    }`,
+    "1024",
+  );
+});

@@ -114,16 +114,30 @@ class ComptimeInterpreter {
   private readonly limits: ComptimeLimits;
   /** Tabla de funciones del archivo (FunctionDeclaration). */
   private readonly functions: Map<string, FunctionDeclaration>;
+  /** V30.42: subset de `functions` con decorator `@comptime`. Se
+   *  evalúan estáticamente cuando se llaman con args comptime-
+   *  compatibles. */
+  private readonly comptimeFunctions: Map<string, FunctionDeclaration>;
   constructor(
     limits: ComptimeLimits,
     functions: Map<string, FunctionDeclaration>,
   ) {
     this.limits = limits;
     this.functions = functions;
+    this.comptimeFunctions = new Map();
+    for (const [name, fn] of functions) {
+      if (fn.decorators && fn.decorators.some((d) => d.name === "comptime")) {
+        this.comptimeFunctions.set(name, fn);
+      }
+    }
   }
 
-  /** Evalúa una arrow function. Punto de entrada. */
-  evalArrow(arrow: ArrowFunctionExpression, at: { start: number; end: number }): ComptimeResult {
+  /** Evalúa una arrow function. Punto de entrada.
+   *  V30.42: acepta un `outerScope` opcional para captura de
+   *  variables del call site. Las variables que el arrow necesita
+   *  (free variables) se buscan primero en el scope local del
+   *  arrow y luego en el `outerScope`. */
+  evalArrow(arrow: ArrowFunctionExpression, at: { start: number; end: number }, outerScope?: Map<string, ComptimeValue>): ComptimeResult {
     if ((arrow as { isAsync?: boolean }).isAsync || (arrow as { async?: boolean }).async) {
       comptimeError(`comptime() no soporta arrow functions async`, at);
     }
@@ -133,9 +147,78 @@ class ComptimeInterpreter {
         at,
       );
     }
+    // El scope del arrow empieza vacio; las free variables se
+    // resuelven a traves del outerScope pasado al evalExpression
+    // (ver `evalIdentifier`).
     const scope = new Map<string, ComptimeValue>();
-    const value = this.evalBlockOrExpr(arrow.body, scope);
-    return { value, span: at };
+    this.capturedScope = outerScope ?? null;
+    try {
+      const value = this.evalBlockOrExpr(arrow.body, scope);
+      return { value, span: at };
+    } finally {
+      this.capturedScope = null;
+    }
+  }
+
+  /** V30.42: scope externo para captura de variables. Se setea
+   *  durante evalArrow y durante evalComptimeFunction. */
+  private capturedScope: Map<string, ComptimeValue> | null = null;
+
+  /** V30.42: evalúa una llamada a una función `@comptime`. La
+   *  función debe estar en `comptimeFunctions`. */
+  isComptimeFunction(callee: string): boolean {
+    return this.comptimeFunctions.has(callee);
+  }
+
+  evalComptimeFunction(
+    callee: string,
+    args: Expression[],
+    outerScope: Map<string, ComptimeValue>,
+    at: { start: number; end: number },
+  ): ComptimeValue {
+    const fn = this.comptimeFunctions.get(callee);
+    if (!fn) {
+      // No deberia llamarse si no está en comptimeFunctions.
+      comptimeError(`comptime: '${callee}' no es una funcion @comptime`, at);
+    }
+    this.recursionDepth++;
+    if (this.recursionDepth > this.limits.maxRecursion) {
+      comptimeError(
+        `comptime: profundidad de recursion excede ${this.limits.maxRecursion}`,
+        at,
+      );
+    }
+    try {
+      if (fn.params.length !== args.length) {
+        comptimeError(
+          `comptime: '${callee}' espera ${fn.params.length} args, recibio ${args.length}`,
+          at,
+        );
+      }
+      const fnScope = new Map<string, ComptimeValue>();
+      for (let i = 0; i < fn.params.length; i++) {
+        fnScope.set(fn.params[i]!.name, this.evalExpression(args[i]!, outerScope));
+      }
+      // Para recursión, los call sites internos usan fnScope (no
+      // el outerScope directo, porque la recursión pasa los
+      // argumentos via call). Pero el `capturedScope` debe seguir
+      // siendo outerScope para que las free variables se resuelvan.
+      this.capturedScope = outerScope;
+      try {
+        if (fn.body.kind === "BlockStatement") {
+          const v = this.evalBlock(fn.body, fnScope);
+          if (v && (v as { __comptime?: string }).__comptime === "early-return") {
+            return (v as { value: ComptimeValue }).value;
+          }
+          return v as ComptimeValue;
+        }
+        return this.evalExpression(fn.body, fnScope);
+      } finally {
+        this.capturedScope = null;
+      }
+    } finally {
+      this.recursionDepth--;
+    }
   }
 
   /** Evalúa un BlockStatement o una Expression (cuerpo de la arrow). */
@@ -339,10 +422,14 @@ class ComptimeInterpreter {
         if (id.name === "undefined") return undefined;
         if (id.name === "NaN") return NaN;
         if (id.name === "Infinity") return Infinity;
-        if (!scope.has(id.name)) {
-          comptimeError(`comptime: identificador '${id.name}' no esta definido en este scope`, expr.span);
+        // V30.42: primero buscamos en el scope local; si no esta,
+        // buscamos en el capturedScope (variables del call site).
+        if (scope.has(id.name)) return scope.get(id.name)!;
+        if (this.capturedScope && this.capturedScope.has(id.name)) {
+          return this.capturedScope.get(id.name)!;
         }
-        return scope.get(id.name)!;
+        comptimeError(`comptime: identificador '${id.name}' no esta definido en este scope`, expr.span);
+        return undefined;
       }
       case "ArrayLiteralExpression": {
         const arr = (expr as ArrayLiteralExpression).elements.map((el) => {
@@ -852,62 +939,80 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
 
   const interp = new ComptimeInterpreter(limits, functions);
 
-  const visitExpr = (node: Expression): Expression => {
-    // Hacemos una copia del nodo para no mutar el AST original.
-    // Si el nodo es una llamada a comptime(), lo sustituimos.
+  // V30.42: visitExpr ahora recibe el scope del call site para que
+  // el arrow de comptime() pueda capturar variables del scope
+  // (subproducto de la integracion con @comptime functions).
+  const visitExpr = (node: Expression, scope: Map<string, ComptimeValue>): Expression => {
     if (node.kind === "CallExpression" && (node as CallExpression).callee === "comptime") {
-      return evalComptimeCall(node as CallExpression, interp);
+      return evalComptimeCall(node as CallExpression, interp, scope);
     }
-    // Si es un MemberCallExpression tipo `obj.comptime(...)` no es comptime
-    // (comptime es global), asi que lo dejamos.
+    // V30.42: si la llamada es a una funcion @comptime, evaluarla
+    // estaticamente con el scope del call site.
+    if (node.kind === "CallExpression" && interp.isComptimeFunction((node as CallExpression).callee)) {
+      return evalComptimeFunctionCall(node as CallExpression, interp, scope);
+    }
     return node;
   };
 
-  const visitStmt = (stmt: Statement): Statement => {
-    // Recorremos recursivamente. El Comptime call puede aparecer en
-    // cualquier expression dentro de un statement.
+  const visitStmt = (stmt: Statement, scope: Map<string, ComptimeValue>): Statement => {
+    // V30.42: delegamos toda la logica a walkStatement, que tambien
+    // hace scope-tracking para captura de variables.
     if (stmt.kind === "FunctionDeclaration") {
-      // V30.41: comptime() puede aparecer en el body de una
-      // function declaration. FunctionDeclaration.body siempre es
-      // BlockStatement, asi que reescribimos sus statements.
-      const newBody = walkBlock(stmt.body, visitExpr);
+      // Para function declarations, el scope es vacio (las
+      // variables definidas dentro de la funcion no se exportan
+      // al scope del archivo; las capturas van al reves, de archivo
+      // a funcion).
+      const newBody = walkBlock(stmt.body, visitExpr, new Map());
       if (newBody.kind === "BlockStatement") return { ...stmt, body: newBody };
       return stmt;
     }
     if (stmt.kind === "ClassDeclaration") {
-      // V30.41: comptime() puede aparecer en los bodies de los
-      // metodos de clase.
       const newMethods = stmt.methods.map((method) => {
-        const newBody = walkBlock(method.body, visitExpr);
+        const newBody = walkBlock(method.body, visitExpr, new Map());
         if (newBody.kind === "BlockStatement") return { ...method, body: newBody };
         return method;
       });
       return { ...stmt, methods: newMethods };
     }
-    if (stmt.kind === "VariableDeclaration") {
-      if (stmt.initializer) {
-        const newInit = visitExpr(stmt.initializer);
-        return { ...stmt, initializer: newInit };
-      }
-      return stmt;
-    }
-    if (stmt.kind === "ExpressionStatement") {
-      return { ...stmt, expression: visitExpr(stmt.expression) };
-    }
-    if (stmt.kind === "ReturnStatement" && stmt.value) {
-      return { ...stmt, value: visitExpr(stmt.value) };
-    }
-    // Para sentencias complejas (if, while, for), descendemos.
-    return walkStatement(stmt, visitExpr);
+    return walkStatement(stmt, visitExpr, scope);
   };
 
   return {
     ...program,
-    statements: program.statements.map(visitStmt),
+    statements: program.statements.map((s) => visitStmt(s, new Map())),
   };
 }
 
-function evalComptimeCall(call: CallExpression, interp: ComptimeInterpreter): Expression {
+/** V30.42: convierte un LiteralExpression (o Array/Object) a
+ *  ComptimeValue para meterlo en el scope. */
+function literalToValue(expr: Expression): ComptimeValue {
+  if (expr.kind === "LiteralExpression") {
+    return (expr as { value: number | string | boolean | null }).value;
+  }
+  if (expr.kind === "ArrayLiteralExpression") {
+    return (expr as { elements: Expression[] }).elements.map(literalToValue);
+  }
+  if (expr.kind === "ObjectLiteralExpression") {
+    const fields = new Map<string, ComptimeValue>();
+    for (const p of (expr as { properties: { key: string; value: Expression }[] }).properties) {
+      fields.set(p.key, literalToValue(p.value));
+    }
+    return { __comptime: "object", fields } as ComptimeObject;
+  }
+  return undefined;
+}
+
+/** V30.42: evalúa una llamada a una función @comptime. */
+function evalComptimeFunctionCall(
+  call: CallExpression,
+  interp: ComptimeInterpreter,
+  scope: Map<string, ComptimeValue>,
+): Expression {
+  const result = interp.evalComptimeFunction(call.callee, call.args, scope, call.span);
+  return valueToLiteral(result, call.span);
+}
+
+function evalComptimeCall(call: CallExpression, interp: ComptimeInterpreter, outerScope?: Map<string, ComptimeValue>): Expression {
   if (call.args.length !== 1) {
     comptimeError(
       `comptime() espera exactamente 1 argumento; recibio ${call.args.length}`,
@@ -921,7 +1026,7 @@ function evalComptimeCall(call: CallExpression, interp: ComptimeInterpreter): Ex
       call.span,
     );
   }
-  const result = interp.evalArrow(arg as ArrowFunctionExpression, call.span);
+  const result = interp.evalArrow(arg as ArrowFunctionExpression, call.span, outerScope);
   return valueToLiteral(result.value, call.span);
 }
 
@@ -967,47 +1072,56 @@ function valueToLiteral(value: ComptimeValue, span: { start: number; end: number
   comptimeError(`comptime: tipo de valor no soportado en conversion a literal`, span);
 }
 
-/** Recorre un statement complejo (if/while/for) buscando comptime() en expressions. */
-function walkStatement(stmt: Statement, visitExpr: (e: Expression) => Expression): Statement {
+/** Recorre un statement complejo (if/while/for) buscando comptime() en expressions.
+ *  V30.42: tambien hace scope-tracking para que comptime() dentro
+ *  de un function body pueda capturar variables. */
+function walkStatement(stmt: Statement, visitExpr: (e: Expression, scope: Map<string, ComptimeValue>) => Expression, scope: Map<string, ComptimeValue>): Statement {
   if (stmt.kind === "IfStatement") {
     return {
       ...stmt,
-      condition: visitExpr(stmt.condition),
-      thenBranch: walkBlock(stmt.thenBranch, visitExpr),
-      elseBranch: stmt.elseBranch ? walkBlock(stmt.elseBranch, visitExpr) : undefined,
+      condition: visitExpr(stmt.condition, scope),
+      thenBranch: walkBlock(stmt.thenBranch, visitExpr, scope),
+      elseBranch: stmt.elseBranch ? walkBlock(stmt.elseBranch, visitExpr, scope) : undefined,
     } as Statement;
   }
   if (stmt.kind === "WhileStatement") {
-    return { ...stmt, condition: visitExpr(stmt.condition), body: walkBlock(stmt.body, visitExpr) } as Statement;
+    return { ...stmt, condition: visitExpr(stmt.condition, scope), body: walkBlock(stmt.body, visitExpr, scope) } as Statement;
   }
   if (stmt.kind === "ForStatement") {
     return {
       ...stmt,
-      initializer: stmt.initializer ? walkStatement(stmt.initializer, visitExpr) : undefined,
-      condition: stmt.condition ? visitExpr(stmt.condition) : undefined,
-      increment: stmt.increment ? visitExpr(stmt.increment) : undefined,
-      body: walkBlock(stmt.body, visitExpr),
+      initializer: stmt.initializer ? walkStatement(stmt.initializer, visitExpr, scope) : undefined,
+      condition: stmt.condition ? visitExpr(stmt.condition, scope) : undefined,
+      increment: stmt.increment ? visitExpr(stmt.increment, scope) : undefined,
+      body: walkBlock(stmt.body, visitExpr, scope),
     } as Statement;
   }
   if (stmt.kind === "BlockStatement") {
-    return { ...stmt, statements: stmt.statements.map((s) => walkStatement(s, visitExpr)) } as Statement;
+    return { ...stmt, statements: stmt.statements.map((s) => walkStatement(s, visitExpr, scope)) } as Statement;
   }
   if (stmt.kind === "ReturnStatement" && stmt.value) {
-    return { ...stmt, value: visitExpr(stmt.value) } as Statement;
+    return { ...stmt, value: visitExpr(stmt.value, scope) } as Statement;
   }
   if (stmt.kind === "ExpressionStatement") {
-    return { ...stmt, expression: visitExpr(stmt.expression) } as Statement;
+    return { ...stmt, expression: visitExpr(stmt.expression, scope) } as Statement;
   }
   if (stmt.kind === "VariableDeclaration" && stmt.initializer) {
-    return { ...stmt, initializer: visitExpr(stmt.initializer) } as Statement;
+    const newInit = visitExpr(stmt.initializer, scope);
+    // V30.42: registrar el valor en el scope para que comptime()
+    // posteriores puedan capturarlo.
+    if (newInit.kind === "LiteralExpression" || newInit.kind === "ObjectLiteralExpression" || newInit.kind === "ArrayLiteralExpression") {
+      scope.set((stmt as { name: string }).name, literalToValue(newInit));
+    }
+    return { ...stmt, initializer: newInit } as Statement;
   }
   return stmt;
 }
 
 function walkBlock(
   block: BlockStatement | Expression,
-  visitExpr: (e: Expression) => Expression,
+  visitExpr: (e: Expression, scope: Map<string, ComptimeValue>) => Expression,
+  scope: Map<string, ComptimeValue>,
 ): BlockStatement | Expression {
-  if (block.kind !== "BlockStatement") return visitExpr(block);
-  return { ...block, statements: block.statements.map((s) => walkStatement(s, visitExpr)) };
+  if (block.kind !== "BlockStatement") return visitExpr(block, scope);
+  return { ...block, statements: block.statements.map((s) => walkStatement(s, visitExpr, scope)) };
 }
