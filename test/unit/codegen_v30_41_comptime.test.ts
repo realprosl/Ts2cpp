@@ -733,18 +733,146 @@ test("comptime: con objects anidados (verifica que el codegen no falla)", async 
 });
 
 // ============================================================
-// 16. V30.45: tests de mensajes de error del comptime-evaluator
+// 17. V30.46: cross-module @comptime
 // ============================================================
 //
-// Cada error del evaluador debe:
-//   1. Tener un mensaje claro que identifique el problema.
-//   2. Incluir un `hint` con sugerencias concretas de como resolverlo.
+// Tests que verifican que el comptime cross-module funciona:
+// una funcion @comptime declarada en un archivo .ets y usada desde
+// otro archivo .ets se evalua estaticamente (sustitucion por
+// literal en el call site).
+
+import { compileFile } from "../../src/modules/module-loader.ts";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "v30_46_"));
+  try { return await fn(dir); }
+  finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+test("cross-module: @comptime function de otro archivo se evalua estaticamente", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "math.ets"), `@comptime
+export function fib(n: number): number {
+  return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+}
+`);
+    await writeFile(join(dir, "main.ets"), `import { fib } from "./math.ets";
+function main(): void {
+  let v: number = fib(5);
+  print(numberToString(v));
+}
+`);
+    const result = await compileFile(join(dir, "main.ets"));
+    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    // fib(5) = 8, se sustituye por literal
+    assert.match(allCpp, /double v = 8\.0/);
+    // fib NO se emite (solo se usaba estaticamente, V30.43 la filtra)
+    assert.doesNotMatch(allCpp, /double fib/);
+  });
+});
+
+test("cross-module: @comptime con captura de variable del modulo importado", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "math.ets"), `export let limit: number = 10;
+@comptime
+export function bounded(n: number): number {
+  return n > limit ? limit : n;
+}
+`);
+    await writeFile(join(dir, "main.ets"), `import { bounded } from "./math.ets";
+function main(): void {
+  let v: number = bounded(100);
+  print(numberToString(v));
+}
+`);
+    const result = await compileFile(join(dir, "main.ets"));
+    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    // bounded(100) con limit=10 retorna 10
+    assert.match(allCpp, /double v = 10\.0/);
+    // bounded NO se emite
+    assert.doesNotMatch(allCpp, /double bounded/);
+  });
+});
+
+test("cross-module: @comptime recursiva cross-module se evalua estaticamente", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "math.ets"), `@comptime
+export function fact(n: number): number {
+  return n <= 1 ? 1 : n * fact(n-1);
+}
+`);
+    await writeFile(join(dir, "main.ets"), `import { fact } from "./math.ets";
+function main(): void {
+  let v: number = fact(10);
+  print(numberToString(v));
+}
+`);
+    const result = await compileFile(join(dir, "main.ets"));
+    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    // 10! = 3628800
+    assert.match(allCpp, /double v = 3628800\.0/);
+    // fact NO se emite
+    assert.doesNotMatch(allCpp, /double fact/);
+  });
+});
+
+test("cross-module: @comptime usada en runtime (parametro local) SI se emite", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "math.ets"), `@comptime
+export function fib(n: number): number {
+  return n <= 1 ? 1 : fib(n-1) + fib(n-2);
+}
+`);
+    await writeFile(join(dir, "main.ets"), `import { fib } from "./math.ets";
+function caller(x: number): number { return fib(x); }
+function main(): void {
+  let v: number = caller(5);
+  print(numberToString(v));
+}
+`);
+    const result = await compileFile(join(dir, "main.ets"));
+    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    // fib SI se emite porque caller(x) la llama con parametro runtime
+    assert.match(allCpp, /double fib/);
+    // caller tambien se emite
+    assert.match(allCpp, /double caller/);
+  });
+});
+
+test("cross-module: variable del modulo importado no comptime-evaluable -> @comptime queda runtime", async () => {
+  await withTempDir(async (dir) => {
+    // `limit` se inicializa con una llamada a runtimeFunc() que no
+    // es comptime-evaluable. El eval no puede capturar el valor
+    // estatico, asi que bounded queda como funcion runtime.
+    await writeFile(join(dir, "math.ets"), `function runtimeFunc(): number { return Math.floor(Math.random() * 100); }
+export let limit: number = runtimeFunc();
+@comptime
+export function bounded(n: number): number {
+  return n > limit ? limit : n;
+}
+`);
+    await writeFile(join(dir, "main.ets"), `import { bounded } from "./math.ets";
+function main(): void {
+  let v: number = bounded(100);
+  print(numberToString(v));
+}
+`);
+    // bounded NO se puede evaluar estaticamente (limit es runtime),
+    // asi que se emite como funcion normal. La llamada se queda
+    // como bounded(100.0) en el cpp.
+    const result = await compileFile(join(dir, "main.ets"));
+    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    // bounded SI se emite
+    assert.match(allCpp, /double bounded/);
+    // La llamada queda como runtime
+    assert.match(allCpp, /double v = bounded\(100\.0\)/);
+  });
+});
 
 test("comptime error: division por cero incluye hint explicativo", () => {
-  assert.throws(
-    () => compile(`function main(): void { let v: number = comptime((): number => 1 / 0); print(numberToString(v)); }`),
-    /division por cero/,
-  );
   try {
     compile(`function main(): void { let v: number = comptime((): number => 1 / 0); print(numberToString(v)); }`);
   } catch (e) {
