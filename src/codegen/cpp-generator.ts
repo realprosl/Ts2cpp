@@ -3349,6 +3349,28 @@ export class CppGenerator {
           }
           const cpp = cppArrayType(type ?? "void[]");
           const items: string[] = [];
+          // V30.39: calcular el tamano total del array para emitir
+          // `dst.reserve(N)` al inicio del lambda. Esto evita las
+          // reasignaciones geometricas que std::vector hace por defecto
+          // (1, 2, 4, 8, 16...) y los memcpys asociados. Para cada
+          // spread, el tamano es `(expr).size()`; para cada elemento
+          // no-spread, es +1. Si algun spread no tiene tipo array
+          // conocido, omitimos el reserve (no podemos calcular su tamano).
+          let knownTotalSize = 0;
+          let canReserve = true;
+          for (const item of node.elements) {
+            if (item.kind === "SpreadElement") {
+              const exprType = this.expressionType(item.expression);
+              if (exprType && (isArrayType(exprType) || (isGenericType(exprType) && genericBase(exprType) === "Array"))) {
+                knownTotalSize += 1; // marcador: al menos sabemos que es 1 spread de tamano desconocido a priori
+              } else {
+                canReserve = false;
+                break;
+              }
+            } else {
+              knownTotalSize += 1;
+            }
+          }
           for (const item of node.elements) {
             if (item.kind === "SpreadElement") {
               items.push(`dst.insert(dst.end(), (${this.emitExpression(item.expression)}).begin(), (${this.emitExpression(item.expression)}).end());`);
@@ -3356,14 +3378,35 @@ export class CppGenerator {
               items.push(`dst.push_back(${this.emitExpression(item as import("../ast/nodes.ts").Expression)});`);
             }
           }
+          // V30.39: pre-reserva con el tamano conocido. Para los spreads
+          // concretos (expr.size()), anadimos su tamano al total. Esto
+          // produce `dst.reserve(a.size() + b.size() + 2)` para
+          // `[...a, ...b, x, y]`, que es exacto.
+          if (canReserve) {
+            const sizeParts: string[] = [];
+            for (const item of node.elements) {
+              if (item.kind === "SpreadElement") {
+                sizeParts.push(`(${this.emitExpression(item.expression)}).size()`);
+              } else {
+                sizeParts.push("1");
+              }
+            }
+            const reserveStmt = `dst.reserve(${sizeParts.join(" + ")});`;
+            // Insertamos el reserve ANTES del primer item.
+            items.unshift(reserveStmt);
+          }
           // Construir el lambda con su captura. La sintaxis C++ requiere
           // que los corchetes esten siempre: `[]` para captura vacia,
           // `[this, x]` para captura con valores. No se puede tener
           // `[this][]` ni nada parecido.
+          // V30.39: usar `std::move(dst)` al final para forzar move
+          // semantics en la asignacion. NRVO deberia aplicar pero el
+          // move explicito garantiza que nunca hay copia, incluso si
+          // el optimizador falla.
           const captureList = Array.from(captureSet).join(", ");
           const lambda = captureList
-            ? `[${captureList}](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; }`
-            : `[](${cpp} dst) -> ${cpp} { ${items.join(" ")} return dst; }`;
+            ? `[${captureList}](${cpp} dst) -> ${cpp} { ${items.join(" ")} return std::move(dst); }`
+            : `[](${cpp} dst) -> ${cpp} { ${items.join(" ")} return std::move(dst); }`;
           return `(${lambda})(${cpp}{})`;
         }
         // Para arrays con tipos move-only (Task<T>, Optional<T>, Result<T>), el
