@@ -766,7 +766,7 @@ function main(): void {
 }
 `);
     const result = await compileFile(join(dir, "main.ets"));
-    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    const allCpp = result.header + "\n" + result.modules.map((m) => m.cpp).join("\n");
     // fib(5) = 8, se sustituye por literal
     assert.match(allCpp, /double v = 8\.0/);
     // fib NO se emite (solo se usaba estaticamente, V30.43 la filtra)
@@ -789,7 +789,7 @@ function main(): void {
 }
 `);
     const result = await compileFile(join(dir, "main.ets"));
-    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    const allCpp = result.header + "\n" + result.modules.map((m) => m.cpp).join("\n");
     // bounded(100) con limit=10 retorna 10
     assert.match(allCpp, /double v = 10\.0/);
     // bounded NO se emite
@@ -811,7 +811,7 @@ function main(): void {
 }
 `);
     const result = await compileFile(join(dir, "main.ets"));
-    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    const allCpp = result.header + "\n" + result.modules.map((m) => m.cpp).join("\n");
     // 10! = 3628800
     assert.match(allCpp, /double v = 3628800\.0/);
     // fact NO se emite
@@ -834,7 +834,7 @@ function main(): void {
 }
 `);
     const result = await compileFile(join(dir, "main.ets"));
-    const allCpp = result.header + "\n" + result.modules.map(m => m.cpp).join("\n");
+    const allCpp = result.header + "\n" + result.modules.map((m) => m.cpp).join("\n");
     // fib SI se emite porque caller(x) la llama con parametro runtime
     assert.match(allCpp, /double fib/);
     // caller tambien se emite
@@ -982,4 +982,142 @@ test("comptime error: comptime() anidada tiene hint explicativo", () => {
     assert.match(msg, /hint:/);
     assert.match(msg, /refactoriza|anidar/i, "el hint debe mencionar refactorizacion");
   }
+});
+
+// ============================================================
+// 18. V30.47 + V30.48: @cppgen y @etsgen — generadores de codigo
+// ============================================================
+//
+// Tests que verifican que el dialecto soporta dos decorators para
+// generar codigo en tiempo de transpilacion:
+//   - @cppgen: retorna un string con C++ literal (se inyecta tal cual).
+//   - @etsgen: retorna un string con codigo del dialecto (se parsea
+//     y compila a C++ antes de inyectarse).
+// Ambos se filtran automaticamente con V30.43 si solo se usan estaticamente.
+
+test("@cppgen: funcion que retorna C++ literal se inyecta tal cual", () => {
+  const src = `@cppgen
+function genDecl(name: string, value: number): string {
+  return "int " + name + " = " + value + ";";
+}
+function main(): void {
+  genDecl("x", 42);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El codigo C++ generado aparece en el output tal cual
+  assert.match(cpp, /int x = 42;/);
+  // genDecl NO se emite (filtrada por V30.43)
+  assert.doesNotMatch(cpp, /std::string genDecl/);
+});
+
+test("@cppgen: con bucles para generar codigo repetitivo", () => {
+  const src = `@cppgen
+function genFields(count: number): string {
+  let s: string = "";
+  for (let i: number = 0; i < count; i += 1) {
+    s = s + "    int field" + i + ";";
+  }
+  return s;
+}
+function main(): void {
+  genFields(3);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // Tres campos generados
+  assert.match(cpp, /int field0;/);
+  assert.match(cpp, /int field1;/);
+  assert.match(cpp, /int field2;/);
+});
+
+test("@cppgen: error claro si retorna un valor no-string", () => {
+  // La funcion @cppgen retorna un number en vez de un string.
+  // El comptime debe dar un error claro.
+  assert.throws(
+    () => compile(`@cppgen
+    function bad(): number { return 42; }
+    function main(): void { bad(); print(numberToString(0)); }`),
+    /debe retornar un string/,
+  );
+});
+
+test("@etsgen: genera codigo del dialecto que se compila a C++", () => {
+  // @etsgen permite generar codigo del dialecto (no C++ literal)
+  // que se parsea y compila antes de inyectarse.
+  const src = `@etsgen
+function genIf(threshold: number): string {
+  return "if (x > " + threshold + ") { print('big'); } else { print('small'); }";
+}
+function main(): void {
+  let x: number = 10;
+  genIf(5);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El if/else se compila a C++ real
+  assert.match(cpp, /if \(\(x > 5\.0\)\)/);
+  assert.match(cpp, /print\(std::string\("big"\)\)/);
+  assert.match(cpp, /print\(std::string\("small"\)\)/);
+  // genIf NO se emite
+  assert.doesNotMatch(cpp, /std::string genIf/);
+});
+
+test("@etsgen: permite generar bucles del dialecto", () => {
+  // El body de la funcion @etsgen debe ser un return simple
+  // (expression unica). Para codigo con control flow, el usuario
+  // debe usar @cppgen con C++ literal, o un wrapper @comptime que
+  // compute el string.
+  const src = `@etsgen
+function genLoop(n: number): string {
+  return "for (let i: number = 0; i < " + n + "; i += 1) { print(numberToString(i)); }";
+}
+function main(): void {
+  genLoop(3);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El for generado debe aparecer en el cpp (con los parentesis extra
+  // que mete el codegen para evitar warning de precedence).
+  assert.match(cpp, /for \(double i = 0\.0; \(i < 3\.0\)/);
+  assert.match(cpp, /i \+= 1\.0/);
+});
+
+test("@etsgen: composicion — @etsgen con string interpolation", () => {
+  // @etsgen puede usar template literals para construir el codigo.
+  // El codigo retornado se parsea como dialecto, asi que las
+  // expresiones inyectadas deben ser expresiones validas.
+  const src = `@etsgen
+function genLogic(n: number): string {
+  return \`print("count=" + numberToString(\${n}));\`;
+}
+function main(): void {
+  genLogic(42);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El print generado debe aparecer con la concatenacion. El codegen
+  // puede usar operator+ o ets::concat (ambos son validos).
+  assert.match(cpp, /print\(.*count=.*numberToString\(42\.0\)/);
+});
+
+test("@etsgen: @etsgen y @cppgen pueden coexistir en el mismo archivo", () => {
+  const src = `@cppgen
+function makeHeader(): string {
+  return "// auto-generated header";
+}
+@etsgen
+function makeBody(): string {
+  return "print(numberToString(42));";
+}
+function main(): void {
+  makeHeader();
+  makeBody();
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El comentario del @cppgen aparece literal
+  assert.match(cpp, /\/\/ auto-generated header/);
+  // El print del @etsgen se compila
+  assert.match(cpp, /print\(numberToString\(42\.0\)\)/);
 });

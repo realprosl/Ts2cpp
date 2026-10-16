@@ -91,7 +91,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression | NamedArgumentExpression | SpreadElement) & {
+export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression | NamedArgumentExpression | SpreadElement | RawCppExpression) & {
   /**
    * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
    * El codegen consume este campo directamente en lugar de parsear
@@ -125,6 +125,12 @@ export interface ArrowFunctionExpression { kind: "ArrowFunctionExpression"; para
 export interface SatisfiesExpression { kind: "SatisfiesExpression"; operand: Expression; declaredType: TypeName; span: Span }
 export interface MatchArm { pattern: Expression; result: Expression; span: Span }
 export interface MatchExpression { kind: "MatchExpression"; subject: Expression; arms: MatchArm[]; span: Span }
+/** V30.47: nodo sintético que el comptime-evaluator produce cuando
+ * una función `@cppgen` retorna un string. El codegen emite el
+ * `value` tal cual (sin quotes), lo que permite generar C++ arbitrario
+ * desde comptime. Se usa SOLO como resultado de una llamada a
+ * @cppgen function; el usuario nunca lo construye directamente. */
+export interface RawCppExpression { kind: "RawCppExpression"; value: string; span: Span }
 // `parts` y `expressions` tienen la misma longitud menos 1 (siempre hay un
 // parte más que expresiones). Las partes son los trozos literales; las
 // expresiones se intercalan entre ellas y se evalúan para producir texto.
