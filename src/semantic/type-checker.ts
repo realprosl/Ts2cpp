@@ -2293,8 +2293,23 @@ export class TypeChecker {
           break;
         }
         const right = this.expression(node.right, scope);
-        if (node.operator === "+" && left === "string" && right === "string") result = "string";
-        else if (node.operator === "??") {
+        // V30.36: `+` con al menos un operando string hace string
+        // concat (estilo JS: `"x" + 5` -> `"x5"`, `5 + true` -> `"5true"`).
+        // El operando no-string se acepta si es string | number |
+        // boolean | any | numericType. El codegen emite `ets::concat(...)`
+        // y envuelve los operandos no-string con `ets::stringify(...)`
+        // para que C++ reciba un std::string.
+        if (node.operator === "+" && (left === "string" || right === "string")) {
+          // V30.36: aceptar el operando no-string si es `string`,
+          // `number` (que se mapea a `double` en C++), `boolean`,
+          // `any` o cualquier tipo numerico concreto (i8..u64, f32, f64).
+          const isStringifiable = (t: TypeName) => t === "string" || t === "number" || t === "any" || t === "boolean" || isNumericType(t);
+          if (!isStringifiable(left)) this.report(node.left, `No se puede concatenar '${left}' con string. Usa numberToString() o template literals.`);
+          if (!isStringifiable(right)) this.report(node.right, `No se puede concatenar '${right}' con string. Usa numberToString() o template literals.`);
+          result = "string";
+          break;
+        }
+        if (node.operator === "??") {
           // `??` (nullish coalescing) sobre `Optional<T>`. El operando izquierdo
           // debe ser `Optional<T>` y el derecho debe ser de tipo `T` (el
           // default). Resultado: `T`.
