@@ -731,3 +731,127 @@ test("comptime: con objects anidados (verifica que el codegen no falla)", async 
   ].join("\n");
   await runEtsFull(src, "42");
 });
+
+// ============================================================
+// 16. V30.45: tests de mensajes de error del comptime-evaluator
+// ============================================================
+//
+// Cada error del evaluador debe:
+//   1. Tener un mensaje claro que identifique el problema.
+//   2. Incluir un `hint` con sugerencias concretas de como resolverlo.
+
+test("comptime error: division por cero incluye hint explicativo", () => {
+  assert.throws(
+    () => compile(`function main(): void { let v: number = comptime((): number => 1 / 0); print(numberToString(v)); }`),
+    /division por cero/,
+  );
+  try {
+    compile(`function main(): void { let v: number = comptime((): number => 1 / 0); print(numberToString(v)); }`);
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /hint:/, "el error debe incluir un hint");
+    assert.match(msg, /condicional|refactoriza/i, "el hint debe sugerir un condicional");
+  }
+});
+
+test("comptime error: recursion excedida incluye hint de como aumentar el limite", () => {
+  try {
+    compile(
+      `@comptime
+      function fact(n: number): number {
+        return n <= 1 ? 1 : n * fact(n-1);
+      }
+      function main(): void { let v: number = fact(200); print(numberToString(v)); }`,
+    );
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /profundidad de recursion/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /limite|@comptime|comptime\(\)/i, "el hint debe mencionar el limite o comptime()");
+  }
+});
+
+test("comptime error: identificador no definido incluye hint de que es comptime-compatibe", () => {
+  // xParam es un parametro de la funcion exterior — no comptime-compatibe.
+  try {
+    compile(`function main(xParam: number): void { let v: number = comptime((): number => xParam * 2); print(numberToString(v)); }`);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /xParam.*no esta definido/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /@comptime|comptime-compatibe|comptime\(\)/i, "el hint debe mencionar @comptime o comptime-compatibe");
+  }
+});
+
+test("comptime error: arrow async incluye hint", () => {
+  try {
+    compile(`function main(): void { let v: number = comptime(async (): number => 42); print(numberToString(v)); }`);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /async/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /runtime|event loop|transpilacion/i, "el hint debe mencionar runtime o event loop");
+  }
+});
+
+test("comptime error: arrow con parametros incluye hint", () => {
+  try {
+    compile(`function main(): void { let v: number = comptime((x: number): number => x * 2); print(numberToString(v)); }`);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /parametros/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /@comptime function/i, "el hint debe sugerir @comptime function");
+  }
+});
+
+test("comptime error: funcion no encontrada lista las disponibles", () => {
+  const src = `function helper(x: number): number { return x * 2; }
+  function main(): void {
+    let v: number = comptime((): number => noExiste(5));
+    print(numberToString(v));
+  }`;
+  try {
+    compile(src);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /noExiste.*no encontrada/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /helper/, "el hint debe listar las funciones disponibles (helper)");
+  }
+});
+
+test("comptime error: Math no soportado lista los soportados", () => {
+  try {
+    compile(`function main(): void { let v: number = comptime((): number => Math.random()); print(numberToString(v)); }`);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /Math\.random.*no soportado/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /abs.*floor.*ceil|sqrt.*pow/i, "el hint debe listar metodos soportados");
+  }
+});
+
+test("comptime error: comptime() anidada tiene hint explicativo", () => {
+  // Comptime anidada. El comptime exterior no puede llamar comptime()
+  // porque ya estamos en un comptime.
+  const src = `function main(): void {
+    let v: number = comptime((): number => comptime((): number => 42));
+    print(numberToString(v));
+  }`;
+  try {
+    compile(src);
+    assert.fail("debia lanzar error");
+  } catch (e) {
+    const msg = (e as Error).message;
+    assert.match(msg, /comptime\(\).*dentro de otra comptime\(\)/);
+    assert.match(msg, /hint:/);
+    assert.match(msg, /refactoriza|anidar/i, "el hint debe mencionar refactorizacion");
+  }
+});

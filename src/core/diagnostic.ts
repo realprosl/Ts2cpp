@@ -11,7 +11,15 @@ export interface Diagnostic { phase: DiagnosticPhase; message: string; span: Spa
 export class DiagnosticError extends Error {
   readonly diagnostics: Diagnostic[];
   constructor(diagnostics: Diagnostic[]) {
-    super(diagnostics.map(d => `${d.span.start.line}:${d.span.start.column} ${d.message}`).join("\n"));
+    super(
+      diagnostics
+        .map((d) => {
+          let line = `${d.span.start.line}:${d.span.start.column} ${d.message}`;
+          if (d.hint) line += `\n  = hint: ${d.hint}`;
+          return line;
+        })
+        .join("\n"),
+    );
     this.name = "DiagnosticError";
     this.diagnostics = diagnostics;
   }

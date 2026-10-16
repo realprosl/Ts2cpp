@@ -65,9 +65,20 @@ import { DiagnosticError, type Diagnostic } from "../core/diagnostic.ts";
  * El DiagnosticError normal espera un array de `Diagnostic`, pero
  * para errores puntuales del evaluador es más cómodo pasar un string.
  * Devuelve `never` para que TS sepa que el control no continúa. */
-function comptimeError(message: string, span: { start: number; end: number }): never {
-  const fullSpan = { start: { line: 0, column: span.start, offset: span.start }, end: { line: 0, column: span.end, offset: span.end } };
-  throw new DiagnosticError([{ phase: "semantic" as const, message, span: fullSpan }]);
+type ComptimeSpan = { start: { offset: number } | number; end: { offset: number } | number };
+
+function comptimeError(
+  message: string,
+  span: ComptimeSpan,
+  hint?: string,
+): never {
+  const startOffset = typeof span.start === "number" ? span.start : span.start.offset;
+  const endOffset = typeof span.end === "number" ? span.end : span.end.offset;
+  const fullSpan = { start: { line: 0, column: startOffset, offset: startOffset }, end: { line: 0, column: endOffset, offset: endOffset } };
+  const diag: Diagnostic = hint
+    ? { phase: "semantic" as const, message, span: fullSpan, hint }
+    : { phase: "semantic" as const, message, span: fullSpan };
+  throw new DiagnosticError([diag]);
 }
 
 /** Tipos de valores que puede devolver un evaluador comptime. */
@@ -139,12 +150,17 @@ class ComptimeInterpreter {
    *  arrow y luego en el `outerScope`. */
   evalArrow(arrow: ArrowFunctionExpression, at: { start: number; end: number }, outerScope?: Map<string, ComptimeValue>): ComptimeResult {
     if ((arrow as { isAsync?: boolean }).isAsync || (arrow as { async?: boolean }).async) {
-      comptimeError(`comptime() no soporta arrow functions async`, at);
+      comptimeError(
+        `comptime() no soporta arrow functions async`,
+        at,
+        `Las arrow functions comptime se ejecutan en tiempo de transpilacion (no hay event loop disponible). Si necesitas async, mueve esa logica a runtime usando una funcion normal (sin comptime).`,
+      );
     }
     if (arrow.params.length > 0) {
       comptimeError(
         `comptime() solo acepta arrow functions sin parametros; esta tiene ${arrow.params.length}`,
         at,
+        `Las arrow functions comptime no reciben parametros — todo lo que necesitan se captura del scope exterior. Si necesitas calcular algo parametrizado, declara una @comptime function con los parametros que necesites.`,
       );
     }
     // El scope del arrow empieza vacio; las free variables se
@@ -428,7 +444,11 @@ class ComptimeInterpreter {
         if (this.capturedScope && this.capturedScope.has(id.name)) {
           return this.capturedScope.get(id.name)!;
         }
-        comptimeError(`comptime: identificador '${id.name}' no esta definido en este scope`, expr.span);
+        comptimeError(
+          `comptime: identificador '${id.name}' no esta definido en este scope`,
+          expr.span,
+          `Las variables que comptime() puede capturar son las declaradas con 'let' o 'const' en el scope del archivo (top-level o dentro de la arrow). Las variables locales de funciones runtime, los parametros de funciones, y los identificadores globales (Math, Number, etc.) no son comptime-compatibes. Si necesitas usar una variable de un function body, marcala con @comptime.`,
+        );
         return undefined;
       }
       case "ArrayLiteralExpression": {
@@ -576,7 +596,11 @@ class ComptimeInterpreter {
       case "CallExpression": {
         const c = expr as CallExpression;
         if (c.callee === "comptime") {
-          comptimeError(`comptime() no se puede llamar dentro de otra comptime()`, expr.span);
+          comptimeError(
+            `comptime() no se puede llamar dentro de otra comptime()`,
+            expr.span,
+            `El evaluador comptime ya es un entorno totalmente controlado — no necesitas anidar. Si la operacion interior no se puede evaluar estaticamente (e.g. usa un parametro de la funcion exterior), la exterior tampoco podra. Refactoriza para que solo la operacion comptime-evaluable este dentro de comptime().`,
+          );
         }
         if (c.callee === "Math") {
           // No deberia llegar aqui como CallExpression; lo manejamos en MemberCallExpression.
@@ -586,9 +610,14 @@ class ComptimeInterpreter {
         // Llamada a funcion del archivo.
         const fn = this.functions.get(c.callee);
         if (!fn) {
+          const available = Array.from(this.functions.keys()).sort();
+          const availableList = available.length > 5
+            ? `${available.slice(0, 5).join(", ")}, ... (+${available.length - 5} mas)`
+            : available.join(", ") || "(ninguna)";
           comptimeError(
             `comptime: funcion '${c.callee}' no encontrada (solo se permiten funciones del mismo archivo)`,
             expr.span,
+            `Funciones disponibles en este archivo: ${availableList}. Si '${c.callee}' es un builtin (e.g. numberToString), no es comptime-evaluable: usa solo para formatear el resultado de comptime().`,
           );
         }
         this.recursionDepth++;
@@ -596,6 +625,7 @@ class ComptimeInterpreter {
           comptimeError(
             `comptime: profundidad de recursion excede ${this.limits.maxRecursion}`,
             expr.span,
+            `Si tu funcion es inherentemente recursiva (e.g. factorial, fibonacci), considera aumentar el limite. Tambien puedes dividir la recursion en multiples llamadas @comptime mas pequenas, o pre-calcular el valor con comptime() en lugar de @comptime.`,
           );
         }
         try {
@@ -690,7 +720,11 @@ class ComptimeInterpreter {
     if (op === "*") return this.toNumber(l, node) * this.toNumber(r, node);
     if (op === "/") {
       const r2 = this.toNumber(r, node);
-      if (r2 === 0) comptimeError(`comptime: division por cero`, node.span);
+      if (r2 === 0) comptimeError(
+        `comptime: division por cero`,
+        node.span,
+        `El evaluador de comptime rechaza la division por cero para evitar Infinity silencioso (que podria propagarse y causar bugs en runtime). Si esperas cero como denominador valido, usa un condicional (if (b !== 0) a / b) o refactoriza la operacion.`,
+      );
       return this.toNumber(l, node) / r2;
     }
     if (op === "%") return this.toNumber(l, node) % this.toNumber(r, node);
@@ -803,7 +837,12 @@ class ComptimeInterpreter {
       case "tan": { const v = num(args[0]!); return M.tan(v); }
       case "PI": return 3.141592653589793;
       case "E": return 2.718281828459045;
-      default: comptimeError(`comptime: Math.${method} no soportado`, node.span);
+      default:
+        comptimeError(
+          `comptime: Math.${method} no soportado`,
+          node.span,
+          `Los metodos de Math soportados son: abs, floor, ceil, round, min, max, sqrt, pow, log, sin, cos, tan, PI, E. Si necesitas otro metodo (e.g. Math.random), pre-calcula el valor con comptime() o muevelo a runtime.`,
+        );
     }
   }
 
