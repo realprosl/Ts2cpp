@@ -1239,11 +1239,13 @@ test("V30.21.1: default args en funciones no-template funcionan (forward con def
   // El forward debe llevar el default. El codegen emite
   // `void greet(std::string name = std::string("World"));`
   // (con std::string wrap para tipos de string).
-  const forwardMatch = out.match(/^void greet\([^;]+\);/m);
+  // V30.38: la forward decl ahora es `static inline` para funciones
+  // no exportadas (mismo linkage que la def).
+  const forwardMatch = out.match(/^(?:static inline )?void greet\([^;]+\);/m);
   assert.ok(forwardMatch, "debe haber un forward de greet");
   assert.match(forwardMatch![0], /std::string\("World"\)/, "el forward debe tener el default wrap en std::string");
   // La def no debe llevar el default.
-  const defMatch = out.match(/void greet\([^)]*\)\s*\{/m);
+  const defMatch = out.match(/(?:static inline )?void greet\([^)]*\)\s*\{/m);
   assert.ok(defMatch, "debe haber una def de greet");
   assert.doesNotMatch(defMatch![0], /World/, "la def no debe tener el default");
 });
