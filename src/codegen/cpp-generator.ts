@@ -3290,6 +3290,11 @@ export class CppGenerator {
         }
         return parts.length ? `ets::concat(${parts.join(", ")})` : `std::string("")`;
       }
+      // V30.47: nodo sintético del comptime-evaluator. Una función
+      // @cppgen retorna un string que se inyecta tal cual en el
+      // output C++. NO se escapan comillas ni nada — el usuario es
+      // responsable de que el string sea C++ válido.
+      case "RawCppExpression": return node.value;
       case "IdentifierExpression": return node.name === "this" ? "(*this)" : this.cppName(this.resolveAlias(node.name));
       case "GenericIdentifierExpression": {
         // V1.2: `Name<T1, T2>` antes de un member access en constructor de

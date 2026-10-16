@@ -129,6 +129,15 @@ class ComptimeInterpreter {
    *  evalúan estáticamente cuando se llaman con args comptime-
    *  compatibles. */
   private readonly comptimeFunctions: Map<string, FunctionDeclaration>;
+  /** V30.47: subset de `functions` con decorator `@cppgen`. Se
+   *  evalúan estáticamente y su valor de retorno (un string) se
+   *  inyecta en el output C++ tal cual. */
+  private readonly cppgenFunctions: Map<string, FunctionDeclaration>;
+  /** V30.48: subset de `functions` con decorator `@etsgen`. Se
+   *  evalúan estáticamente; su valor de retorno (un string) se
+   *  interpreta como codigo del dialecto, se parsea y se compila
+   *  a C++ antes de inyectar. */
+  private readonly etsgenFunctions: Map<string, FunctionDeclaration>;
   constructor(
     limits: ComptimeLimits,
     functions: Map<string, FunctionDeclaration>,
@@ -136,9 +145,17 @@ class ComptimeInterpreter {
     this.limits = limits;
     this.functions = functions;
     this.comptimeFunctions = new Map();
+    this.cppgenFunctions = new Map();
+    this.etsgenFunctions = new Map();
     for (const [name, fn] of functions) {
       if (fn.decorators && fn.decorators.some((d) => d.name === "comptime")) {
         this.comptimeFunctions.set(name, fn);
+      }
+      if (fn.decorators && fn.decorators.some((d) => d.name === "cppgen")) {
+        this.cppgenFunctions.set(name, fn);
+      }
+      if (fn.decorators && fn.decorators.some((d) => d.name === "etsgen")) {
+        this.etsgenFunctions.set(name, fn);
       }
     }
   }
@@ -184,6 +201,115 @@ class ComptimeInterpreter {
    *  función debe estar en `comptimeFunctions`. */
   isComptimeFunction(callee: string): boolean {
     return this.comptimeFunctions.has(callee);
+  }
+
+  /** V30.47: evalúa una llamada a una función `@cppgen`. La
+   *  función debe estar en `cppgenFunctions`. Retorna el string
+   *  generado (que el codegen inyecta tal cual en el output). */
+  isCppgenFunction(callee: string): boolean {
+    return this.cppgenFunctions.has(callee);
+  }
+
+  /** V30.48: detecta llamadas a funciones @etsgen. */
+  isEtsgenFunction(callee: string): boolean {
+    return this.etsgenFunctions.has(callee);
+  }
+
+  /** V30.48: evalúa una función @etsgen y retorna su string de salida
+   *  (código del dialecto, no C++ literal). */
+  evalEtsgenFunction(
+    callee: string,
+    args: Expression[],
+    outerScope: Map<string, ComptimeValue>,
+    at: { start: number; end: number },
+  ): ComptimeValue {
+    const fn = this.etsgenFunctions.get(callee);
+    if (!fn) {
+      comptimeError(`comptime: '${callee}' no es una funcion @etsgen`, at);
+    }
+    this.recursionDepth++;
+    if (this.recursionDepth > this.limits.maxRecursion) {
+      comptimeError(
+        `comptime: profundidad de recursion excede ${this.limits.maxRecursion}`,
+        at,
+        `Si tu funcion es inherentemente recursiva (e.g. factorial, fibonacci), considera aumentar el limite.`,
+      );
+    }
+    try {
+      if (fn.params.length !== args.length) {
+        comptimeError(
+          `comptime: '${callee}' espera ${fn.params.length} args, recibio ${args.length}`,
+          at,
+        );
+      }
+      const fnScope = new Map<string, ComptimeValue>();
+      for (let i = 0; i < fn.params.length; i++) {
+        fnScope.set(fn.params[i]!.name, this.evalExpression(args[i]!, outerScope));
+      }
+      this.capturedScope = outerScope;
+      try {
+        if (fn.body.kind === "BlockStatement") {
+          const v = this.evalBlock(fn.body, fnScope);
+          if (v && (v as { __comptime?: string }).__comptime === "early-return") {
+            return (v as { value: ComptimeValue }).value;
+          }
+          return v as ComptimeValue;
+        }
+        return this.evalExpression(fn.body, fnScope);
+      } finally {
+        this.capturedScope = null;
+      }
+    } finally {
+      this.recursionDepth--;
+    }
+  }
+
+  /** V30.47: evalúa una función @cppgen y retorna su string de salida. */
+  evalCppgenFunction(
+    callee: string,
+    args: Expression[],
+    outerScope: Map<string, ComptimeValue>,
+    at: { start: number; end: number },
+  ): ComptimeValue {
+    const fn = this.cppgenFunctions.get(callee);
+    if (!fn) {
+      comptimeError(`comptime: '${callee}' no es una funcion @cppgen`, at);
+    }
+    this.recursionDepth++;
+    if (this.recursionDepth > this.limits.maxRecursion) {
+      comptimeError(
+        `comptime: profundidad de recursion excede ${this.limits.maxRecursion}`,
+        at,
+        `Si tu funcion es inherentemente recursiva (e.g. factorial, fibonacci), considera aumentar el limite. Tambien puedes dividir la recursion en multiples llamadas @comptime mas pequenas, o pre-calcular el valor con comptime() en lugar de @comptime.`,
+      );
+    }
+    try {
+      if (fn.params.length !== args.length) {
+        comptimeError(
+          `comptime: '${callee}' espera ${fn.params.length} args, recibio ${args.length}`,
+          at,
+        );
+      }
+      const fnScope = new Map<string, ComptimeValue>();
+      for (let i = 0; i < fn.params.length; i++) {
+        fnScope.set(fn.params[i]!.name, this.evalExpression(args[i]!, outerScope));
+      }
+      this.capturedScope = outerScope;
+      try {
+        if (fn.body.kind === "BlockStatement") {
+          const v = this.evalBlock(fn.body, fnScope);
+          if (v && (v as { __comptime?: string }).__comptime === "early-return") {
+            return (v as { value: ComptimeValue }).value;
+          }
+          return v as ComptimeValue;
+        }
+        return this.evalExpression(fn.body, fnScope);
+      } finally {
+        this.capturedScope = null;
+      }
+    } finally {
+      this.recursionDepth--;
+    }
   }
 
   evalComptimeFunction(
@@ -1057,6 +1183,15 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
       // a los args (ya fueron evaluados por evalComptimeCall).
       return evalComptimeCall(node as CallExpression, interp, scope);
     }
+    // V30.47: si la llamada es a una funcion @cppgen, evaluarla
+    // estaticamente. El retorno (un string) se inyecta como
+    // RawCppExpression en el output. A diferencia de @comptime,
+    // @cppgen se procesa igual en body @comptime que en runtime
+    // (siempre es comptime-evaluable: sus args son strings,
+    // numbers, etc. y el output es C++ literal).
+    if (node.kind === "CallExpression" && interp.isCppgenFunction((node as CallExpression).callee)) {
+      return evalCppgenFunctionCall(node as CallExpression, interp, scope);
+    }
     // V30.43: si la llamada es a una funcion @comptime, evaluarla
     // estaticamente SOLO si los args son comptime-compatibles.
     // En runtime contexts (inComptimeBody=false), un arg puede NO
@@ -1176,16 +1311,19 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
  *  tiene, marca `comptimeOnly: true` (el codegen no la emite).
  *  Recursivamente: la recursion interna de la funcion @comptime
  *  cuenta como "dentro de si misma", no como uso externo. */
-function markComptimeOnlyFunctions(statements: Statement[]): Statement[] {
-  // Paso 1: encontrar todas las @comptime functions.
+export function markComptimeOnlyFunctions(statements: Statement[]): Statement[] {
+  // V30.47: encontrar todas las funciones comptime-evaluables
+  // (decoradas con @comptime O @cppgen). Ambos tipos se evaluan
+  // estaticamente y, si solo se usan en call sites estaticos, no
+  // necesitan emitirse como funciones runtime.
   const comptimeFns = new Map<string, FunctionDeclaration>();
   for (const stmt of statements) {
-    if (stmt.kind === "FunctionDeclaration" && stmt.decorators?.some((d) => d.name === "comptime")) {
+    if (stmt.kind === "FunctionDeclaration" && stmt.decorators?.some((d) => d.name === "comptime" || d.name === "cppgen" || d.name === "etsgen")) {
       comptimeFns.set(stmt.name, stmt);
     }
   }
   if (comptimeFns.size === 0) return statements;
-  // Paso 2: para cada @comptime fn, contar calls externas (fuera
+  // Para cada fn comptime-evaluable, contar calls externas (fuera
   // de su body). Si 0, marcarla comptimeOnly.
   const result: Statement[] = [];
   for (const stmt of statements) {
@@ -1260,6 +1398,26 @@ function evalComptimeFunctionCall(
 ): Expression {
   const result = interp.evalComptimeFunction(call.callee, call.args, scope, call.span);
   return valueToLiteral(result, call.span);
+}
+
+/** V30.47: evalúa una llamada a una función @cppgen. El resultado
+ *  es un string que el codegen inyecta tal cual en el output C++.
+ *  Retornamos un RawCppExpression (nodo sintético) que el codegen
+ *  reconoce. */
+function evalCppgenFunctionCall(
+  call: CallExpression,
+  interp: ComptimeInterpreter,
+  scope: Map<string, ComptimeValue>,
+): Expression {
+  const result = interp.evalCppgenFunction(call.callee, call.args, scope, { start: call.span.start.offset, end: call.span.end.offset });
+  if (typeof result !== "string") {
+    comptimeError(
+      `comptime: @cppgen function '${call.callee}' debe retornar un string (retorno ${typeof result})`,
+      call.span,
+      `Las funciones @cppgen generan codigo C++ que se inyecta en el output. El valor de retorno debe ser un string (el codigo C++ a emitir). Si quieres retornar un valor (number, object, etc.), usa @comptime en vez de @cppgen.`,
+    );
+  }
+  return { kind: "RawCppExpression", value: result, span: call.span };
 }
 
 function evalComptimeCall(call: CallExpression, interp: ComptimeInterpreter, outerScope?: Map<string, ComptimeValue>): Expression {
