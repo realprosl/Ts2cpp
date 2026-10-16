@@ -994,6 +994,48 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
 
   const interp = new ComptimeInterpreter(limits, functions);
 
+  // V30.46: pre-walk para recolectar TODAS las variables top-level
+  // del AST combinado. Esto es necesario para cross-module @comptime:
+  // si `bounded` (en math.ets) referencia `limit` (tambien en
+  // math.ets, top-level), el eval de `bounded(100)` desde main.ets
+  // debe poder resolver `limit` aunque la llamada venga de otro modulo.
+  // Sin este pre-walk, `limit` solo estaria en el scope del modulo
+  // que lo declara, y los call sites cross-module no lo verian.
+  const globalScope = new Map<string, ComptimeValue>();
+  const collectTopLevelVars = (stmts: Statement[]): void => {
+    for (const stmt of stmts) {
+      if (stmt.kind === "VariableDeclaration" && stmt.initializer) {
+        // V30.46: si el initializer es comptime-evaluable, lo
+        // evaluamos y lo agregamos al scope. Si no, lo dejamos
+        // fuera (no podemos capturar valores que no se conocen en
+        // transpilacion).
+        try {
+          const v = interp.evalExpression(stmt.initializer, globalScope);
+          if (v !== undefined) {
+            globalScope.set(stmt.name, v);
+          }
+        } catch {
+          // No se puede evaluar estaticamente (e.g. requiere
+          // input runtime). Lo dejamos fuera del scope.
+        }
+      }
+      // V30.46: tambien buscamos let/const dentro de ExportNamedDeclaration
+      // y otros wrappers. El dialecto puede envolver la declaracion
+      // en `export let ...`, `export const ...`, etc.
+      if (stmt.kind === "ExportNamedDeclaration" && stmt.declaration?.kind === "VariableDeclaration" && stmt.declaration.initializer) {
+        try {
+          const v = interp.evalExpression(stmt.declaration.initializer, globalScope);
+          if (v !== undefined) {
+            globalScope.set(stmt.declaration.name, v);
+          }
+        } catch {
+          // Ignorar.
+        }
+      }
+    }
+  };
+  collectTopLevelVars(program.statements);
+
   // V30.43: comprueba si un kind es de expression.
   const isExpressionKind = (kind: string): boolean => {
     return kind.endsWith("Expression") || kind === "LiteralExpression" || kind === "IdentifierExpression" || kind === "CallExpression" || kind === "MemberExpression" || kind === "ArrowFunctionExpression";
@@ -1099,15 +1141,20 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
       //     se evaluan al llamar a la funcion, no en el visitor)
       //   - runtime body: inComptimeBody=false (las subexpressions
       //     NO se evaluan, solo se procesan comptime() calls)
+      // V30.46: el body hereda el scope del padre (que ya tiene
+      // las variables globales del pre-walk) mas las variables
+      // locales de la funcion. Antes era `new Map()` lo que rompia
+      // cross-module @comptime (las funciones importadas no podian
+      // capturar variables del archivo importador).
       const isComptime = !!(stmt.decorators && stmt.decorators.some((d) => d.name === "comptime"));
-      const newBody = walkBlock(stmt.body, visitExpr, new Map(), isComptime);
+      const newBody = walkBlock(stmt.body, visitExpr, new Map(scope), isComptime);
       if (newBody.kind === "BlockStatement") return { ...stmt, body: newBody };
       return stmt;
     }
     if (stmt.kind === "ClassDeclaration") {
       const newMethods = stmt.methods.map((method) => {
         const isMethodComptime = !!(method.decorators && method.decorators.some((d) => d.name === "comptime"));
-        const newBody = walkBlock(method.body, visitExpr, new Map(), isMethodComptime);
+        const newBody = walkBlock(method.body, visitExpr, new Map(scope), isMethodComptime);
         if (newBody.kind === "BlockStatement") return { ...method, body: newBody };
         return method;
       });
@@ -1119,7 +1166,7 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
   return {
     ...program,
     statements: markComptimeOnlyFunctions(
-      program.statements.map((s) => visitStmt(s, new Map(), false)),
+      program.statements.map((s) => visitStmt(s, globalScope, false)),
     ),
   };
 }
