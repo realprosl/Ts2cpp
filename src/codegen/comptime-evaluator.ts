@@ -627,6 +627,11 @@ class ComptimeInterpreter {
       }
       case "MemberCallExpression": {
         const mc = expr as MemberCallExpression;
+        // V30.44: shortcut para Math.* (Math no esta en el scope
+        // del comptime, asi que lo detectamos directamente).
+        if (mc.object.kind === "IdentifierExpression" && (mc.object as IdentifierExpression).name === "Math") {
+          return this.evalMathBuiltin(mc.method, mc.args, scope, { span: { start: expr.span.start.offset, end: expr.span.end.offset } });
+        }
         // Builtin de arrays: arr.push(x), arr.indexOf(x), arr.includes(x), arr.length
         if (mc.object.kind === "IdentifierExpression" || true) {
           const target = this.evalExpression(mc.object, scope);
@@ -772,21 +777,32 @@ class ComptimeInterpreter {
 
   private evalMathBuiltin(method: string, args: Expression[], scope: Map<string, ComptimeValue>, node: { span: { start: number; end: number } }): ComptimeValue {
     const num = (e: Expression) => Number(this.evalExpression(e, scope));
+    const M = globalThis.Math;
     switch (method) {
-      case "abs": return Math.abs(num(args[0]!));
-      case "floor": return Math.floor(num(args[0]!));
-      case "ceil": return Math.ceil(num(args[0]!));
-      case "round": return Math.round(num(args[0]!));
-      case "min": return Math.min(...args.map((a) => num(a)));
-      case "max": return Math.max(...args.map((a) => num(a)));
-      case "sqrt": return Math.sqrt(num(args[0]!));
-      case "pow": return Math.pow(num(args[0]!), num(args[1]!));
-      case "log": return Math.log(num(args[0]!));
-      case "sin": return Math.sin(num(args[0]!));
-      case "cos": return Math.cos(num(args[0]!));
-      case "tan": return Math.tan(num(args[0]!));
-      case "PI": return Math.PI;
-      case "E": return Math.E;
+      case "abs": { const v = num(args[0]!); return v < 0 ? -v : v; }
+      case "floor": { const v = num(args[0]!); return M.floor(v); }
+      case "ceil": { const v = num(args[0]!); return M.ceil(v); }
+      case "round": { const v = num(args[0]!); return M.round(v); }
+      case "min": {
+        const vals = args.map((a) => num(a));
+        let m = vals[0]!;
+        for (let i = 1; i < vals.length; i++) if (vals[i]! < m) m = vals[i]!;
+        return m;
+      }
+      case "max": {
+        const vals = args.map((a) => num(a));
+        let m = vals[0]!;
+        for (let i = 1; i < vals.length; i++) if (vals[i]! > m) m = vals[i]!;
+        return m;
+      }
+      case "sqrt": { const v = num(args[0]!); return M.sqrt(v); }
+      case "pow": { const b = num(args[0]!); const e2 = num(args[1]!); return b ** e2; }
+      case "log": { const v = num(args[0]!); return M.log(v); }
+      case "sin": { const v = num(args[0]!); return M.sin(v); }
+      case "cos": { const v = num(args[0]!); return M.cos(v); }
+      case "tan": { const v = num(args[0]!); return M.tan(v); }
+      case "PI": return 3.141592653589793;
+      case "E": return 2.718281828459045;
       default: comptimeError(`comptime: Math.${method} no soportado`, node.span);
     }
   }
@@ -969,20 +985,30 @@ export function evaluateComptime(program: Program, limits: ComptimeLimits = DEFA
     if (node.kind === "CallExpression" && interp.isComptimeFunction((node as CallExpression).callee)) {
       // En un body @comptime, TODOS los args son comptime-compatibles
       // (porque se evaluaron al llamar a la funcion). En runtime,
-      // intentamos evaluar; si falla, dejamos el call site como esta.
+      // intentamos evaluar; si falla con "no comptime-compatibe"
+      // (e.g. un parametro local no esta en el scope), dejamos el
+      // call site como esta. Si falla con recursion excedida o
+      // memoria agotada, el error se propaga al usuario.
       if (inComptimeBody) {
         return evalComptimeFunctionCall(node as CallExpression, interp, scope);
       }
       // Runtime context: intentamos evaluar. Si los args son
       // comptime-compatibles, se evalúa y se sustituye. Si no, el
-      // eval fallaria con un error — capturamos y dejamos el call
-      // site como esta.
+      // eval falla con un mensaje que incluye "no esta definido" o
+      // "no es comptime-compatibe" — capturamos y dejamos el call
+      // site como esta. Otros errores (limites excedidos) se
+      // propagan.
       try {
         return evalComptimeFunctionCall(node as CallExpression, interp, scope);
       } catch (e) {
-        // Los args no son comptime-compatibles (e.g. un parametro
-        // local). Dejamos el call site como esta para runtime.
-        return node;
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("no esta definido") || msg.includes("no es comptime-compatibe")) {
+          // Args no comptime-compatibles (e.g. un parametro
+          // local). Dejamos el call site como esta para runtime.
+          return node;
+        }
+        // Error real (limite excedido, etc.) — propagar.
+        throw e;
       }
     }
     // V30.43: para el resto de expressions, descendemos a los
