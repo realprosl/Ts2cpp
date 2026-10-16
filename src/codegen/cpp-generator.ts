@@ -1190,6 +1190,9 @@ export class CppGenerator {
     // `export default` envuelve una declaración; hacemos unwrap para que el
     // dialecto (single-translation-unit) las procese como top-level directas.
     const unwrap = (stmt: Statement): Statement => stmt.kind === "ExportDefaultDeclaration" ? unwrap(stmt.declaration as Statement) : stmt;
+    // V30.41: comptime() se evalua ANTES del type-checker (en
+    // compiler.compile), asi que el AST que llega aqui ya no tiene
+    // llamadas a comptime() — han sido sustituidas por literales.
     const unwrapped = { ...program, statements: program.statements.map(unwrap) };
     const functions = unwrapped.statements.filter((s): s is FunctionDeclaration => s.kind === "FunctionDeclaration");
     const interfaces = unwrapped.statements.filter((s): s is InterfaceDeclaration => s.kind === "InterfaceDeclaration");

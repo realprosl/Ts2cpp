@@ -54,6 +54,14 @@ export function registerBuiltins(
   global.define("printError", fn([], "void"));
   global.define("writeError", fn([], "void"));
 
+  // V30.41: comptime() — evalua la arrow function en transpilacion
+  // y devuelve su resultado como literal. El type-checker no la
+  // intercepta; el codegen la sustituye ANTES de procesar el AST.
+  // El parametro se registra como `any` porque el dialecto no tiene
+  // inferencia de tipos para function types en `typeMatches` (limitación
+  // preexistente), y de todos modos queremos aceptar cualquier arrow.
+  global.define("comptime", fn([input("any")], "any"));
+
   // V9.1: awaiters io_uring. Mapean al runtime/ets_io_uring_async.hpp.
   // Version async: Promise<Result<T>>; version sync: Result<T>.
   global.define("asyncIoUringRead", fn([input("string")], "Promise<Result<string>>"));
