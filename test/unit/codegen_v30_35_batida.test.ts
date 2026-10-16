@@ -232,28 +232,53 @@ test("V30.35 sanity: Math, JSON, Date, regex", () => {
 // Bloque 3: Gaps documentados (NO fixed en V30.35, evidencia para el futuro)
 // =========================================================================
 
-test("V30.36 FIX: + con un operando string funciona (string concat)", () => {
-  // V30.36: el bug original era que `"" + 5` fallaba con
-  // "Se esperaba un operando numérico". Ahora `+` con un operando
-  // string hace string concat (estilo JS), convirtiendo el otro
-  // operando con numberToString. Valida que el caso compila Y que
-  // el cpp emite `ets::concat` envolviendo los operandos.
-  const cases: { src: string; expected: string }[] = [
+test("V30.37 FIX: + con string hace constant folding cuando todos los operandos son estaticos", () => {
+  // V30.36 emitia siempre ets::concat(...) incluso para concatenaciones
+  // que se podian resolver en compile-time. V30.37 anade constant
+  // folding: si todas las partes son estaticas (literales string,
+  // numericos, booleanos, templates con partes estaticas, o
+  // composiciones de los anteriores), el codegen emite un literal
+  // std::string("...") en vez de ets::concat(...). Esto:
+  //   1. Mete el string en .rodata (mas rapido en runtime)
+  //   2. Evita el coste de ets::concat para casos triviales
+  //   3. Mantiene el comportamiento funcional (output identico)
+  //
+  // Casos estaticos: deben emitir `std::string("...")`.
+  // Casos dinamicos (con variables): siguen emitiendo ets::concat.
+  const staticCases: { src: string; expected: string }[] = [
+    { src: 'print("hello" + " " + "world")', expected: 'hello world' },
     { src: 'print("x" + 5)', expected: 'x5' },
     { src: 'print(5 + "x")', expected: '5x' },
-    { src: 'print("hello" + " " + "world")', expected: 'hello world' },
-    { src: 'let b: boolean = true; print("v=" + b)', expected: 'v=true' },
+    { src: 'print("v=" + true)', expected: 'v=true' },
     { src: 'print("n=" + 42)', expected: 'n=42' },
-    { src: 'let n: i32 = 10; print("n=" + n)', expected: 'n=10' },
     { src: 'print("pi=" + 3.14)', expected: 'pi=3.14' },
+    { src: 'print("a" + 1 + "b" + 2 + "c")', expected: 'a1b2c' },
+    { src: 'print(-5 + "x")', expected: '-5x' },
   ];
-  for (const { src, expected } of cases) {
+  for (const { src, expected } of staticCases) {
     const r = compile(src);
-    assert.ok(r.cpp.includes("ets::concat"), src + " debe emitir ets::concat");
-    // El binary expression debe marcarse como string en expressionType.
-    // Validamos que el codegen genera la firma correcta.
-    assert.ok(r.cpp.includes("ets::string_numberToString") || r.cpp.includes("std::string") || r.cpp.includes("true") || r.cpp.includes("false") || r.cpp.includes("std::to_string"), src + " debe convertir el operando no-string");
+    assert.ok(r.cpp.includes(`std::string("${expected}")`), `${src} debe emitir std::string("${expected}"), obtuvo: ${r.cpp.match(/std::string\([^)]+\)/g)?.join(", ")}`);
+    assert.ok(!r.cpp.includes("ets::concat"), `${src} NO debe emitir ets::concat (constant fold), obtuvo: ${r.cpp}`);
   }
+  // Casos dinamicos: deben seguir emitiendo ets::concat.
+  const dynamicCases: string[] = [
+    'let b: boolean = true; print("v=" + b)',
+    'let n: i32 = 10; print("n=" + n)',
+    'let n: i32 = 10; print("n=" + (n + 1))',
+  ];
+  for (const src of dynamicCases) {
+    const r = compile(src);
+    assert.ok(r.cpp.includes("ets::concat"), `${src} debe emitir ets::concat (caso dinamico), obtuvo: ${r.cpp.match(/print\([^)]+\)/g)?.join(", ")}`);
+  }
+  // Template literal: si todas las expressions son estaticas, fold.
+  // Si alguna expression es dinamica, cae al path runtime.
+  const tplStatic = compile("print(`n = ${42}`)");
+  assert.ok(tplStatic.cpp.includes('std::string("n = 42")'), `template con literal debe fold: ${tplStatic.cpp}`);
+  const tplDynamic = compile("let x: i32 = 10; print(`x = ${x}`)");
+  assert.ok(tplDynamic.cpp.includes("ets::concat"), `template con var debe ser dinamico: ${tplDynamic.cpp}`);
+  // Template anidado: `` `a${`b${"c"}`}d` `` es todo estatico -> "abcd".
+  const tplNested = compile("print(`a${`b${\"c\"}`}d`)");
+  assert.ok(tplNested.cpp.includes('std::string("abcd")'), `template anidado debe fold: ${tplNested.cpp}`);
 });
 
 test("V30.35 gap: boolean.toString() no existe", () => {
