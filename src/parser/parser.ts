@@ -1056,6 +1056,15 @@ export class Parser {
       const declaredType = this.typeName();
       return { kind: "SatisfiesExpression", operand, declaredType, span: span(operand.span.start, this.peek().span.start) };
     }
+    // V30.55: `expr as T` (type assertion TS-style). Diferencia con
+    // `satisfies`: `as` es un cast (el programador afirma el tipo, sin
+    // verificacion), `satisfies` verifica compatibilidad. En el dialecto
+    // ambos son metadata para el type-checker; el codegen emite la
+    // expresion tal cual (no hay conversion runtime en V30.55).
+    if (this.match("as")) {
+      const targetType = this.typeName();
+      return { kind: "AsExpression", expression: operand, targetType, span: span(operand.span.start, this.peek().span.start) };
+    }
     return operand;
   }
   private call(): Expression {

@@ -205,6 +205,20 @@ inline void ets_push_vec(std::vector<T>& vec, const T& value) {
     vec.push_back(value);
 }
 
+// V30.55: `ets_set_vec<T>(vec, index, value)` — asignación indexada
+// con auto-resize. Equivalente a `arr[i] = x` en el dialecto, pero
+// seguro cuando `i >= vec.size()` (hace resize en vez de OOB).
+// Acepta índices double (como todo en el dialecto) y los trunca a
+// `size_t`. El dialecto compila con `-fno-exceptions`, así que
+// índices negativos se ignoran (truncados a un valor enorme y
+// resize — limitation documentada).
+template <typename T>
+inline void ets_set_vec(std::vector<T>& vec, double index, const T& value) {
+    auto i = index < 0 ? 0 : static_cast<size_t>(index);
+    if (i >= vec.size()) vec.resize(i + 1);
+    vec[i] = value;
+}
+
 // V30.13.2: `ets_pop_vec<T>(vec)` — elimina el último elemento del
 // vector. No devuelve el valor (el dialecto no lo necesita; los usuarios
 // que necesiten el valor usan `arr[arr.length - 1]` antes de pop).

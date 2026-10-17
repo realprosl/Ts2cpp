@@ -6,7 +6,7 @@ export type TokenKind =
   | "enum" | "switch" | "case" | "default" | "of" | "in" | "delete" | "instanceof" | "typeof" | "readonly" | "match" | "when" | "union" | "static"
   | "(" | ")" | "{" | "}" | "[" | "]" | "," | ";" | ":" | "." | "..." | "?" | "@"
   | "+" | "-" | "*" | "/" | "%" | "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
-  | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "eof"
+  | "&&" | "||" | "??" | "?." | "|" | "&" | "^" | "~" | "<<" | ">>" | "=>" | "!" | "satisfies" | "as" | "eof"
   // V30.19: operadores compuestos. Azucar sobre `x = x op y` pero emitido
   // como una sola expresion en C++ (`x += y;` en vez de `x = x + y;`).
   | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>="
@@ -23,7 +23,7 @@ export interface Token { kind: TokenKind; lexeme: string; span: Span }
 
 export const KEYWORDS: Readonly<Record<string, TokenKind>> = Object.assign(Object.create(null), {
   let: "let", const: "const", function: "function", interface: "interface", class: "class", new: "new", return: "return", if: "if", else: "else",
-  while: "while", for: "for", break: "break", continue: "continue", extends: "extends", export: "export", true: "true", false: "false", out: "out", async: "async", await: "await", using: "using", number: "type", string: "type", boolean: "type", void: "type", type: "type", satisfies: "satisfies",
+  while: "while", for: "for", break: "break", continue: "continue", extends: "extends", export: "export", true: "true", false: "false", out: "out", async: "async", await: "await", using: "using", number: "type", string: "type", boolean: "type", void: "type", type: "type", satisfies: "satisfies", as: "as",
   enum: "enum", switch: "switch", case: "case", default: "default", of: "of", in: "in", delete: "delete", instanceof: "instanceof", typeof: "typeof", readonly: "readonly", union: "union",
   // V22-gap-#1: `import` se reconoce como keyword para soportar
   // `import type { ... } from "..."`.

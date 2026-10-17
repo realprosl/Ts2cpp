@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { compile } from "../../src/compiler.ts";
 
 const DQ = String.fromCharCode(34); // comilla doble
+const cpp = (source: string) => compile(source).cpp;
 
 // =========================================================================
 // Bloque 1: Bugs del codegen que crasheaban (FIXED en V30.35)
@@ -294,16 +295,20 @@ test("V30.35 gap: boolean.toString() no existe", () => {
   assert.ok(reported, "boolean.toString() no existe (gap documentado)");
 });
 
-test("V30.35 gap: as cast no soportado", () => {
-  // El dialecto NO soporta `as` cast. El user tiene que usar
-  // anotaciones de tipo o conversiones explicitas.
-  let reported = false;
-  try { compile("let x = 5; print(numberToString(x as i32))"); }
-  catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    reported = /Se esperaba/i.test(msg);
-  }
-  assert.ok(reported, "as cast no soportado (gap documentado)");
+test("V30.35 gap: as cast (V30.55 ya soportado, sin conversion runtime)", () => {
+  // V30.55: `as T` ya es sintactica y semanticamente valido. El
+  // type-checker lo acepta como cast metadata. PERO el codegen no
+  // anade conversion runtime — es responsabilidad del runtime hacer
+  // la conversion si hace falta (e.g. std::get para variants).
+  // Caso de uso real: narrowing en union para evitar `match()`.
+  const out = cpp(`
+    function getVal(): string | number { return "hello"; }
+    let v: string | number = getVal();
+    let s: string = v as string;
+    print(s);
+  `);
+  // Compila sin error.
+  assert.match(out, /s = v;/);
 });
 
 test("V30.35 gap: switch keyword no funciona (usar match)", () => {
