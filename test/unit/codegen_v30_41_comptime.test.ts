@@ -1405,8 +1405,8 @@ function main(): void {
 });
 
 test("@etsgen robustez: error claro si el codigo generado no es valido", () => {
-  // Si el codigo del dialecto tiene syntax error, el parser falla.
-  // El usuario debe ver un error de parse, no un crash silencioso.
+  // V30.51: el error de parse ahora incluye contexto de @etsgen:
+  // nombre de la funcion, codigo generado y sugerencia.
   const src = `@etsgen
 function genBad(): string {
   return "if (x > ";  // codigo incompleto
@@ -1417,6 +1417,41 @@ function main(): void {
 }`;
   assert.throws(
     () => compile(src),
-    /Se esperaba|expression|parse/i,
+    /etsgen function 'genBad'.*invalid code.*generated.*parse error.*hint:/s,
+  );
+});
+
+test("@etsgen robustez: error de @etsgen incluye codigo generado truncado si es largo", () => {
+  // Si el codigo generado es muy largo (>200 chars), se trunca
+  // con "..." para que el mensaje no sea excesivo.
+  const longCode = "print(numberToString(1));".repeat(20);  // > 200 chars
+  const src = `@etsgen
+function genLong(): string {
+  return ${JSON.stringify(longCode + " INVALID !!! ")};
+}
+function main(): void {
+  genLong();
+  print(numberToString(0));
+}`;
+  assert.throws(
+    () => compile(src),
+    /etsgen function 'genLong'.*generated.*\.\.\./s,
+  );
+});
+
+test("@etsgen robustez: error de @etsgen menciona el call site (no solo el body)", () => {
+  // El error indica que el problema es en el codigo generado, no
+  // en el codigo del usuario. La sugerencia guia al usuario.
+  const src = `@etsgen
+function gen(): string {
+  return "let x = ";  // falta el valor
+}
+function main(): void {
+  gen();
+  print(numberToString(0));
+}`;
+  assert.throws(
+    () => compile(src),
+    /hint: revisa el codigo/,
   );
 });
