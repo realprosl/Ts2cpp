@@ -95,6 +95,15 @@ count > 25:
 comptime sum:
 15"
 
+# app_string_ops: V30.55 builtins de string + as cast + arr[i]=x
+test_strong "app_string_ops" "h
+6
+world
+4
+100
+300
+foo"
+
 echo ""
 echo "=== test/strong summary ==="
 echo "PASS: $PASS"

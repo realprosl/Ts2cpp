@@ -356,6 +356,9 @@ export class CppGenerator {
       // V26: factory del lector streaming. Tambien requiere
       // runtime/ets_file.hpp (donde esta declarado FileReader).
       "openFileReader",
+      // V30.55: readFile/writeFile globales (alias de fileRead/fileWrite
+      // para mantener consistencia con el nombre del builtin).
+      "readFile", "writeFile",
     ]));
   }
   private usesNetworking(program: Program): boolean {
@@ -546,6 +549,13 @@ export class CppGenerator {
       if (!node || typeof node !== "object") return false;
       const obj = node as { kind?: string; method?: string; object?: unknown; args?: unknown[]; body?: unknown; statements?: unknown[]; init?: unknown; condition?: unknown; increment?: unknown; thenBranch?: unknown; elseBranch?: unknown; expression?: unknown; target?: unknown; iterable?: unknown; value?: unknown; operand?: unknown; left?: unknown; right?: unknown; binding?: unknown; initializer?: unknown; declarations?: unknown[]; arms?: unknown[]; subject?: unknown; parts?: unknown[]; expressions?: unknown[]; elements?: unknown[]; params?: unknown[]; typeParameters?: unknown[]; specifiers?: unknown[]; declaration?: unknown; variants?: unknown[]; members?: unknown[]; fields?: unknown[]; methods?: unknown[] };
       if (obj.kind === "MemberCallExpression" && obj.method && target.has(obj.method)) return true;
+      // V30.55: detectar `arr[i] = x` (AssignmentExpression con target
+      // IndexExpression) para forzar el include de ets_collections.hpp
+      // (necesario por `ets_set_vec<T>`).
+      if (obj.kind === "AssignmentExpression" && obj.target && typeof obj.target === "object") {
+        const t = obj.target as { kind?: string };
+        if (t.kind === "IndexExpression") return true;
+      }
       for (const key of Object.keys(obj)) {
         const child = obj[key as keyof typeof obj];
         if (Array.isArray(child)) { for (const item of child) if (visit(item)) return true; }
@@ -606,6 +616,7 @@ export class CppGenerator {
         case "TemplateLiteralExpression": return node.expressions.some(visitExpr);
         case "TernaryExpression": return visitExpr(node.condition) || visitExpr(node.thenBranch) || visitExpr(node.elseBranch);
         case "SatisfiesExpression": return visitExpr(node.operand);
+        case "AsExpression": return visitExpr(node.expression);
         case "MatchExpression": return visitExpr(node.subject) || node.arms.some(arm => visitExpr(arm.pattern) || visitExpr(arm.result));
         default: return false;
       }
@@ -3660,6 +3671,24 @@ export class CppGenerator {
             valueText = `static_cast<${cppType(targetType)}>(${valueText})`;
           }
         }
+        // V30.55: `arr[i] = x` se emite como `ets_set_vec<T>(arr, i, x)`
+        // si el target es IndexExpression sobre un array. Esto hace
+        // que la asignación indexada sea segura cuando i >= arr.size()
+        // (auto-resize) en lugar de OOB. El dialecto usa arrays
+        // ilimitados; en C++ std::vector tiene size fijo. El include
+        // de runtime/ets_collections.hpp se anade via usesCollections
+        // (que detecta este patron en V30.55).
+        if (node.target.kind === "IndexExpression") {
+          const idx = node.target;
+          if (idx.object.kind === "IdentifierExpression" || idx.object.kind === "MemberExpression") {
+            const objType = this.expressionType(idx.object);
+            if (objType && isArrayType(objType)) {
+              const elemType = arrayElement(objType);
+              const cppElem = this.arrayElementCppType(elemType);
+              return `ets_set_vec<${cppElem}>(${this.emitExpression(idx.object)}, ${this.emitExpression(idx.index)}, ${valueText})`;
+            }
+          }
+        }
         return `(${this.emitExpression(node.target)} = ${valueText})`;
       }
       // V30.19: operadores compuestos (`+=`, `-=`, etc.). C++ tiene los
@@ -3674,6 +3703,7 @@ export class CppGenerator {
       case "TernaryExpression": return `(${this.emitExpression(node.condition)} ? ${this.emitExpression(node.thenBranch)} : ${this.emitExpression(node.elseBranch)})`;
       case "MatchExpression": return this.emitMatch(node);
       case "SatisfiesExpression": return this.emitExpression(node.operand);
+      case "AsExpression": return this.emitExpression(node.expression); // V30.55: cast TS-style. El dialecto no transforma (no hay conversion runtime en V30.55); emite la expresion tal cual.
       case "CallExpression": {
         // V23: si el type-checker validó este nodo como `match(value, [...])`
         // o `match(value, "key", [...])`, NO emitimos una llamada normal. En
@@ -3731,6 +3761,37 @@ export class CppGenerator {
           if (argType && (isArrayType(argType) || isTupleType(argType))) return `(${argText}).size()`;
           // Fallback: emite como llamada normal (deberia fallar el type-check).
           return `${argText}.size()`;
+        }
+        // V30.55: builtins de strings que estaban declarados en builtin-registry
+        // pero el cpp-generator no sabia emitir. El runtime ya tiene las
+        // funciones (`ets::string_charAt`, `ets::string_indexOf`,
+        // `ets::string_substring`); solo faltaba el mapping builtin -> C++.
+        if (node.callee === "charAt" && node.args.length === 2) {
+          return `::ets::string_charAt(${this.emitExpression(node.args[0])}, ${this.emitExpression(node.args[1])})`;
+        }
+        if (node.callee === "indexOf" && node.args.length === 3) {
+          return `::ets::string_indexOf(${this.emitExpression(node.args[0])}, ${this.emitExpression(node.args[1])}, ${this.emitExpression(node.args[2])})`;
+        }
+        if (node.callee === "substring" && (node.args.length === 2 || node.args.length === 3)) {
+          const start = this.emitExpression(node.args[1]);
+          if (node.args.length === 2) {
+            // substring(s, start) -> desde start hasta el final.
+            return `::ets::string_substring(${this.emitExpression(node.args[0])}, ${start}, 1e18)`;
+          }
+          return `::ets::string_substring(${this.emitExpression(node.args[0])}, ${start}, ${this.emitExpression(node.args[2])})`;
+        }
+        // V30.55: file I/O builtins. El runtime tiene `ets::Result<T>` que
+        // el user deberia poder destructurar (futuro V30.56+). Por ahora
+        // emitimos la llamada y el user recibe un Result<T>. El user
+        // puede usar `comptime()` para forzar evaluacion, o esperar
+        // soporte de pattern matching en una version futura. El include
+        // de runtime/ets_file.hpp se anade via usesFilesystem (que
+        // detecta `readFile`/`writeFile` en V30.55).
+        if (node.callee === "writeFile" && node.args.length === 2) {
+          return `::ets::writeFile(${this.emitExpression(node.args[0])}, ${this.emitExpression(node.args[1])})`;
+        }
+        if (node.callee === "readFile" && node.args.length === 1) {
+          return `::ets::readFile(${this.emitExpression(node.args[0])})`;
         }
         // V30.22.6: named arguments (`name: value`) en la llamada. Si
         // alguno de los args es un `NamedArgumentExpression`, los

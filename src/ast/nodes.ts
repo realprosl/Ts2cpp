@@ -91,7 +91,7 @@ export interface ForOfStatement { kind: "ForOfStatement"; binding: VariableDecla
 export interface ForInStatement { kind: "ForInStatement"; binding: VariableDeclaration; target: Expression; body: Statement; span: Span }
 export interface DeleteStatement { kind: "DeleteStatement"; target: IndexExpression; span: Span }
 
-export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression | NamedArgumentExpression | SpreadElement | RawCppExpression) & {
+export type Expression = (LiteralExpression | IdentifierExpression | GenericIdentifierExpression | ArrayLiteralExpression | ObjectLiteralExpression | ArrowFunctionExpression | UnaryExpression | AwaitExpression | BinaryExpression | CallExpression | MemberExpression | MemberCallExpression | IndexExpression | NewExpression | AssignmentExpression | CompoundAssignmentExpression | TemplateLiteralExpression | TernaryExpression | MatchExpression | SatisfiesExpression | NamedArgumentExpression | SpreadElement | RawCppExpression | AsExpression) & {
   /**
    * V0.1: tipo resuelto adjuntado al nodo por el semantic checker.
    * El codegen consume este campo directamente en lugar de parsear
@@ -166,3 +166,11 @@ export interface NamedArgumentExpression { kind: "NamedArgumentExpression"; name
 export type CompoundAssignmentOperator = "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>=";
 export interface CompoundAssignmentExpression { kind: "CompoundAssignmentExpression"; operator: CompoundAssignmentOperator; target: IdentifierExpression | MemberExpression | IndexExpression; value: Expression; span: Span }
 export interface TernaryExpression { kind: "TernaryExpression"; condition: Expression; thenBranch: Expression; elseBranch: Expression; span: Span }
+// V30.55: type assertion TS-style. `value as T` permite afirmar el tipo
+// de una expression en tiempo de compilacion. En runtime, el dialecto
+// emite el valor sin transformacion (es solo metadata para el type-checker
+// — la conversion real seria responsabilidad del codegen/runtime, que
+// para V30.55 solo verifica que el cast sea valido y emite la expresion
+// tal cual). Util para `parsed as Array<T>` cuando el parser de JSON
+// retorna `any` y queremos restaurar el tipo.
+export interface AsExpression { kind: "AsExpression"; expression: Expression; targetType: TypeName; span: Span }

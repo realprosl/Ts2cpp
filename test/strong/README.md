@@ -21,6 +21,10 @@ del dialecto Ts2cpp para validar la pipeline completa (analyze + codegen
 - **`app_collections/`** — App con utilidades de strings y arrays
   cross-module. Demuestra arrays, strings, funciones regulares, y
   `comptime()` con arrays literales.
+- **`app_string_ops/`** (V30.55) — Builtins de string (`charAt`,
+  `indexOf`, `substring`), `as` cast narrowing, y `arr[i] = x` con
+  auto-resize. Verifica que el codegen emite las llamadas correctas
+  al runtime.
 
 ## Cómo ejecutar
 
@@ -40,25 +44,28 @@ PASS: app_generated
 PASS: app_collections
 
 === test/strong summary ===
-PASS: 3
+PASS: 4
 FAIL: 0
 ```
 
 ## Features probadas
 
-| Feature | app_basic | app_generated | app_collections |
-|---|---|---|---|
-| `@comptime` | ✅ | | |
-| Cross-module | ✅ | ✅ | ✅ |
-| `comptime()` inline | ✅ | | ✅ |
-| `@cppgen` | | ✅ | |
-| `@etsgen` | | ✅ | |
-| Recursion comptime | ✅ | | |
-| Bucles comptime | ✅ | | ✅ |
-| Captura de globals | | | |
-| Arrays | | | ✅ |
-| Strings | | | ✅ |
-| Funciones regulares | ✅ | | ✅ |
+| Feature | app_basic | app_generated | app_collections | app_string_ops |
+|---|---|---|---|---|
+| `@comptime` | ✅ | | | |
+| Cross-module | ✅ | ✅ | ✅ | |
+| `comptime()` inline | ✅ | | ✅ | |
+| `@cppgen` | | ✅ | | |
+| `@etsgen` | | ✅ | | |
+| Recursion comptime | ✅ | | | |
+| Bucles comptime | ✅ | | ✅ | |
+| Captura de globals | | | | |
+| Arrays | | | ✅ | ✅ |
+| Strings | | | ✅ | ✅ |
+| Funciones regulares | ✅ | | ✅ | |
+| `charAt`/`indexOf`/`substring` (V30.55) | | | | ✅ |
+| `as` cast narrowing (V30.55) | | | | ✅ |
+| `arr[i] = x` auto-resize (V30.55) | | | | ✅ |
 | Multi-call | ✅ | ✅ | ✅ |
 
 ## Notas

@@ -1896,6 +1896,16 @@ export class TypeChecker {
         result = node.declaredType;
         break;
       }
+      case "AsExpression": {
+        // V30.55: `expr as T` (type assertion TS-style). A diferencia de
+        // `satisfies`, `as` NO verifica compatibilidad — el programador
+        // afirma el tipo. Asignamos directamente el tipo objetivo como
+        // resultado, lo que permite narrowing ergonomico sin necesidad
+        // de pattern matching (e.g. `parsed as Array<Task>`).
+        this.expression(node.expression, scope);
+        result = node.targetType;
+        break;
+      }
       case "ArrayLiteralExpression": {
         if (expected && isArrayType(expected)) {
           const element = arrayElement(expected);
