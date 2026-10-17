@@ -2180,9 +2180,10 @@ export class TypeChecker {
         // V30.22.1: las clases también son espacios de nombres para sus
         // static fields/methods. `Counter.count` o `Counter.inc()` se
         // aceptan aunque `Counter` esté registrado como TypeSymbol.
-        // Sin este atajo, el type-checker diría que `Counter` no es un
-        // valor. El tipo de la expresión es el nombre de la clase.
-        if (this.classes.has(node.name)) { result = node.name; break; }
+        // V30.50: este atajo se movió a MemberExpression/MemberCallExpression
+        // (más abajo) para evitar que `User` solo (sin `.algo`) se acepte
+        // como valor. Ahora el handler de IdentifierExpression rechaza
+        // los nombres de clase como valores, restaurando el test V30.10.
         // Luego buscamos en el scope: una declaración local (variable,
         // parámetro) debe ganar sobre el tipo builtin del mismo nombre. Esto
         // permite `const path: string = argument(1); path + ".ext"` sin que
@@ -3472,7 +3473,12 @@ export class TypeChecker {
           this.report(node, `Promise.${node.member} debe invocarse como Promise.${node.member}([...])`);
           return "Promise";
         }
-        const objectType = this.expression(node.object, scope);
+        let objectType: string;
+        if (node.object.kind === "IdentifierExpression" && this.classes.has(node.object.name)) {
+          objectType = node.object.name;
+        } else {
+          objectType = this.expression(node.object, scope);
+        }
         // V1.4: si el object es una expresión narrowada por un if anterior,
         // devolvemos el payload de la variante narrowada. Si solo hay una
         // variante activa y tiene payload, ese es el tipo. Si no,
@@ -3940,7 +3946,16 @@ export class TypeChecker {
     if (node.kind === "MemberExpression") {
       // V22: si el objeto es `constRef<T>` o `constPtr<T>`, no se puede mutar.
       // E4300/E4301.
-      const objectType = this.expression(node.object, scope);
+      // V30.50: si el object es un IdentifierExpression que es el
+      // nombre de una clase (e.g. `Counter.count += 1`), evitamos pasar
+      // por el IdentifierExpression handler (que ahora rechaza los
+      // nombres de clase como valores).
+      let objectType: string;
+      if (node.object.kind === "IdentifierExpression" && this.classes.has(node.object.name)) {
+        objectType = node.object.name;
+      } else {
+        objectType = this.expression(node.object, scope);
+      }
       if (isGenericType(objectType) && (genericBase(objectType) === "constRef" || genericBase(objectType) === "constPtr")) return false;
       return this.mutableTarget(node.object, scope);
     }
