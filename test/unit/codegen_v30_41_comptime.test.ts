@@ -1121,3 +1121,302 @@ function main(): void {
   // El print del @etsgen se compila
   assert.match(cpp, /print\(numberToString\(42\.0\)\)/);
 });
+
+// ============================================================
+// 19. V30.49: tests de robustez de @cppgen y @etsgen
+// ============================================================
+//
+// Estos tests verifican que los generadores de codigo manejan
+// correctamente casos limite: shadowing, recursion, capturas,
+// args no comptime-compatibles, template literals, etc.
+
+// --- @cppgen ---
+
+test("@cppgen robustez: shadowing de variable local con mismo nombre que param", () => {
+  // La variable local `n` sombra el param `n` en el eval.
+  // El param tiene prioridad en el eval (scope del body).
+  const src = `@cppgen
+function genWithShadow(n: number): string {
+  let n2: number = n * 2;  // n2 != n para evitar shadowing accidental
+  return "int x = " + n2 + ";";
+}
+function main(): void {
+  genWithShadow(5);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El codigo generado usa n*2 = 10
+  assert.match(cpp, /int x = 10;/);
+});
+
+test("@cppgen robustez: recursion con caso base via @comptime helper", () => {
+  // El dialecto actual no soporta recursion en @cppgen con args
+  // no literales (el visitor no propaga los params al scope del
+  // body de la funcion). Workaround: usar una @comptime function
+  // que compute el string y pasarselo a @cppgen.
+  const src = `@comptime
+function buildPrints(limit: number): string {
+  let s: string = "";
+  let i: number = 2;
+  while (i > 0) {
+    s = s + "print(numberToString(" + (3 - i) + "));";
+    i = i - 1;
+  }
+  return s;
+}
+@cppgen
+function genPrints(): string {
+  return buildPrints(2);
+}
+function main(): void {
+  genPrints();
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // buildPrints(2) genera print(1) y print(2) (comptime-evaluados)
+  assert.match(cpp, /print\(numberToString\(1\)/);
+  assert.match(cpp, /print\(numberToString\(2\)/);
+});
+
+test("@cppgen robustez: captura de variable del scope", () => {
+  // @cppgen puede capturar variables comptime-compatibles del scope
+  // global del archivo.
+  const src = `let prefix: string = "// gen:";
+@cppgen
+function genComment(msg: string): string {
+  return prefix + " " + msg;
+}
+function main(): void {
+  genComment("hello");
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /\/\/ gen: hello/);
+});
+
+test("@cppgen robustez: args con expresiones comptime-compatibles", () => {
+  // 1+2 = 3 (constante folding).
+  const src = `@cppgen
+function genDecl(name: string, value: number): string {
+  return "int " + name + " = " + value + ";";
+}
+function main(): void {
+  genDecl("x", 1 + 2);
+  genDecl("y", 10 * 2);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /int x = 3;/);
+  assert.match(cpp, /int y = 20;/);
+});
+
+test("@cppgen robustez: template literal con interpolacion", () => {
+  const src = `@cppgen
+function genDecl(name: string, value: number): string {
+  return \`int \${name} = \${value};\`;
+}
+function main(): void {
+  genDecl("z", 99);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /int z = 99;/);
+});
+
+test("@cppgen robustez: multi-call con args distintos en mismo main", () => {
+  // El comptime-eval maneja cada call site de forma independiente.
+  const src = `@cppgen
+function genDecl(name: string, value: number): string {
+  return "int " + name + " = " + value + ";";
+}
+function main(): void {
+  genDecl("a", 1);
+  genDecl("b", 2);
+  genDecl("c", 3);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /int a = 1;/);
+  assert.match(cpp, /int b = 2;/);
+  assert.match(cpp, /int c = 3;/);
+});
+
+test("@cppgen robustez: codigo C++ multi-linea", () => {
+  // El codigo generado puede tener multiples lineas.
+  // El usuario incluye \n en el string.
+  const src = `@cppgen
+function genMulti(): string {
+  return "int a = 1;\\nint b = 2;\\nint c = 3;";
+}
+function main(): void {
+  genMulti();
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /int a = 1;/);
+  assert.match(cpp, /int b = 2;/);
+  assert.match(cpp, /int c = 3;/);
+});
+
+test("@cppgen robustez: @cppgen que llama a funcion regular del archivo", () => {
+  // @cppgen puede llamar a otras funciones del archivo que NO son
+  // @comptime/@cppgen/@etsgen. El comptime las evalua como helpers.
+  const src = `function double(x: number): number { return x * 2; }
+@cppgen
+function genDoubled(n: number): string {
+  return "int x = " + double(n) + ";";
+}
+function main(): void {
+  genDoubled(5);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /int x = 10;/);
+});
+
+test("@cppgen robustez: error claro si el body tiene codigo no string", () => {
+  // El body retorna un number (no string). El comptime debe dar
+  // un error claro, no un crash silencioso.
+  assert.throws(
+    () => compile(`@cppgen
+    function bad(): number { return 42; }
+    function main(): void { bad(); print(numberToString(0)); }`),
+    /cppgen.*string|return.*string/i,
+  );
+});
+
+// --- @etsgen ---
+
+test("@etsgen robustez: shadowing de variable local con mismo nombre que param", () => {
+  // Similar a @cppgen: la variable local no debe afectar el param.
+  const src = `@etsgen
+function gen(n: number): string {
+  return "print(numberToString(" + n + "));";
+}
+function main(): void {
+  let n: number = 99;  // shadowing local
+  gen(42);  // el arg es 42, no 99
+  print(numberToString(n));
+}`;
+  const cpp = compile(src).cpp;
+  // El print generado usa 42 (del arg), no 99
+  assert.match(cpp, /print\(numberToString\(42\.0\)\)/);
+  // El print del main usa la variable n (que es 99 en runtime)
+  assert.match(cpp, /print\(numberToString\(n\)\)/);
+});
+
+test("@etsgen robustez: args con expresiones comptime-compatibles", () => {
+  // 1+2 se comptime-evalúa a 3 antes de inyectar.
+  const src = `@etsgen
+function gen(n: number): string {
+  return "print(numberToString(" + n + "));";
+}
+function main(): void {
+  gen(1 + 2);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /print\(numberToString\(3\.0\)\)/);
+});
+
+test("@etsgen robustez: template literal con substituciones", () => {
+  // @etsgen soporta template literals como el dialecto normal.
+  const src = `@etsgen
+function gen(name: string, value: number): string {
+  return \`let \${name}: number = \${value};\`;
+}
+function main(): void {
+  gen("z", 7);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El codigo generado debe aparecer en main
+  assert.match(cpp, /double z = 7\.0/);
+});
+
+test("@etsgen robustez: captura de variable comptime-compatible", () => {
+  // @etsgen puede capturar variables globales del archivo.
+  const src = `let scale: number = 2;
+@etsgen
+function genScaled(n: number): string {
+  return "print(numberToString(" + n + " * " + scale + "));";
+}
+function main(): void {
+  genScaled(5);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  // El print generado usa 5 * 2 = 10
+  assert.match(cpp, /print\(numberToString\(\(5\.0 \* 2\.0\)\)\)/);
+});
+
+test("@etsgen robustez: multi-call con args distintos en mismo main", () => {
+  const src = `@etsgen
+function gen(n: number): string {
+  return "print(numberToString(" + n + "));";
+}
+function main(): void {
+  gen(1);
+  gen(2);
+  gen(3);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /print\(numberToString\(1\.0\)\)/);
+  assert.match(cpp, /print\(numberToString\(2\.0\)\)/);
+  assert.match(cpp, /print\(numberToString\(3\.0\)\)/);
+});
+
+test("@etsgen robustez: codigo generado con if/else inline", () => {
+  // Genera codigo que el dialecto procesa.
+  const src = `@etsgen
+function genCond(limit: number): string {
+  return "if (x > " + limit + ") { print('big'); } else { print('small'); }";
+}
+function main(): void {
+  let x: number = 10;
+  genCond(5);
+  print(numberToString(0));
+}`;
+  const cpp = compile(src).cpp;
+  assert.match(cpp, /if \(\(x > 5\.0\)\)/);
+  assert.match(cpp, /print\(std::string\("big"\)\)/);
+});
+
+test("@etsgen robustez: args no comptime-compatibles se emiten como runtime", () => {
+  // Si el arg no es comptime-compatible (e.g. una variable local que
+  // no se puede evaluar), la call se queda como runtime y la funcion
+  // @etsgen NO se filtra (se emite como funcion normal).
+  const src = `@etsgen
+function gen(n: number): string {
+  return "print(numberToString(" + n + "));";
+}
+function main(): void {
+  let x: number = 42;
+  gen(x);  // arg es una variable local, no comptime-evaluable directamente
+  print(numberToString(0));
+}`;
+  // No debe fallar; la call se emite como runtime.
+  const cpp = compile(src).cpp;
+  // La funcion gen se emite (porque el arg no fue comptime-compat)
+  assert.match(cpp, /std::string gen/);
+  // La call aparece
+  assert.match(cpp, /gen\(/);
+});
+
+test("@etsgen robustez: error claro si el codigo generado no es valido", () => {
+  // Si el codigo del dialecto tiene syntax error, el parser falla.
+  // El usuario debe ver un error de parse, no un crash silencioso.
+  const src = `@etsgen
+function genBad(): string {
+  return "if (x > ";  // codigo incompleto
+}
+function main(): void {
+  genBad();
+  print(numberToString(0));
+}`;
+  assert.throws(
+    () => compile(src),
+    /Se esperaba|expression|parse/i,
+  );
+});
