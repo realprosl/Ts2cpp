@@ -46,41 +46,15 @@ export function evalEtsgenCalls(program: Program): Program {
   }
   if (etsgenFns.size === 0) return program;
 
-  // Paso 2: implementar un mini-evaluador para los bodies de @etsgen.
-  // Los args siempre son comptime-compatibles (el codegen los pone
-  // como literales o identificadores). Si un arg no se puede evaluar,
-  // dejamos el call site como esta para runtime.
-  const evalBody = (fn: { body: Statement; params: string[] }, args: CallExpression["args"]): string | null => {
-    // Solo soportamos bodies simples: un return string o una expression
-    // statement que es un template literal / string concatenation.
-    // Para empezar, implementamos solo el caso "return string".
-    const returnStmt = (fn.body as { statements?: Statement[] }).statements?.[0];
-    if (!returnStmt || returnStmt.kind !== "ReturnStatement" || !returnStmt.value) return null;
-    // Evaluamos la expression con un scope que tiene los args como variables.
-    const scope = new Map<string, unknown>();
-    for (let i = 0; i < fn.params.length; i++) {
-      const arg = args[i]!;
-      // Solo aceptamos LiteralExpression o IdentifierExpression como args.
-      // Para IdentifierExpression, NO tenemos scope (es comptime-time);
-      // el usuario debe usar comptime() / @comptime functions para
-      // computar el valor.
-      if (arg.kind === "LiteralExpression" && typeof (arg as { value: unknown }).value === "string") {
-        scope.set(fn.params[i]!, (arg as { value: string }).value);
-      } else if (arg.kind === "LiteralExpression" && typeof (arg as { value: unknown }).value === "number") {
-        scope.set(fn.params[i]!, (arg as { value: number }).value);
-      } else {
-        return null;  // arg no comptime-compatible
-      }
-    }
-    // Evaluamos la expression de retorno.
-    return evalSimpleExpr(returnStmt.value as Expression, scope);
-  };
-
+  // Paso 1.5: declarar el mini-evaluador primero (lo usan tanto
+  // el globalScope pre-walk como el evalBody).
   // Mini-evaluador de expressions simples (string concat, template literals, etc.).
   // Esto es un subset del comptime-evaluator; solo lo necesario para @etsgen.
-  const evalSimpleExpr = (expr: Expression, scope: Map<string, unknown>): string | null => {
+  const evalSimpleExpr = (expr: Expression, scope: Map<string, unknown>): string | number | null => {
     if (expr.kind === "LiteralExpression") {
-      return String((expr as { value: unknown }).value);
+      const v = (expr as { value: unknown }).value;
+      if (typeof v === "string" || typeof v === "number") return v;
+      return null;
     }
     if (expr.kind === "TemplateLiteralExpression") {
       const tpl = expr as { parts: string[]; expressions: Expression[] };
@@ -95,27 +69,106 @@ export function evalEtsgenCalls(program: Program): Program {
       }
       return result;
     }
-    if (expr.kind === "BinaryExpression" && (expr as { operator: string }).operator === "+") {
-      const bin = expr as { left: Expression; right: Expression };
+    if (expr.kind === "BinaryExpression") {
+      const bin = expr as { left: Expression; right: Expression; operator: string };
       const l = evalSimpleExpr(bin.left, scope);
       const r = evalSimpleExpr(bin.right, scope);
       if (l === null || r === null) return null;
-      return l + r;
+      if (typeof l === "number" && typeof r === "number") {
+        switch (bin.operator) {
+          case "+": return l + r;
+          case "-": return l - r;
+          case "*": return l * r;
+          case "/": return l / r;
+          default: return null;
+        }
+      }
+      return String(l) + String(r);
     }
     if (expr.kind === "IdentifierExpression") {
       const name = (expr as { name: string }).name;
       const v = scope.get(name);
       if (v === undefined) return null;
-      return String(v);
+      return v as string | number;
     }
     if (expr.kind === "CallExpression") {
-      // Permitimos llamadas a otras funciones @etsgen (con args comptime-compatibles).
       const c = expr as { callee: string; args: Expression[] };
       const fn = etsgenFns.get(c.callee);
       if (!fn) return null;
-      return evalBody(fn, c.args);
+      const evaluatedArgs = c.args.map((a) => evalSimpleExpr(a, scope));
+      if (evaluatedArgs.some((v) => v === null)) return null;
+      const innerScope = new Map<string, unknown>();
+      for (let i = 0; i < fn.params.length; i++) {
+        innerScope.set(fn.params[i]!, evaluatedArgs[i]);
+      }
+      const returnStmt = (fn.body as { statements?: Statement[] }).statements?.[0];
+      if (!returnStmt || returnStmt.kind !== "ReturnStatement" || !returnStmt.value) return null;
+      return evalSimpleExpr(returnStmt.value as Expression, innerScope);
     }
     return null;
+  };
+
+  // Paso 1.5: extraer las variables globales del archivo (top-level
+  // let/const) para que el mini-eval de @etsgen pueda capturarlas.
+  // Solo soportamos valores comptime-compatibles (literal string/number).
+  const globalScope = new Map<string, string | number>();
+  for (const stmt of program.statements) {
+    if (stmt.kind === "VariableDeclaration" && stmt.initializer) {
+      const init = stmt.initializer;
+      if (init.kind === "LiteralExpression") {
+        const v = (init as { value: unknown }).value;
+        if (typeof v === "string" || typeof v === "number") {
+          globalScope.set(stmt.name, v);
+        }
+      } else if (init.kind === "BinaryExpression") {
+        const v = evalSimpleExpr(init as Expression, globalScope);
+        if (typeof v === "string" || typeof v === "number") {
+          globalScope.set(stmt.name, v);
+        }
+      }
+    }
+  }
+
+  // Paso 2: implementar un mini-evaluador para los bodies de @etsgen.
+  // Los args siempre son comptime-compatibles (el codegen los pone
+  // como literales o identificadores). Si un arg no se puede evaluar,
+  // dejamos el call site como esta para runtime.
+  const evalBody = (fn: { body: Statement; params: string[] }, args: CallExpression["args"]): string | null => {
+    // Solo soportamos bodies simples: un return string o una expression
+    // statement que es un template literal / string concatenation.
+    // Para empezar, implementamos solo el caso "return string".
+    const returnStmt = (fn.body as { statements?: Statement[] }).statements?.[0];
+    if (!returnStmt || returnStmt.kind !== "ReturnStatement" || !returnStmt.value) return null;
+    // Evaluamos la expression con un scope que tiene los args como
+    // variables locales + las variables globales del archivo (captura).
+    const scope = new Map<string, unknown>(globalScope);
+    for (let i = 0; i < fn.params.length; i++) {
+      const arg = args[i]!;
+      // Aceptamos literal string/number, identifier (no soportado — necesitamos
+      // un scope), o expresiones comptime-compatibles (BinaryExpression con
+      // operandos comptime-compatibles, UnaryExpression, Parenthesized).
+      // Para empezar, soportamos solo LiteralExpression. Para BinaryExpression
+      // evaluamos recursivamente con evalSimpleExpr (sin scope, sin identifiers).
+      if (arg.kind === "LiteralExpression" && typeof (arg as { value: unknown }).value === "string") {
+        scope.set(fn.params[i]!, (arg as { value: string }).value);
+      } else if (arg.kind === "LiteralExpression" && typeof (arg as { value: unknown }).value === "number") {
+        scope.set(fn.params[i]!, (arg as { value: number }).value);
+      } else if (arg.kind === "BinaryExpression" || arg.kind === "UnaryExpression") {
+        // Evaluar la expresion con un mini-eval que solo soporta literales
+        // y operaciones basicas (+, -, *, /).
+        const value = evalSimpleExpr(arg as Expression, new Map());
+        if (value === null) return null;
+        if (typeof value !== "string" && typeof value !== "number") return null;
+        scope.set(fn.params[i]!, value);
+      } else {
+        return null;  // arg no comptime-compatible
+      }
+    }
+    // Evaluamos la expression de retorno. Si retorna un number, lo
+    // convertimos a string (los @etsgen siempre retornan string).
+    const result = evalSimpleExpr(returnStmt.value as Expression, scope);
+    if (result === null) return null;
+    return String(result);
   };
 
   // Paso 3: recorrer el AST y sustituir las calls a @etsgen por
