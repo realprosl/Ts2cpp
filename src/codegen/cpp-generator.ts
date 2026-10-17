@@ -1337,7 +1337,26 @@ export class CppGenerator {
       // o type alias), el initializer no puede ir en static-init porque
       // `make_X(...)` puede no existir aún. Lo difiere al bloque
       // `ets_init_*()` que emite el codegen después de los globals.
-      if (this.isAutoUnionTarget(type)) {
+      // V30.54: tambien difiere si el initializer es una CallExpression
+      // (no constexpr). Razon: C++ ejecuta static-init ANTES de main, asi
+      // que `static double x = fn();` llama a `fn` antes de que el
+      // runtime haya inicializado globals (e.g. `ets_argc`). Eso rompe
+      // argc/argv, file I/O, y cualquier builtin que dependa de estado
+      // runtime. Diferir al bloque `ets_init_*` (llamado desde main,
+      // despues de `ets_argc = argc`) soluciona esto.
+      // V30.54.1: tambien difiere cuando el init NO es un literal puro
+      // (constValue === undefined). Esto cubre ConditionalExpression
+      // (`a ? b : c`), BinaryExpression (`a + b`), ArrowFunctionExpression
+      // (`() => x`), y cualquier expression que dependa de runtime.
+      // Caso de uso: `const v: number = isReady() ? getVal() : 0;`.
+      const isCallInit = variable.initializer.kind === "CallExpression"
+        || variable.initializer.kind === "MemberCallExpression"
+        || variable.initializer.kind === "NewExpression";
+      const isNonLiteralInit = variable.constValue === undefined
+        && variable.initializer.kind !== "LiteralExpression"
+        && variable.initializer.kind !== "IdentifierExpression"
+        && variable.initializer.kind !== "ArrayLiteralExpression";
+      if (this.isAutoUnionTarget(type) || isCallInit || isNonLiteralInit) {
         if (!this._deferredInitVars) this._deferredInitVars = [];
         this._deferredInitVars.push({ variable, cppName, initializer });
         lines.push(`static ${cppTypeText} ${cppName};`);
@@ -1581,7 +1600,16 @@ export class CppGenerator {
       // V30.14.2: usar `cppT` helper que tambien cubre `type X = A | B`.
       const cppTypeText = this.cppT(type);
       // V30.14.2: deferir la inicializacion al init() si es auto-union.
-      if (this.isAutoUnionTarget(type)) {
+      // V30.54: tambien deferir si es CallExpression (ver nota arriba).
+      // V30.54.1: tambien deferir si el init no es literal puro.
+      const isCallInit2 = variable.initializer.kind === "CallExpression"
+        || variable.initializer.kind === "MemberCallExpression"
+        || variable.initializer.kind === "NewExpression";
+      const isNonLiteralInit2 = variable.constValue === undefined
+        && variable.initializer.kind !== "LiteralExpression"
+        && variable.initializer.kind !== "IdentifierExpression"
+        && variable.initializer.kind !== "ArrayLiteralExpression";
+      if (this.isAutoUnionTarget(type) || isCallInit2 || isNonLiteralInit2) {
         if (!this._deferredInitVars) this._deferredInitVars = [];
         this._deferredInitVars.push({ variable, cppName, initializer: initializerText });
         lines.push(`${exportLinkage}${cppTypeText} ${cppName};`);

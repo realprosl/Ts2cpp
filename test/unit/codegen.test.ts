@@ -1722,3 +1722,124 @@ test("V30.31: emitArrayMethodCall retorna null para metodos no soportados", () =
   // (que solo cubre length/push/pop/map/filter/forEach/slice/find/includes/join/concat).
   assert.ok(out.includes("ets_sort_vec"), "sort se emite via la rama de array puro");
 });
+
+// V30.54: las variables top-level con initializer CallExpression
+// (no literal) se difieren al bloque `ets_init_*` en vez de emitirse
+// como `static T x = fn();`. Razon: C++ ejecuta static-init ANTES de
+// main, asi que `static double x = fn();` invoca `fn` con el runtime
+// sin inicializar (e.g. `ets_argc=0`). Eso rompe argc/argv y cualquier
+// builtin que dependa de estado runtime.
+test("V30.54: variable top-level con CallExpression init se difiere al main/init", () => {
+  // El test usa una function definida por el user. Si el codegen
+  // la difiere correctamente, la declaracion es `static double n;`
+  // y la asignacion `n = fn();` aparece DESPUES de `ets_argc = argc`
+  // (en `int main` para single-module, o en `ets_init_*` para multi).
+  const src = "function getVal(): number { return 42; }\nlet n: number = getVal();";
+  const out = compile(src).cpp;
+  // La declaracion top-level NO debe tener el initializer.
+  assert.match(out, /static\s+double\s+n\s*;/);
+  // NO debe haber `static double n = getVal();` (eso seria static-init).
+  assert.ok(!/static\s+double\s+n\s*=\s*getVal/.test(out),
+    "n no debe tener initializer en static-init");
+  // Debe haber `n = getVal();` en algun sitio entre `ets_argc = argc;`
+  // y `return 0;` (o `}` del init block).
+  const afterArgc = out.split("ets_argc = argc;")[1];
+  assert.ok(afterArgc !== undefined, "debe haber ets_argc = argc;");
+  assert.match(afterArgc, /n\s*=\s*getVal\(\)/);
+});
+
+test("V30.54: variable top-level con MemberCallExpression init se difiere", () => {
+  // `arr.slice(0)` es una MemberCallExpression que retorna un valor
+  // (el subarray). Tambien debe diferirse porque la llamada runtime
+  // no puede ejecutarse en static-init.
+  const src = "let arr: number[] = [1, 2, 3];\nlet copy: number[] = arr.slice(0, 3);";
+  const out = compile(src).cpp;
+  // `copy` debe diferirse (su init es `arr.slice(0, 3)`, MemberCallExpression).
+  // La declaracion top-level es `static std::vector<double> copy;` (sin init).
+  // La asignacion `copy = ets_slice_vec...` aparece DENTRO de main
+  // (despues de `ets_argc = argc`).
+  assert.match(out, /static\s+std::vector<double>\s+copy\s*;/);
+  assert.ok(!/static\s+std::vector<double>\s+copy\s*=\s*ets_slice/.test(out),
+    "copy no debe tener initializer en static-init");
+  const afterArgc = out.split("ets_argc = argc;")[1];
+  assert.match(afterArgc!, /copy\s*=\s*ets_slice_vec/);
+});
+
+test("V30.54: NewExpression como init tambien se difiere", () => {
+  // `new Task(...)` es una NewExpression. Tambien debe diferirse
+  // porque el constructor puede tener side-effects o depender
+  // del orden de inicializacion.
+  const src = [
+    "class Box { value: number; constructor(v: number) { this.value = v; } }",
+    "let b: Box = new Box(99);",
+  ].join("\n");
+  const out = compile(src).cpp;
+  // `b` debe declararse sin initializer (o constexpr si es trivial).
+  // Lo importante: NO `static Box b = Box{}.constructor(99);`.
+  assert.ok(!/static\s+\S+\s+b\s*=\s*Box/.test(out),
+    "b no debe inicializarse con new Box(...) en static-init");
+});
+
+test("V30.54: literal puro sigue siendo constexpr (no se difiere)", () => {
+  // Regression: V30.6 introdujo `static constexpr` para literales.
+  // V30.54 NO debe romper esto: las variables con init literal
+  // siguen emitiéndose como constexpr.
+  const out = compile("const x: number = 42;").cpp;
+  assert.match(out, /static\s+constexpr\s+double\s+x\s*=\s*42/);
+});
+
+test("V30.54: ConditionalExpression como init se difiere", () => {
+  // `const v: number = isReady() ? 1 : 0;` — el init es un
+  // ConditionalExpression (ternary) que contiene un CallExpression.
+  // Antes del fix V30.54.1 esto se emitia como
+  // `static double v = isReady() ? 1.0 : 0.0;` que ejecutaba
+  // `isReady()` en static-init (antes de main). Eso rompia
+  // programas que dependian de globals runtime inicializados.
+  // Caso real: test/e2e/types/nested-generics.
+  const src = "function isReady(): boolean { return true; }\nlet v: number = isReady() ? 1 : 0;";
+  const out = compile(src).cpp;
+  // `v` debe declararse sin init y asignarse despues de ets_argc.
+  assert.match(out, /static\s+double\s+v\s*;/);
+  assert.ok(!/static\s+double\s+v\s*=\s*\(?isReady/.test(out),
+    "v no debe tener initializer en static-init");
+  const afterArgc = out.split("ets_argc = argc;")[1];
+  assert.match(afterArgc!, /v\s*=\s*\(?isReady\(\)/);
+});
+
+test("V30.54: BinaryExpression como init se difiere", () => {
+  // `let v: number = a + b;` con `a` y `b` siendo variables
+  // runtime. El BinaryExpression no es constexpr (depende de
+  // runtime), debe diferirse. `a` y `b` son `let` mutable
+  // (no const, no constexpr) — eso es el comportamiento existente.
+  const src = "let a: number = 1;\nlet b: number = 2;\nlet v: number = a + b;";
+  const out = compile(src).cpp;
+  // `v` debe declararse sin init.
+  assert.match(out, /static\s+double\s+v\s*;/);
+  assert.ok(!/static\s+double\s+v\s*=\s*\(a\s*\+\s*b\)/.test(out),
+    "v no debe tener initializer en static-init");
+  // `a` y `b` siguen siendo static-init con init literal (no constexpr
+  // porque son `let` mutable; pre-existente).
+  assert.match(out, /static\s+double\s+a\s*=\s*1/);
+  assert.match(out, /static\s+double\s+b\s*=\s*2/);
+});
+
+test("V30.54: IdentifierExpression (variable referenciada) NO se difiere", () => {
+  // Regression: `let v: number = otherConst;` donde `otherConst`
+  // es un const literal. El IdentifierExpression NO debe diferirse
+  // (es trivial). Se emite como `static double v = otherConst;`
+  // (no constexpr porque `let` mutable — pre-existente).
+  const src = "const otherConst: number = 99;\nlet v: number = otherConst;";
+  const out = compile(src).cpp;
+  // `otherConst` SI es constexpr (es const).
+  assert.match(out, /static\s+constexpr\s+double\s+otherConst\s*=\s*99/);
+  // `v` se emite como static con init (no constexpr por ser let).
+  // Importante: NO se difiere al init block (es trivial).
+  assert.match(out, /static\s+double\s+v\s*=\s*otherConst/);
+  // Verificamos que despues de `ets_argc = argc;` no hay una reasignacion
+  // de `v` (lo que indicaria que se difirio al init block). Cuidado:
+  // `argv` contiene `v =` como substring, asi que usamos un regex
+  // que NO matche `argv` ni `ets_argv`.
+  const afterArgc = out.split("ets_argc = argc;")[1];
+  assert.ok(!/\bv\s*=\s*[^a]/.test(afterArgc!),
+    "v no debe reasignarse en el main (es trivial)");
+});
