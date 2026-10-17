@@ -192,7 +192,28 @@ export function evalEtsgenCalls(program: Program): Program {
       // trata como un programa completo con una funcion main;
       // extraemos el body de ets_user_main al final.
       const wrappedCode = `function main(): void { ${etsCode} }`;
-      const etsAst = parse(wrappedCode);
+      let etsAst: Program;
+      try {
+        etsAst = parse(wrappedCode);
+      } catch (e) {
+        // V30.51: el codigo generado por @etsgen no es valido. En vez
+        // de mostrar un error de parse generico, damos contexto al
+        // usuario: nombre de la funcion @etsgen, codigo generado y
+        // sugerencia.
+        const inner = (e as Error).message || String(e);
+        const generatedSnippet = etsCode.length > 200
+          ? etsCode.substring(0, 200) + "..."
+          : etsCode;
+        const enhancedMsg =
+          `@etsgen function '${call.callee}' generated invalid code:\n` +
+          `  generated: ${generatedSnippet}\n` +
+          `  parse error: ${inner}\n` +
+          `  hint: revisa el codigo que retorna tu funcion @etsgen — debe ser codigo del dialecto valido (e.g. "if (x > 5) { print('big'); }")`;
+        const enhancedError = new Error(enhancedMsg);
+        // Preservar stack y nombre
+        (enhancedError as Error & { stack?: string }).stack = (e as Error).stack;
+        throw enhancedError;
+      }
       const cpp = emitEtsAsCpp(etsAst);
       return { kind: "RawCppExpression", value: cpp, span: call.span };
     }
