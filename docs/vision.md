@@ -55,6 +55,10 @@ Muchas cosas pueden vivir en pila. Desaparecen allocations. El compilador C++ ti
 
 ### 2.6 Fusión automática de operaciones sobre colecciones
 
+Objetivo futuro, no comportamiento actual: la fusión antigua se retiró por
+intercalar efectos observables y perder capturas. Solo puede recuperarse si
+el análisis demuestra que preserva semántica, ownership y lifetimes.
+
 `arr.filter(...).map(...).reduce(...)` parece programación funcional. Pero el AST sabe que es "primero filtra, después transforma, después suma". El compilador puede convertirlo en **un único recorrido** de la colección.
 
 Para el programador sigue siendo funcional, muy agradable de leer. Lo que ejecuta la máquina es prácticamente el mismo bucle que escribiría un programador de C++ obsesionado con rendimiento. A esto se le llama **fusión de operaciones** o **fusión de pipelines**, y debería ser la **característica estrella** del dialecto.
