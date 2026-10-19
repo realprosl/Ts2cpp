@@ -110,13 +110,16 @@ pero semánticamente equivalentes a `ptr<T>`, `ref<T>`, `constRef<T>`.
 | E4205 | `ref<T>`/`constRef<T>` como type argument | Type-checker |
 | E4404 | `Rc<T>` deprecado | Type-checker (warning) |
 
-## Lo que NO se ha hecho (trabajo futuro)
+## Límites y trabajo futuro
 
 - **Lifetime analysis**: permitiría devolver `ref<T>` y almacenarlo en
-  fields. No implementado. (Issue abierta desde V22.)
+  fields cuando el checker pueda demostrar su duración. No implementado.
 - **`weak<T>` real**: mencionado en E4404 pero no implementado.
-- **Borrow checker V22 PR#6**: pendiente (Alberto 2026-10-07,
-  sesiones dedicadas).
+- **Lifetimes interprocedurales**: el checker detecta conflictos de aliasing y
+  aplica non-lexical lifetimes conservadores dentro de la función, pero no
+  modela relaciones de duración entre firmas.
+- **Runtime nativo**: el modelo del lenguaje no elimina los riesgos de vida
+  útil de handles y corutinas descritos en [`MEMORY-AUDIT.md`](./MEMORY-AUDIT.md).
 
 ## Verificación
 

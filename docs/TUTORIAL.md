@@ -310,8 +310,9 @@ total = 150
 ## 7. Colecciones
 
 Arrays `T[]` se emiten como `std::vector<T>`. Hay pipelines
-`filter().map().reduce()` que se fusionan en un solo `for` cuando
-los tipos son primitivos (V7.1).
+`filter().map().reduce()` con etapas eager: primero se completa `filter`,
+después `map` y después `reduce`. Se conservan los vectores intermedios y el
+array inicial. La fusión antigua se retiró por errores de efectos y capturas.
 
 **Ejemplo verificado** ([`test/e2e/collections/array-push/`](test/e2e/collections/array-push/)):
 
@@ -337,7 +338,7 @@ xs[2] = 3
 **Pipeline** ([`test/e2e/collections/array-pipeline-filter-map-reduce/`](test/e2e/collections/array-pipeline-filter-map-reduce/)):
 
 ```ets
-// array-pipeline — filter + map + reduce en un solo bucle.
+// array-pipeline — filter + map + reduce con etapas independientes.
 let nums: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 let result: number = nums
   .filter((x: number): boolean => x % 2 == 0)

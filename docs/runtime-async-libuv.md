@@ -44,8 +44,8 @@ namespace ets { using EventLoop = LibuvEventLoop; }
 |  ets::LibuvEventLoop (runtime/ets_event_loop_libuv.hpp)    |
 |    uv_loop_t loop_                                          |
 |    uv_async_t wake_                                         |
-|    std::unordered_map<int, PollState> polls_                |
-|    std::deque<TimerEntry> timers_                           |
+|    std::unordered_map<int, unique_ptr<PollState>> polls_    |
+|    std::list<unique_ptr<TimerEntry>> timers_                |
 +----------------------------+--------------------------------+
                              |
                              v
@@ -65,7 +65,7 @@ Implementa la interfaz `IEventLoop` (`runtime/ets_event_loop_iface.hpp`):
 | `waitFor(fd, events, handle)` | Espera actividad en un fd (TCP, file, etc.) |
 | `waitForUntil(fd, events, deadline, token, ...)` | waitFor con timeout y cancellation |
 | `waitUntil(deadline, handle)` | Timer |
-| `detach(handle)` | Dispara y olvida |
+| `detach(handle)` | Adopta un frame y lo destruye cuando termina |
 | `post(handle)` | Despacha una corutina en el loop (thread-safe) |
 | `notify()` | Despierta el loop desde otro thread |
 | `runOne()` | Un ciclo del event loop (modo incremental) |
@@ -73,20 +73,31 @@ Implementa la interfaz `IEventLoop` (`runtime/ets_event_loop_iface.hpp`):
 
 ### Patrón de timers
 
-- `std::deque<TimerEntry>` con `&back()` para que `uv_handle_t::data`
-  apunte a una dirección estable (no a un stack local).
-- Cleanup antes y después de `uv_run` para que libuv no vea handles
-  zombie como activos.
+- Cada `TimerEntry` vive en heap bajo `unique_ptr`, con dirección estable.
+- `uv_close` conserva el objeto hasta `onTimerClosed`; el callback elimina la
+  entrada de la lista.
 - `UV_RUN_NOWAIT` cuando no hay handles que esperar.
 - CancellationToken chequeado en `runOne` al inicio (Fase 2B.3).
 
 ### Patrón de polls
 
-- `std::unordered_map<int, PollState>` indexa por fd.
-- `PollState` tiene un `uv_poll_t` y un `std::vector<PollEntry>`.
+- `std::unordered_map<int, unique_ptr<PollState>>` indexa por fd y mantiene
+  cada `uv_poll_t` en una dirección estable hasta su callback de cierre.
+- `PollState` guarda las esperas en `std::list<PollEntry>` para que el timer de
+  deadline pueda apuntar a una entrada sin que `push_back` la invalide.
 - Cada `PollEntry` es un await pendiente sobre ese fd.
-- V26: cleanup event-driven (`O(N)` → `O(activos)`) usando listas de
-  `fired` que se procesan tras `uv_run`, no escaneos O(N).
+- Las entradas disparadas se eliminan antes y después de `uv_run`; cuando un
+  poll queda vacío se cierra y permanece en `closingPolls_` hasta
+  `onPollClosed`.
+
+### Ownership de `race`
+
+`race` inicia todos los candidatos y devuelve el primero que termina. Los
+frames perdedores se transfieren mediante `detach()` al event loop para que un
+timer, poll o trabajo bloqueante nunca conserve un handle a memoria liberada.
+El loop destruye cada frame al finalizar. Esta ruta todavía no cancela la
+operación: un perdedor que nunca termina puede quedar retenido hasta destruir
+el loop.
 
 ### V26: MultiLoopRunner
 
